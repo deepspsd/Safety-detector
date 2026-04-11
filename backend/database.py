@@ -54,6 +54,8 @@ class UserConfig(Base):
     # e.g. '["NO-Hardhat","NO-Gloves"]'
     # Used as active filters when role == "None", or as overrides for other roles.
     custom_ppe_items = Column(Text, nullable=True)
+    # When True, ANY detected phone triggers an alert (not just near-ear usage).
+    no_phone_zone = Column(Boolean, default=False)
     user = relationship("User", back_populates="config")
 
 

@@ -35,6 +35,7 @@ import logging
 import datetime
 from typing import List, Dict, Tuple, Optional
 from config import settings
+from services import phone_service
 
 log = logging.getLogger("yolo_service")
 
@@ -640,11 +641,12 @@ def _compliance_summary(
 # ─────────────────────────────────────────────────────────────────
 
 def _run_pipeline(frame: np.ndarray, role: str,
-                  detection_filters: Optional[List[str]] = None) -> Dict:
+                  detection_filters: Optional[List[str]] = None,
+                  no_phone_zone: bool = False) -> Dict:
     """
     Shared pipeline used by both process_frame and process_frame_numpy.
-    detection_filters: if provided, only these violation classes are evaluated
-                       (e.g. ["NO-Hardhat", "NO-Safety Vest"]). None = all classes.
+    detection_filters: if provided, only these violation classes are evaluated.
+    no_phone_zone: if True, any phone detection triggers an alert.
     """
     print(f"[PIPELINE] role={role} | sim={_use_simulation} | filters={detection_filters}")
     active_model, active_is_ppe = _get_model_for_role(role)
@@ -711,10 +713,40 @@ def _run_pipeline(frame: np.ndarray, role: str,
         for d in raw
     ]
 
+    # ── Phone usage detection (parallel pipeline) ─────────────
+    # Reuses the existing _helmet_model (COCO yolov8m.pt, class 67 = cell phone).
+    phone_result = phone_service.detect_phone_usage(
+        frame=annotated,          # draw phone annotations on top of PPE annotations
+        no_phone_zone=no_phone_zone,
+        coco_model=_helmet_model,  # already loaded COCO model — no extra download
+        use_simulation=_use_simulation,
+    )
+
+    # Merge phone annotations onto the annotated frame
+    annotated_with_phone = phone_result["annotated_frame"]
+    ann_b64  = encode_frame(annotated_with_phone)
+    snap_b64 = encode_frame(annotated_with_phone, quality=85) if (
+        not is_compliant or phone_result["phone_alert"]
+    ) else None
+
+    # Merge phone alert into overall compliance
+    phone_alert   = phone_result.get("phone_alert")
+    phone_status  = phone_result.get("phone_status", "safe")
+    phone_dets    = phone_result.get("phone_detections", [])
+
+    if phone_alert:
+        is_compliant = False
+        if alert_msg:
+            alert_msg = f"{alert_msg} | {phone_alert}"
+        else:
+            alert_msg = phone_alert
+        if not severity or severity == "low":
+            severity = phone_result.get("phone_severity", "high")
+
     return {
         "persons":          enriched,
         "violations":       violations,
-        "detections":       ui_detections,
+        "detections":       ui_detections + phone_dets,
         "is_compliant":     is_compliant,
         "missing_items":    missing,
         "violations_count": len(violations),
@@ -723,6 +755,8 @@ def _run_pipeline(frame: np.ndarray, role: str,
         "severity":         severity if not is_compliant else None,
         "annotated_frame":  ann_b64,
         "snapshot_b64":     snap_b64,
+        "phone_status":     phone_status,
+        "phone_detected":   phone_result.get("phone_detected", False),
         "model_mode": (
             "Traffic:yolov8m" if (role == "Traffic Police" and _helmet_model is not None)
             else ("ppe.pt" if _model_is_ppe else ("simulation" if _use_simulation else settings.YOLO_MODEL))
@@ -735,25 +769,27 @@ def _run_pipeline(frame: np.ndarray, role: str,
 # ─────────────────────────────────────────────────────────────────
 
 def process_frame(b64_frame: str, role: str,
-                  detection_filters: Optional[List[str]] = None) -> Dict:
+                  detection_filters: Optional[List[str]] = None,
+                  no_phone_zone: bool = False) -> Dict:
     """
     Full violation pipeline from base64 frame.
     Called by the WebSocket detection router.
-    detection_filters: list of violation class names to evaluate,
-                       or None to use all classes for the role.
     """
     frame = decode_frame(b64_frame)
     if frame is None:
         return {"error": "Invalid frame data"}
-    return _run_pipeline(frame, role, detection_filters=detection_filters)
+    return _run_pipeline(frame, role, detection_filters=detection_filters,
+                         no_phone_zone=no_phone_zone)
 
 
 def process_frame_numpy(frame: np.ndarray, role: str,
-                         detection_filters: Optional[List[str]] = None) -> Dict:
+                         detection_filters: Optional[List[str]] = None,
+                         no_phone_zone: bool = False) -> Dict:
     """
     Full violation pipeline from a numpy frame directly.
     Called by the video upload router (avoids double encode/decode).
     """
     if frame is None:
         return {"error": "Invalid frame"}
-    return _run_pipeline(frame, role, detection_filters=detection_filters)
+    return _run_pipeline(frame, role, detection_filters=detection_filters,
+                         no_phone_zone=no_phone_zone)

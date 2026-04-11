@@ -52,7 +52,7 @@ const SEV_CLASS = {
 }
 
 export default function LiveMonitor() {
-  const { user, customPpeItems } = useAuth()
+  const { user, customPpeItems, noPhoneZone: savedNoPhoneZone } = useAuth()
   const { addToast } = useToast()
 
   const [mode,           setMode]           = useState('webcam')
@@ -66,12 +66,19 @@ export default function LiveMonitor() {
   const [jobId,          setJobId]          = useState(null)
   const [jobStatus,      setJobStatus]      = useState(null)
   const [modelMode,      setModelMode]      = useState('')
+  // Phone detection state
+  const [noPhoneZone,    setNoPhoneZone]    = useState(!!savedNoPhoneZone)
+  const [phoneStatus,    setPhoneStatus]    = useState('safe') // safe|in_hand|calling|zone_violation
   // Detection filters — for None role: seed from saved custom PPE config
   const defaultFilters = (user?.role === 'None' && customPpeItems?.length)
     ? customPpeItems
     : PPE_FILTERS.map(f => f.id)
   const [activeFilters,  setActiveFilters]  = useState(defaultFilters)
   const [showFilters,    setShowFilters]    = useState(false)
+
+  // Keep noPhoneZone in a ref so WS callbacks always read latest value
+  const noPhoneZoneRef = useRef(noPhoneZone)
+  useEffect(() => { noPhoneZoneRef.current = noPhoneZone }, [noPhoneZone])
 
   const videoRef        = useRef(null)
   const canvasRef       = useRef(null)
@@ -96,7 +103,11 @@ export default function LiveMonitor() {
     // Use ref so onopen always reads the LATEST filter selection (fixes stale closure)
     ws.onopen = () => {
       console.log('[WS] Connection opened. Sending handshake with filters:', activeFiltersRef.current)
-      ws.send(JSON.stringify({ token, filters: activeFiltersRef.current }))
+      ws.send(JSON.stringify({
+        token,
+        filters: activeFiltersRef.current,
+        no_phone_zone: noPhoneZoneRef.current,
+      }))
     }
 
     ws.onmessage = (e) => {
@@ -110,6 +121,7 @@ export default function LiveMonitor() {
 
       setFrameCount(f => f + 1)
       if (data.model_mode) setModelMode(data.model_mode)
+      if (data.phone_status) setPhoneStatus(data.phone_status)
 
       setDetectionInfo({
         isCompliant:      data.is_compliant,
@@ -118,6 +130,8 @@ export default function LiveMonitor() {
         persons:          data.persons       || [],
         violationsCount:  data.violations_count ?? 0,
         personsCount:     data.persons_count    ?? 0,
+        phoneDetected:    data.phone_detected   ?? false,
+        phoneStatus:      data.phone_status     || 'safe',
       })
 
       // Draw annotated frame
@@ -166,12 +180,11 @@ export default function LiveMonitor() {
         ctx.drawImage(videoRef.current, 0, 0)
         const b64 = canvasRef.current.toDataURL('image/jpeg', 0.65)
         const filtersNow = activeFiltersRef.current
-        // Log every ~3 seconds (80ms * 37 = ~3s) to avoid console spam
-        if (Math.random() < 0.025) {
-          console.log('[FRAME] Sending frame with filters:', filtersNow)
-        }
-        // Embed current filters with EVERY frame so the backend always uses the latest selection
-        wsRef.current.send(JSON.stringify({ frame: b64, filters: filtersNow }))
+        wsRef.current.send(JSON.stringify({
+          frame: b64,
+          filters: filtersNow,
+          no_phone_zone: noPhoneZoneRef.current,
+        }))
       }, FRAME_INTERVAL)
     } catch (err) {
       addToast('Camera error', err.message || 'Could not access webcam', 'danger')
@@ -348,6 +361,73 @@ export default function LiveMonitor() {
             })}
           </div>
         )}
+
+        {/* ── Phone Zone Row ─────────────────────────────────── */}
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+          borderTop:'1px solid var(--border)', marginTop:10, paddingTop:10 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+            <span style={{ fontSize:'1rem' }}>📱</span>
+            <div>
+              <div style={{ fontSize:'0.82rem', fontWeight:700, color:'var(--text-primary)' }}>
+                No Phone Zone
+              </div>
+              <div style={{ fontSize:'0.7rem', color:'var(--text-muted)' }}>
+                Any phone detected triggers alert
+              </div>
+            </div>
+          </div>
+          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+            {/* Phone status badge */}
+            {streaming && (
+              <span style={{
+                fontSize:'0.72rem', fontWeight:600, padding:'3px 10px', borderRadius:99,
+                background: phoneStatus === 'safe'
+                  ? 'rgba(16,185,129,0.12)'
+                  : phoneStatus === 'in_hand'
+                  ? 'rgba(234,179,8,0.12)'
+                  : 'rgba(239,68,68,0.12)',
+                color: phoneStatus === 'safe'
+                  ? '#10b981'
+                  : phoneStatus === 'in_hand'
+                  ? '#eab308'
+                  : '#ef4444',
+                border: `1px solid ${phoneStatus === 'safe'
+                  ? 'rgba(16,185,129,0.3)'
+                  : phoneStatus === 'in_hand'
+                  ? 'rgba(234,179,8,0.3)'
+                  : 'rgba(239,68,68,0.3)'}`,
+              }}>
+                {phoneStatus === 'safe'           ? '🟢 No Phone'
+                 : phoneStatus === 'in_hand'      ? '🟡 Phone in Hand'
+                 : phoneStatus === 'calling'      ? '🔴 Calling!'
+                 : '🔴 Zone Violation'}
+              </span>
+            )}
+            {/* Toggle button */}
+            <button
+              onClick={async () => {
+                const next = !noPhoneZone
+                setNoPhoneZone(next)
+                try {
+                  const { usersApi } = await import('../api/api')
+                  await usersApi.updateConfig({ no_phone_zone: next })
+                } catch { /* best-effort save */ }
+              }}
+              style={{
+                width:44, height:24, borderRadius:12, cursor:'pointer',
+                border:'none', padding:0, transition:'background 0.2s',
+                background: noPhoneZone ? '#ef4444' : 'rgba(255,255,255,0.12)',
+                position:'relative', flexShrink:0,
+              }}
+            >
+              <span style={{
+                position:'absolute', top:3, width:18, height:18, borderRadius:'50%',
+                background:'#fff', transition:'left 0.2s',
+                left: noPhoneZone ? 23 : 3,
+              }} />
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* ── Mode Tabs ──────────────────────────────────────── */}

@@ -6,22 +6,25 @@ const AuthContext = createContext(null)
 export function AuthProvider({ children }) {
   const [user,           setUser]           = useState(null)
   const [loading,        setLoading]        = useState(true)
-  const [customPpeItems, setCustomPpeItems] = useState([])  // user's saved PPE selection
+  const [customPpeItems, setCustomPpeItems] = useState([])
+  const [noPhoneZone,    setNoPhoneZone]    = useState(false)
 
   const fetchMe = useCallback(async () => {
     try {
       const res = await authApi.me()
       setUser(res.data)
-      // Also load custom PPE config so LiveMonitor can use it immediately
       try {
         const cfgRes = await usersApi.getConfig()
         setCustomPpeItems(cfgRes.data.custom_ppe_items || [])
+        setNoPhoneZone(!!cfgRes.data.no_phone_zone)
       } catch {
         setCustomPpeItems([])
+        setNoPhoneZone(false)
       }
     } catch {
       setUser(null)
       setCustomPpeItems([])
+      setNoPhoneZone(false)
       localStorage.removeItem('token')
     } finally {
       setLoading(false)
@@ -50,6 +53,7 @@ export function AuthProvider({ children }) {
     localStorage.removeItem('token')
     setUser(null)
     setCustomPpeItems([])
+    setNoPhoneZone(false)
   }
 
   const updateUser = (data) => setUser(prev => ({ ...prev, ...data }))
@@ -59,6 +63,7 @@ export function AuthProvider({ children }) {
       user, loading, login, signup, logout,
       updateUser, fetchMe,
       customPpeItems, setCustomPpeItems,
+      noPhoneZone, setNoPhoneZone,
     }}>
       {children}
     </AuthContext.Provider>

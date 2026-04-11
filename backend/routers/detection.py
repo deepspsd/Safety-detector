@@ -78,9 +78,10 @@ async def detection_websocket(websocket: WebSocket):
 
         # ── Shared mutable state (safe: both coroutines on same event-loop thread) ──
         state = {
-            "filters":     handshake_filters,
-            "frame_count": 0,
-            "alive":       True,
+            "filters":       handshake_filters,
+            "no_phone_zone": bool(auth_data.get("no_phone_zone", False)),
+            "frame_count":   0,
+            "alive":         True,
         }
 
         print(f"[WS] Handshake filters ({len(state['filters'])}): {state['filters']}")
@@ -113,6 +114,13 @@ async def detection_websocket(websocket: WebSocket):
                     if nf != state["filters"]:
                         print(f"[WS] ✅ FILTER UPDATED: {state['filters']} → {nf}")
                         state["filters"] = nf
+
+                # Read no_phone_zone toggle from every message
+                if "no_phone_zone" in msg:
+                    npz = bool(msg["no_phone_zone"])
+                    if npz != state["no_phone_zone"]:
+                        print(f"[WS] 📱 NO_PHONE_ZONE: {state['no_phone_zone']} → {npz}")
+                        state["no_phone_zone"] = npz
 
                 if msg.get("frame"):
                     # Drop the oldest queued frame to keep only the freshest
@@ -172,6 +180,7 @@ async def detection_websocket(websocket: WebSocket):
                             yolo_service.process_frame,
                             b64_frame, role,
                             detection_filters=det_filters,
+                            no_phone_zone=state["no_phone_zone"],
                         )
                         # ← await releases event loop; read_messages() runs here
                         result = await loop.run_in_executor(_inference_executor, inference_fn)

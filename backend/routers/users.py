@@ -22,6 +22,8 @@ class ConfigUpdate(BaseModel):
     detection_sensitivity: Optional[float] = None
     # Custom PPE list — list of violation class names e.g. ["NO-Hardhat","NO-Gloves"]
     custom_ppe_items: Optional[List[str]] = None
+    # Phone zone setting — True = any phone detected triggers an alert
+    no_phone_zone: Optional[bool] = None
 
 
 def _get_or_create_config(db: Session, user_id: int) -> UserConfig:
@@ -61,12 +63,13 @@ def update_profile(data: ProfileUpdate, db: Session = Depends(get_db), current_u
 def get_config(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     config = _get_or_create_config(db, current_user.id)
     return {
-        "camera_type":          config.camera_type,
-        "rtsp_url":             config.rtsp_url,
-        "notify_sound":         config.notify_sound,
-        "notify_ui":            config.notify_ui,
+        "camera_type":           config.camera_type,
+        "rtsp_url":              config.rtsp_url,
+        "notify_sound":          config.notify_sound,
+        "notify_ui":             config.notify_ui,
         "detection_sensitivity": config.detection_sensitivity,
-        "custom_ppe_items":     _parse_custom_ppe(config),
+        "custom_ppe_items":      _parse_custom_ppe(config),
+        "no_phone_zone":         bool(config.no_phone_zone) if config.no_phone_zone is not None else False,
     }
 
 
@@ -85,5 +88,11 @@ def update_config(data: ConfigUpdate, db: Session = Depends(get_db), current_use
         config.detection_sensitivity = data.detection_sensitivity
     if data.custom_ppe_items is not None:
         config.custom_ppe_items = json.dumps(data.custom_ppe_items)
+    if data.no_phone_zone is not None:
+        config.no_phone_zone = data.no_phone_zone
     db.commit()
-    return {"message": "Config updated", "custom_ppe_items": _parse_custom_ppe(config)}
+    return {
+        "message": "Config updated",
+        "custom_ppe_items": _parse_custom_ppe(config),
+        "no_phone_zone": bool(config.no_phone_zone),
+    }

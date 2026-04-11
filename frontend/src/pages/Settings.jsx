@@ -29,7 +29,7 @@ const ROLE_PPE = {
 }
 
 export default function Settings() {
-  const { user, updateUser, customPpeItems, setCustomPpeItems } = useAuth()
+  const { user, updateUser, customPpeItems, setCustomPpeItems, noPhoneZone: savedNoPhoneZone, setNoPhoneZone } = useAuth()
   const { addToast }         = useToast()
   const { theme, toggle, isDark } = useTheme()
 
@@ -44,12 +44,14 @@ export default function Settings() {
   const [locationStatus,  setLocationStatus]  = useState(null)
   // Custom PPE — local copy editable in the Safety Rules tab
   const [customPpe, setCustomPpe] = useState(customPpeItems || [])
+  // Phone zone — local copy editable in the Phone tab
+  const [noPhoneZoneLocal, setNoPhoneZoneLocal] = useState(!!savedNoPhoneZone)
 
   useEffect(() => {
     usersApi.getConfig().then(r => {
       setConfig(r.data)
-      // Sync custom PPE from latest DB value
       if (r.data.custom_ppe_items?.length) setCustomPpe(r.data.custom_ppe_items)
+      if (r.data.no_phone_zone !== undefined) setNoPhoneZoneLocal(!!r.data.no_phone_zone)
     }).catch(() => {})
     if (user?.role === 'Home') {
       facesApi.list().then(r => setFaces(r.data)).catch(() => {})
@@ -79,8 +81,18 @@ export default function Settings() {
     setSaving(true)
     try {
       await usersApi.updateCustomPpe(customPpe)
-      setCustomPpeItems(customPpe)   // update context so LiveMonitor picks it up
+      setCustomPpeItems(customPpe)
       addToast('Safety Rules saved', `${customPpe.length} item(s) selected`, 'success')
+    } catch { addToast('Save failed', '', 'danger') }
+    finally { setSaving(false) }
+  }
+
+  const savePhoneSettings = async () => {
+    setSaving(true)
+    try {
+      await usersApi.updateConfig({ no_phone_zone: noPhoneZoneLocal })
+      setNoPhoneZone(noPhoneZoneLocal)   // update context so LiveMonitor picks it up
+      addToast('Phone settings saved', noPhoneZoneLocal ? 'No-Phone Zone is ON' : 'No-Phone Zone is OFF', 'success')
     } catch { addToast('Save failed', '', 'danger') }
     finally { setSaving(false) }
   }
@@ -192,6 +204,7 @@ export default function Settings() {
   const tabs = [
     { id: 'appearance',    label: '🎨 Appearance'   },
     { id: 'safety_rules',  label: '🛡️ Safety Rules'  },
+    { id: 'phone',         label: '📱 Phone'         },
     { id: 'camera',        label: '📷 Camera'        },
     { id: 'notifications', label: '🔔 Alerts'        },
     { id: 'profile',       label: '👤 Profile'       },
@@ -557,6 +570,97 @@ export default function Settings() {
           </div>
           <button className="btn btn-primary" style={{ marginTop: 20 }} onClick={saveProfile} disabled={saving}>
             {saving ? <span className="spinner" style={{ width:15, height:15, borderWidth:2 }} /> : 'Update Profile'}
+          </button>
+        </div>
+      )}
+
+      {/* ── Phone Tab ── */}
+      {activeTab === 'phone' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 600 }}>
+
+          {/* No-Phone Zone Toggle Card */}
+          <div className="card card-p">
+            <h3 style={{ fontSize: '1rem', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
+              📱 Phone Detection Settings
+            </h3>
+            <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: 24 }}>
+              Configure how the system handles phone usage during live monitoring.
+            </p>
+
+            {/* No Phone Zone row */}
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '16px 20px', borderRadius: 12,
+              background: noPhoneZoneLocal ? 'rgba(239,68,68,0.06)' : 'rgba(255,255,255,0.04)',
+              border: `1px solid ${noPhoneZoneLocal ? 'rgba(239,68,68,0.3)' : 'var(--border)'}`,
+              transition: 'all 0.2s',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                <div style={{
+                  width: 44, height: 44, borderRadius: 12, display: 'flex',
+                  alignItems: 'center', justifyContent: 'center', fontSize: '1.4rem',
+                  background: noPhoneZoneLocal ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.06)',
+                }}>🚫</div>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: '0.95rem' }}>No Phone Zone</div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: 2 }}>
+                    {noPhoneZoneLocal
+                      ? '🔴 Any phone detected → immediate alert'
+                      : '🟢 Only near-ear (calling) usage triggers alert'}
+                  </div>
+                </div>
+              </div>
+              {/* Animated toggle switch */}
+              <button
+                onClick={() => setNoPhoneZoneLocal(v => !v)}
+                style={{
+                  width: 52, height: 28, borderRadius: 14, cursor: 'pointer',
+                  border: 'none', padding: 0, flexShrink: 0,
+                  background: noPhoneZoneLocal ? '#ef4444' : 'rgba(255,255,255,0.14)',
+                  position: 'relative', transition: 'background 0.2s',
+                }}
+              >
+                <span style={{
+                  position: 'absolute', top: 4, width: 20, height: 20, borderRadius: '50%',
+                  background: '#fff', transition: 'left 0.2s',
+                  left: noPhoneZoneLocal ? 28 : 4,
+                  boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+                }} />
+              </button>
+            </div>
+          </div>
+
+          {/* Alert Logic Info Cards */}
+          <div className="card card-p">
+            <h3 style={{ fontSize: '0.9rem', marginBottom: 16, color: 'var(--text-secondary)' }}>
+              How Phone Detection Works
+            </h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {[
+                { icon: '🟢', status: 'No Phone', desc: 'No phone detected in frame — no alert', color: '#10b981' },
+                { icon: '🟡', status: 'Phone in Hand', desc: 'Phone visible but not near ear — silent label, no alert (unless No-Phone Zone is ON)', color: '#eab308' },
+                { icon: '🔴', status: 'Phone Near Ear (Calling)', desc: 'Phone center in head region — triggers "Unsafe Phone Usage" alert', color: '#ef4444' },
+                { icon: '🚫', status: 'No-Phone Zone Violation', desc: 'Any phone + No-Phone Zone ON — triggers "Phone Not Allowed Here" alert', color: '#ef4444' },
+              ].map(item => (
+                <div key={item.status} style={{
+                  display: 'flex', alignItems: 'flex-start', gap: 12,
+                  padding: '12px 14px', borderRadius: 10,
+                  background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)',
+                }}>
+                  <span style={{ fontSize: '1.1rem', flexShrink: 0, marginTop: 1 }}>{item.icon}</span>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: '0.85rem', color: item.color }}>{item.status}</div>
+                    <div style={{ fontSize: '0.77rem', color: 'var(--text-muted)', marginTop: 3 }}>{item.desc}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <button className="btn btn-primary" onClick={savePhoneSettings} disabled={saving}>
+            {saving
+              ? <span className="spinner" style={{ width:15, height:15, borderWidth:2 }} />
+              : '💾 Save Phone Settings'}
           </button>
         </div>
       )}
