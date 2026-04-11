@@ -39,6 +39,8 @@ const PPE_FILTERS = [
   { id: 'NO-Gloves',       label: 'Gloves',       icon: '🧤' },
   { id: 'NO-Goggles',      label: 'Goggles',      icon: '🥽' },
   { id: 'NO-Safety Shoes', label: 'Safety Shoes', icon: '👟' },
+  { id: 'NO-ID Card',      label: 'ID Card',      icon: '🪪' },
+  { id: 'NO-Uniform',      label: 'Uniform',      icon: '👕' },
 ]
 
 // Severity badge colours

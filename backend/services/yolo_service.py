@@ -71,10 +71,11 @@ VIOLATION_LABEL_MAP = {
     'NO-Goggles':       'No Goggles',
     'NO-Safety Shoes':  'No Safety Shoes',
     'NO-ID Card':       'No ID Card',
+    'NO-Uniform':       'No Uniform',
 }
 
 # Classes that are purely simulated (not detected by ppe.pt natively)
-SIM_ONLY_VIOLATIONS = {'NO-Gloves', 'NO-Goggles', 'NO-Safety Shoes', 'NO-ID Card'}
+SIM_ONLY_VIOLATIONS = {'NO-Gloves', 'NO-Goggles', 'NO-Safety Shoes', 'NO-ID Card', 'NO-Uniform'}
 
 # ─────────────────────────────────────────────────────────────────
 # Role-based required PPE  (maps to violation class names)
@@ -110,7 +111,7 @@ ROLE_RULES: Dict[str, Dict] = {
     "College": {
         "required_violations": [],
         "required_compliant":  [],
-        "required_sim":        ["NO-ID Card"],
+        "required_sim":        ["NO-ID Card", "NO-Uniform"],
         "severity": "medium",
         "alert_prefix": "🎓 College compliance violation",
     },
@@ -452,6 +453,7 @@ def _simulate(frame: np.ndarray, role: str,
         "NO-Gloves":      "Gloves",
         "NO-Goggles":     "Safety Goggles",
         "NO-ID Card":     "ID Card",
+        "NO-Uniform":     "Uniform",
     }
 
     for i in range(num_persons):
@@ -476,11 +478,15 @@ def _simulate(frame: np.ndarray, role: str,
                 iy1 = py + int((py2 - py) * 0.00)
                 iy2 = py + int((py2 - py) * 0.25)
             elif "Gloves" in req_v:
-                iy1 = py + int((py2 - py) * 0.65)
-                iy2 = py + int((py2 - py) * 0.90)
+                iy1 = py + int((py2 - py) * 0.50)
+                iy2 = py + int((py2 - py) * 0.70)
+            elif "Shoes" in req_v:
+                iy1 = py + int((py2 - py) * 0.85)
+                iy2 = py + int((py2 - py) * 1.00)
             else:
-                iy1 = py + int((py2 - py) * 0.25)
-                iy2 = py + int((py2 - py) * 0.65)
+                # Vest, ID Card, Uniform, etc.
+                iy1 = py + int((py2 - py) * 0.20)
+                iy2 = py + int((py2 - py) * 0.60)
 
             ix1 = px + int((px2 - px) * 0.1)
             ix2 = px + int((px2 - px) * 0.9)
