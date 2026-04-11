@@ -1,0 +1,268 @@
+/* ══════════════════════════════════════════════════════
+   Mobile / Responsive overrides — appended to index.css
+   These extend the existing design system for small screens
+══════════════════════════════════════════════════════ */
+
+/* ── Mobile Header (hamburger bar) ─────────────────── */
+.mobile-header {
+  display: none;           /* hidden on desktop */
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 56px;
+  z-index: 200;
+  background: var(--bg-glass);
+  border-bottom: 1px solid var(--border);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  align-items: center;
+  padding: 0 12px;
+  gap: 10px;
+}
+.mobile-header-logo {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 1rem; font-weight: 800;
+  flex: 1;
+}
+.mobile-menu-btn {
+  background: none; border: none;
+  color: var(--text-primary); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px;
+  border-radius: 8px;
+  transition: background var(--transition);
+}
+.mobile-menu-btn:hover { background: var(--bg-card-hover); }
+
+/* ── Sidebar overlay (mobile) ──────────────────────── */
+.sidebar-overlay {
+  display: none;
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 149;
+  backdrop-filter: blur(2px);
+  animation: fadeIn 0.2s ease;
+}
+.sidebar-close-btn {
+  display: none;
+  background: none; border: none;
+  color: var(--text-secondary); cursor: pointer;
+  padding: 4px; border-radius: 6px;
+  transition: all var(--transition);
+}
+.sidebar-close-btn:hover { background: var(--bg-card-hover); color: var(--text-primary); }
+
+/* ── PWA Install Banner ────────────────────────────── */
+.pwa-install-banner {
+  position: fixed;
+  bottom: 20px; left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  padding: 14px 20px;
+  display: flex; align-items: center; gap: 14px;
+  box-shadow: var(--shadow-lg), 0 0 40px rgba(249,115,22,0.12);
+  max-width: 420px; width: calc(100% - 32px);
+  backdrop-filter: blur(20px);
+  animation: slideUpBounce 0.4s cubic-bezier(0.34,1.56,0.64,1);
+}
+@keyframes slideUpBounce {
+  from { opacity: 0; transform: translateX(-50%) translateY(20px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+.pwa-banner-icon {
+  width: 44px; height: 44px;
+  background: linear-gradient(135deg, #f97316, #ea580c);
+  border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 4px 12px rgba(249,115,22,0.4);
+}
+.pwa-banner-text { flex: 1; }
+.pwa-banner-title { font-size: 0.88rem; font-weight: 700; color: var(--text-primary); line-height: 1.2; }
+.pwa-banner-sub   { font-size: 0.75rem; color: var(--text-muted); margin-top: 2px; }
+
+/* ── Scrollable tables on mobile ───────────────────── */
+.table-scroll-wrapper {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: var(--radius-md);
+}
+
+/* ── Bottom nav bar (mobile alternative) ──────────── */
+.bottom-nav {
+  display: none;
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  height: 60px;
+  background: var(--bg-glass);
+  border-top: 1px solid var(--border);
+  backdrop-filter: blur(20px);
+  z-index: 150;
+  padding: 0 8px;
+  padding-bottom: env(safe-area-inset-bottom);
+  align-items: center;
+  justify-content: space-around;
+}
+.bottom-nav-item {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  flex: 1; padding: 8px 4px;
+  color: var(--text-muted);
+  font-size: 0.62rem; font-weight: 600;
+  text-decoration: none;
+  border-radius: var(--radius-sm);
+  transition: color var(--transition);
+  text-transform: uppercase; letter-spacing: 0.3px;
+}
+.bottom-nav-item.active { color: var(--accent-construction); }
+.bottom-nav-item:hover  { color: var(--text-primary); }
+
+/* ══════════════════════════════════════════════════════
+   RESPONSIVE BREAKPOINTS
+══════════════════════════════════════════════════════ */
+
+/* ── Tablet + Mobile: ≤ 900px ──────────────────────── */
+@media (max-width: 900px) {
+  :root { --sidebar-w: 0px; }
+
+  /* Show mobile header */
+  .mobile-header { display: flex; }
+
+  /* Show overlay when sidebar open */
+  .sidebar.open ~ .sidebar-overlay,
+  .sidebar-overlay { display: block; }
+
+  /* Sidebar becomes a slide-in drawer */
+  .sidebar {
+    transform: translateX(-100%);
+    transition: transform 0.28s cubic-bezier(0.4,0,0.2,1);
+    width: 260px !important;
+    z-index: 150;
+    top: 0;
+  }
+  .sidebar.open { transform: translateX(0); }
+
+  .sidebar-close-btn { display: flex; }
+
+  /* Push content down below header */
+  .main-content {
+    margin-left: 0;
+    padding-top: 56px;   /* height of mobile header */
+    padding-bottom: 68px; /* height of bottom nav */
+  }
+  .page-container { padding: 16px; }
+
+  /* Show bottom nav */
+  .bottom-nav { display: flex; }
+
+  /* Grids collapse */
+  .grid-4 { grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  .grid-3 { grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  .grid-2 { grid-template-columns: 1fr; gap: 12px; }
+
+  /* Auth card padding */
+  .auth-card { padding: 28px 20px; }
+
+  /* Tables: scrollable */
+  .alerts-table { min-width: 640px; }
+  .table-scroll-wrapper { margin: 0 -16px; padding: 0 16px; }
+
+  /* Page headers */
+  .page-header { flex-direction: column; align-items: flex-start; gap: 12px; }
+  .page-header > .btn { align-self: stretch; justify-content: center; }
+
+  /* Modal: full width */
+  .modal-box { max-width: 100%; border-radius: var(--radius-lg); padding: 20px; }
+}
+
+/* ── Mobile: ≤ 560px ───────────────────────────────── */
+@media (max-width: 560px) {
+  .grid-4, .grid-3 { grid-template-columns: 1fr; }
+
+  /* Stat cards: horizontal compact on mobile */
+  .stat-card {
+    padding: 16px;
+    gap: 12px;
+  }
+  .stat-value { font-size: 1.6rem; }
+  .stat-icon  { width: 40px; height: 40px; }
+
+  /* Video canvas full width */
+  .video-container { border-radius: var(--radius-md); }
+
+  /* Auth */
+  .auth-card  { padding: 20px 16px; }
+  .auth-title { font-size: 1.3rem; }
+
+  /* Tab bars: scroll horizontally */
+  .tab-bar {
+    gap: 2px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .tab-bar::-webkit-scrollbar { display: none; }
+  .tab { white-space: nowrap; flex: none; padding: 8px 12px; }
+
+  /* Page title smaller */
+  .page-title { font-size: 1.25rem; }
+
+  /* Filters wrap */
+  .filters-bar { gap: 6px; }
+  .filter-select { font-size: 0.78rem; padding: 6px 8px; }
+
+  /* PPE grid: 3 per row on phone */
+  .ppe-grid { grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .ppe-item { padding: 8px 4px; font-size: 0.65rem; }
+
+  /* Banner */
+  .pwa-install-banner { bottom: 72px; } /* above bottom nav */
+
+  /* Card padding */
+  .card-p { padding: 16px; }
+}
+
+/* ── Small phones: ≤ 380px ─────────────────────────── */
+@media (max-width: 380px) {
+  .grid-4, .grid-3, .grid-2 { grid-template-columns: 1fr; }
+  .mobile-header-logo span   { display: none; } /* hide text on tiny screens */
+  .ppe-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ── Desktop: hide mobile elements ─────────────────── */
+@media (min-width: 901px) {
+  .mobile-header   { display: none !important; }
+  .sidebar-overlay { display: none !important; }
+  .bottom-nav      { display: none !important; }
+  .sidebar-close-btn { display: none !important; }
+  /* Sidebar always visible on desktop */
+  .sidebar {
+    transform: translateX(0) !important;
+    transition: none;
+  }
+}
+
+/* ── Safe-area padding (notch / home bar) ──────────── */
+@supports (padding: env(safe-area-inset-bottom)) {
+  .mobile-header {
+    padding-top: env(safe-area-inset-top);
+    height: calc(56px + env(safe-area-inset-top));
+  }
+  .bottom-nav {
+    padding-bottom: env(safe-area-inset-bottom);
+    height: calc(60px + env(safe-area-inset-bottom));
+  }
+  .main-content {
+    padding-bottom: calc(68px + env(safe-area-inset-bottom));
+  }
+}
+
+/* ── Landscape mobile: reduce vertical waste ───────── */
+@media (max-height: 500px) and (orientation: landscape) {
+  .mobile-header { height: 44px; }
+  .main-content  { padding-top: 44px; }
+  .stat-card     { padding: 12px; }
+  .card-p        { padding: 12px; }
+}
