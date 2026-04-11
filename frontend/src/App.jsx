@@ -11,6 +11,7 @@ import Dashboard from './pages/Dashboard'
 import LiveMonitor from './pages/LiveMonitor'
 import Alerts from './pages/Alerts'
 import Settings from './pages/Settings'
+import SetupRules from './pages/SetupRules'
 import { Video, Bell, LayoutDashboard } from 'lucide-react'
 
 function ProtectedRoute({ children }) {
@@ -66,6 +67,7 @@ function AppRoutes() {
 
       {/* Protected — default landing is /monitor */}
       <Route path="/" element={<Navigate to={user ? "/monitor" : "/login"} replace />} />
+      <Route path="/setup-rules" element={<ProtectedRoute><SetupRules /></ProtectedRoute>} />
       <Route path="/profile"   element={<ProtectedRoute><Profile /></ProtectedRoute>} />
       <Route path="/monitor"   element={<ProtectedRoute><AppLayout><LiveMonitor /></AppLayout></ProtectedRoute>} />
       <Route path="/alerts"    element={<ProtectedRoute><AppLayout><Alerts /></AppLayout></ProtectedRoute>} />

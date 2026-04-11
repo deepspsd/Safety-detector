@@ -410,7 +410,8 @@ a:hover { color: var(--accent-cyan); }
 }
 
 /* ── Auth Pages ── */
-.auth-bg {
+.auth-bg,
+.auth-page {
   min-height: 100vh;
   display: flex;
   align-items: center;
@@ -430,10 +431,21 @@ a:hover { color: var(--accent-cyan); }
   backdrop-filter: blur(40px);
   box-shadow: var(--shadow-lg), 0 0 60px rgba(59,130,246,0.08);
 }
-.auth-logo {
-  display: flex; align-items: center; gap: 10px;
+/* Auth header block (logo + title + subtitle) */
+.auth-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
   margin-bottom: 32px;
-  font-size: 1.4rem; font-weight: 800;
+}
+.auth-logo {
+  width: 52px; height: 52px;
+  background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+  border-radius: 14px;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 4px 20px rgba(59,130,246,0.4);
+  margin-bottom: 14px;
 }
 .auth-logo-icon {
   width: 44px; height: 44px;
@@ -442,7 +454,8 @@ a:hover { color: var(--accent-cyan); }
   display: flex; align-items: center; justify-content: center;
   box-shadow: 0 4px 20px rgba(59,130,246,0.4);
 }
-.auth-title { font-size: 1.6rem; font-weight: 800; margin-bottom: 6px; }
+.auth-title { font-size: 1.5rem; font-weight: 800; margin-bottom: 6px; color: var(--text-primary); }
+.auth-subtitle { color: var(--text-secondary); font-size: 0.88rem; }
 .auth-sub { color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 28px; }
 .auth-form { display: flex; flex-direction: column; gap: 16px; }
 .auth-divider {
@@ -453,6 +466,28 @@ a:hover { color: var(--accent-cyan); }
   content: ''; flex: 1; height: 1px; background: var(--border);
 }
 .auth-footer { text-align: center; margin-top: 20px; font-size: 0.875rem; color: var(--text-secondary); }
+
+/* Input with icon wrapper */
+.input-wrapper {
+  position: relative;
+}
+.input-wrapper .form-input {
+  padding-left: 38px;
+}
+.input-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+/* Full-width button helper */
+.btn-block {
+  width: 100%;
+  justify-content: center;
+}
 
 /* ── Sidebar ── */
 .sidebar {

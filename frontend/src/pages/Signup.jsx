@@ -105,7 +105,11 @@ export default function Signup() {
     setLoading(true)
     try {
       await signup(form.email, form.password, form.name, role)
-      navigate('/monitor')
+      if (role === 'None') {
+        navigate('/setup-rules')
+      } else {
+        navigate('/monitor')
+      }
     } catch (err) {
       const msg = err.response?.data?.detail || err.message || 'Account creation failed'
       setError(typeof msg === 'string' ? msg : JSON.stringify(msg))

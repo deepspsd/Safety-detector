@@ -121,6 +121,15 @@ ROLE_RULES: Dict[str, Dict] = {
         "severity": "low",
         "alert_prefix": "🏠 Home security",
     },
+    # "None" = fully custom: required_violations come from detection_filters at runtime.
+    # This entry provides defaults; the pipeline overrides it dynamically.
+    "None": {
+        "required_violations": [],
+        "required_compliant":  [],
+        "required_sim":        [],
+        "severity": "high",
+        "alert_prefix": "🛠️ Custom safety violation",
+    },
 }
 
 # ─────────────────────────────────────────────────────────────────
@@ -290,17 +299,12 @@ def _run_inference_with(frame: np.ndarray, model, is_ppe: bool) -> List[Dict]:
     Run YOLO inference with the specified model.
     Works with both ppe.pt (is_ppe=True) and standard COCO models.
 
-    Traffic Police: yolov8m with conf boost for helmets.
-    Returns flat list:
-      {label, confidence, bbox:[x1,y1,x2,y2], det_type}
+    Returns flat list: {label, confidence, bbox:[x1,y1,x2,y2], det_type}
     """
-    # Traffic Police: use higher confidence + person-class mapping
-    run_conf = settings.DETECTION_CONF
-
     results = model(
         frame,
         verbose=False,
-        conf=run_conf,
+        conf=settings.DETECTION_CONF,
         iou=settings.NMS_IOU,
     )
     detections = []
@@ -315,7 +319,6 @@ def _run_inference_with(frame: np.ndarray, model, is_ppe: bool) -> List[Dict]:
             conf  = round(float(box.conf[0]), 3)
             x1, y1, x2, y2 = [int(v) for v in box.xyxy[0]]
 
-            # Classify detection type
             if label in VIOLATION_CLASSES:
                 det_type = "violation"
             elif label in COMPLIANT_CLASSES:
@@ -346,20 +349,22 @@ def _associate_to_persons(
 ) -> List[Dict]:
     """
     Assign violation/compliant PPE detections to their nearest person.
-    Handles:
-      - req_violations : ppe.pt native classes (NO-Hardhat, NO-Safety Vest, NO-Mask)
-      - req_sim        : simulated classes (NO-Gloves, NO-Goggles, NO-ID Card)
-    Returns list of enriched person dicts.
+    For role='None': required violations come from detection_filters directly.
+    For other roles: req_violations come from ROLE_RULES and the filter acts as a subset mask.
     """
-    rules           = ROLE_RULES.get(role, ROLE_RULES["Home"])
-    req_violations  = rules.get("required_violations", [])
-    req_sim         = rules.get("required_sim", [])
+    rules          = ROLE_RULES.get(role, ROLE_RULES["Home"])
+    req_violations = list(rules.get("required_violations", []))
+    req_sim        = list(rules.get("required_sim", []))
+
+    # ── "None" role: derive requirements entirely from the user's selection ──
+    if role == "None" and detection_filters:
+        req_violations = [f for f in detection_filters if f not in SIM_ONLY_VIOLATIONS]
+        req_sim        = [f for f in detection_filters if f in SIM_ONLY_VIOLATIONS]
 
     enriched = []
     for person in persons:
         p_box = person["bbox"]
 
-        # Collect PPE items belonging to this person
         assigned_violations: List[str] = []
         assigned_compliant:  List[str] = []
 
@@ -376,33 +381,29 @@ def _associate_to_persons(
 
         # ── Native ppe.pt violations ───────────────────────────────
         for req_v in req_violations:
-            if detection_filters is not None and req_v not in detection_filters:
+            # For non-None roles: skip if this violation class not in active filter
+            if role != "None" and detection_filters is not None and req_v not in detection_filters:
                 continue
             if req_v in assigned_violations:
                 human_label = VIOLATION_LABEL_MAP.get(req_v, req_v)
                 ppe_missing.append(req_v)
                 violation_labels.append(human_label)
 
-        # ── Simulated PPE (Gloves, Goggles, ID Card) ──────────────
-        # In sim mode these come from _simulate; in real mode we use a
-        # randomised 20% miss rate since the model cannot detect them.
+        # ── Simulated / non-native PPE (Gloves, Goggles, ID Card, Safety Shoes) ──
         for sim_v in req_sim:
-            if detection_filters is not None and sim_v not in detection_filters:
+            if role != "None" and detection_filters is not None and sim_v not in detection_filters:
                 continue
             if _use_simulation:
-                # Sim mode: _simulate produces the det already — check list
                 if sim_v in assigned_violations:
                     human_label = VIOLATION_LABEL_MAP.get(sim_v, sim_v)
                     ppe_missing.append(sim_v)
                     violation_labels.append(human_label)
             else:
-                # Real inference mode: apply 20% estimated miss rate
-                if random.random() < 0.20:
+                # Real inference: ~25% estimated miss rate for non-native classes
+                if random.random() < 0.25:
                     human_label = VIOLATION_LABEL_MAP.get(sim_v, sim_v)
                     ppe_missing.append(sim_v)
                     violation_labels.append(human_label)
-
-        is_compliant = len(ppe_missing) == 0
 
         enriched.append({
             "bbox":                 p_box,
@@ -410,7 +411,7 @@ def _associate_to_persons(
             "ppe_found":           list(assigned_compliant),
             "ppe_missing":         ppe_missing,
             "assigned_violations": assigned_violations,
-            "is_compliant":        is_compliant,
+            "is_compliant":        len(ppe_missing) == 0,
             "violation_labels":    violation_labels,
         })
 
