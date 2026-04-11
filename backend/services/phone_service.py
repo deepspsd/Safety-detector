@@ -88,13 +88,16 @@ def _nearest_person(phone_box: List[int], persons: List[Dict]) -> Optional[Dict]
 def _run_phone_inference(frame: np.ndarray, model) -> Tuple[List[Dict], List[Dict]]:
     """
     Run a COCO model on frame and extract cell phone + person detections.
-    Uses low confidence (0.20) because phones are small objects.
+    Uses:
+      - imgsz=960 : 2.25x more pixels than default 640 — crucial for small phones
+      - conf=0.20 : low threshold to catch partially visible/occluded phones
     """
     from config import settings
     results = model(
         frame,
         verbose=False,
-        conf=0.20,          # low threshold — phones are small; we'd rather FP than FN
+        imgsz=960,          # higher resolution = much better small-object detection
+        conf=0.20,
         iou=settings.NMS_IOU,
         classes=[PHONE_CLASS_ID, PERSON_CLASS_ID],
     )

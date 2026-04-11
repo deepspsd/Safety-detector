@@ -146,6 +146,7 @@ COLOR_PERSON    = (200, 160,  60)  # Amber
 # ─────────────────────────────────────────────────────────────────
 _model         = None   # general PPE model (ppe.pt)
 _helmet_model  = None   # specialized helmet model for Traffic Police role
+_phone_model   = None   # dedicated phone detection model (yolov8l.pt, COCO class 67)
 _use_simulation = False
 _model_is_ppe   = False  # True when ppe.pt loaded (vs generic COCO)
 
@@ -169,7 +170,7 @@ def load_model():
       • helmet_model: yolov8m.pt (higher accuracy, helmet-focused via conf boost)
         Falls back to the same ppe model if unavailable.
     """
-    global _model, _helmet_model, _use_simulation, _model_is_ppe
+    global _model, _helmet_model, _phone_model, _use_simulation, _model_is_ppe
 
     import os
     os.environ.setdefault("TORCH_FORCE_WEIGHTS_ONLY_LOAD", "0")
@@ -233,6 +234,26 @@ def load_model():
         _helmet_model = None
         print("⚠️  Helmet model unavailable — Traffic Police will use ppe.pt")
 
+    # ── 3. Load dedicated phone detection model (yolov8l.pt) ──────
+    # yolov8l = Large COCO model (~87 MB, auto-downloads on first run).
+    # Significantly higher accuracy than yolov8m for small objects like phones.
+    log.info("Loading phone detection model…")
+    try:
+        from ultralytics import YOLO
+        import torch
+        _orig3 = torch.load
+        def _p3(*a, **kw): kw.setdefault("weights_only", False); return _orig3(*a, **kw)
+        torch.load = _p3
+        _phone_model = YOLO("yolov8l.pt")   # auto-downloads ~87 MB on first run
+        torch.load = _orig3
+        log.info("✅ Phone model loaded: yolov8l.pt (Large COCO, class 67 = cell phone)")
+        print("✅ Phone detection model loaded: yolov8l.pt (Large COCO — high accuracy)")
+    except Exception as e:
+        try: torch.load = _orig3
+        except Exception: pass
+        log.warning(f"yolov8l.pt unavailable ({e}) — phone detection falls back to yolov8m.pt")
+        _phone_model = _helmet_model   # fall back to medium COCO model already loaded
+        print("⚠️  Phone model unavailable — using yolov8m.pt as fallback")
 
 # ─────────────────────────────────────────────────────────────────
 # Frame I/O
@@ -714,15 +735,14 @@ def _run_pipeline(frame: np.ndarray, role: str,
 
     # ── Phone usage detection (parallel pipeline) ─────────────
     # Lazy import avoids circular import at module load time
-    # (yolo_service and phone_service are both in the same package).
     from services import phone_service as _phone_svc
     phone_result = _phone_svc.detect_phone_usage(
         frame=annotated,
         no_phone_zone=no_phone_zone,
-        # Primary: yolov8m.pt loaded for Traffic Police (COCO, has class 67)
-        coco_model=_helmet_model,
-        # Fallback: use _model only if it's a COCO model (not the PPE-specific ppe.pt)
-        coco_fallback=(_model if not _model_is_ppe else None),
+        # Dedicated large COCO model for high-accuracy phone detection
+        coco_model=_phone_model,
+        # Secondary fallback: yolov8m.pt helmet model (also COCO)
+        coco_fallback=(_helmet_model or (_model if not _model_is_ppe else None)),
         use_simulation=_use_simulation,
     )
 
