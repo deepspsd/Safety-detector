@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
 import { usersApi } from '../api/api'
-import { UserCircle, Stethoscope, Shield, HardHat, GraduationCap, Home, ChevronRight, CheckCircle } from 'lucide-react'
+import { UserCircle, Stethoscope, Shield, HardHat, GraduationCap, Home, ChevronRight, CheckCircle, ChevronLeft } from 'lucide-react'
 
 const ROLES = [
   { id: 'Doctor', label: 'Doctor', desc: 'Detects gloves & lab coat compliance', icon: Stethoscope, color: '#06b6d4' },
@@ -40,13 +40,32 @@ export default function Profile() {
     <div className="auth-bg" style={{ alignItems: 'flex-start', paddingTop: 40 }}>
       <div style={{ width: '100%', maxWidth: 560 }}>
         <div className="auth-card" style={{ maxWidth: '100%' }}>
-          <div className="auth-logo">
-            <div className="auth-logo-icon"><UserCircle size={22} color="#fff" /></div>
-            <span>Setup Your Profile</span>
+          <div style={{ marginBottom: 16 }}>
+            <button
+              onClick={() => navigate(-1)}
+              style={{
+                background: 'transparent', border: 'none',
+                color: 'var(--text-muted)', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', padding: 0,
+                fontSize: '0.9rem', fontWeight: 500, transition: 'color 0.2s'
+              }}
+              onMouseOver={e => e.currentTarget.style.color = 'var(--text-primary)'}
+              onMouseOut={e => e.currentTarget.style.color = 'var(--text-muted)'}
+            >
+              <ChevronLeft size={18} style={{ marginRight: 4 }} />
+              Back
+            </button>
           </div>
-          <p className="auth-sub" style={{ marginBottom: 24 }}>
-            Tell us about yourself so we can tailor AI detection to your role.
-          </p>
+
+          <div className="auth-header">
+            <div className="auth-logo">
+              <UserCircle size={26} color="#fff" />
+            </div>
+            <h1 className="auth-title">Setup Your Profile</h1>
+            <p className="auth-subtitle">
+              Tell us about yourself so we can tailor AI detection to your role.
+            </p>
+          </div>
 
           <div className="form-group" style={{ marginBottom: 24 }}>
             <label className="form-label">Your Name</label>
