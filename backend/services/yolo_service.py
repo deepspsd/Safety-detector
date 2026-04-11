@@ -35,7 +35,6 @@ import logging
 import datetime
 from typing import List, Dict, Tuple, Optional
 from config import settings
-from services import phone_service
 
 log = logging.getLogger("yolo_service")
 
@@ -714,8 +713,10 @@ def _run_pipeline(frame: np.ndarray, role: str,
     ]
 
     # ── Phone usage detection (parallel pipeline) ─────────────
-    # Reuses the existing _helmet_model (COCO yolov8m.pt, class 67 = cell phone).
-    phone_result = phone_service.detect_phone_usage(
+    # Lazy import avoids circular import at module load time
+    # (yolo_service and phone_service are both in the same package).
+    from services import phone_service as _phone_svc
+    phone_result = _phone_svc.detect_phone_usage(
         frame=annotated,          # draw phone annotations on top of PPE annotations
         no_phone_zone=no_phone_zone,
         coco_model=_helmet_model,  # already loaded COCO model — no extra download
