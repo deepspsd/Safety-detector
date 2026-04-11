@@ -1,12 +1,12 @@
 """
-Phone Usage Detection Service v3.0
+Phone Usage Detection Service v4.0
 ====================================
-Fixes in v3.0:
-  - Frame-position fallback when COCO misses person detection:
-    upper 55% of frame = near head/ear
-  - NEAR_EAR_FRACTION raised to 0.50 (upper half of person = ear region)
-  - In-hand phone now generates YELLOW alert (was completely silent before)
-  - Severity: calling/zone_violation=high (red), in_hand=medium (yellow)
+Changes in v4.0:
+  - Removed broken majority-vote smoothing buffer (caused phone to never show)
+  - Lowered confidence threshold to 0.15 for better detection of large phones
+  - Frame-position fallback when COCO misses person detection
+  - In-hand = yellow alert, calling/zone_violation = red alert
+  - Flickering handled purely on frontend (5s hold timer) — cleaner architecture
 """
 import cv2
 import numpy as np
@@ -16,8 +16,8 @@ from typing import List, Dict, Optional, Tuple
 
 log = logging.getLogger("phone_service")
 
-PHONE_CLASS_ID    = 67
-PERSON_CLASS_ID   = 0
+PHONE_CLASS_ID     = 67
+PERSON_CLASS_ID    = 0
 NEAR_EAR_FRACTION  = 0.50   # upper 50% of person bbox = ear/head region
 FRAME_EAR_FRACTION = 0.55   # fallback: upper 55% of frame = near head
 
@@ -27,13 +27,6 @@ COLOR_YELLOW = (0,  200, 220)
 _sim_frames_left = 0
 _sim_near_ear    = False
 
-# Rolling window buffer — holds last 6 statuses for smoothing
-# Only report a new status if it appears in majority of recent frames.
-_BUFFER_SIZE    = 6
-_MAJORITY_VOTES = 4   # need 4/6 frames to confirm a status change
-_status_buffer: list = []   # list of recent 'phone_status' strings
-_last_result:   dict = {}   # last emitted result (reused during hold)
-
 
 # ── Geometry ──────────────────────────────────────────────────────
 
@@ -42,6 +35,7 @@ def _box_center(box: List[int]) -> Tuple[float, float]:
 
 
 def _is_phone_near_ear(phone_box: List[int], person_box: List[int]) -> bool:
+    """True if phone center Y is in upper 50% of person bounding box."""
     px1, py1, px2, py2 = person_box
     head_bottom = py1 + (py2 - py1) * NEAR_EAR_FRACTION
     _, phone_cy = _box_center(phone_box)
@@ -49,7 +43,7 @@ def _is_phone_near_ear(phone_box: List[int], person_box: List[int]) -> bool:
 
 
 def _is_phone_near_ear_by_frame(phone_box: List[int], frame_h: int) -> bool:
-    """Fallback when no person bbox available — uses frame height."""
+    """Fallback when no person bbox: upper 55% of frame = near head."""
     _, phone_cy = _box_center(phone_box)
     return phone_cy <= frame_h * FRAME_EAR_FRACTION
 
@@ -71,12 +65,17 @@ def _nearest_person(phone_box: List[int], persons: List[Dict]) -> Optional[Dict]
 # ── Inference ─────────────────────────────────────────────────────
 
 def _run_phone_inference(frame: np.ndarray, model) -> Tuple[List[Dict], List[Dict]]:
+    """
+    Run COCO model at 960px / conf=0.15 for best small-object accuracy.
+    Phones filling the frame are detected at conf=0.80+; lowering threshold
+    catches partially visible and fast-moving phones.
+    """
     from config import settings
     results = model(
         frame,
         verbose=False,
         imgsz=960,
-        conf=0.20,
+        conf=0.15,          # lower threshold — catches any visible phone
         iou=settings.NMS_IOU,
         classes=[PHONE_CLASS_ID, PERSON_CLASS_ID],
     )
@@ -96,14 +95,15 @@ def _run_phone_inference(frame: np.ndarray, model) -> Tuple[List[Dict], List[Dic
 
 
 def _simulate_phone(frame: np.ndarray) -> Tuple[List[Dict], List[Dict]]:
+    """Stateful simulation — phone persists 10-20 frames, 70% hit rate."""
     global _sim_frames_left, _sim_near_ear
     h, w = frame.shape[:2]
     px1, py1 = int(w * 0.15), int(h * 0.05)
     px2, py2 = int(w * 0.55), int(h * 0.95)
     persons = [{"label": "person", "confidence": 0.89, "bbox": [px1, py1, px2, py2]}]
     if _sim_frames_left <= 0:
-        if random.random() < 0.60:
-            _sim_frames_left = random.randint(8, 15)
+        if random.random() < 0.70:
+            _sim_frames_left = random.randint(10, 20)
             _sim_near_ear    = random.random() < 0.50
         else:
             return [], persons
@@ -112,24 +112,24 @@ def _simulate_phone(frame: np.ndarray) -> Tuple[List[Dict], List[Dict]]:
     cx     = (px1 + px2) // 2
     if _sim_near_ear:
         ph_y1 = py1 + int(height * 0.05)
-        ph_y2 = py1 + int(height * 0.22)
+        ph_y2 = py1 + int(height * 0.25)
     else:
         ph_y1 = py1 + int(height * 0.55)
         ph_y2 = py1 + int(height * 0.75)
     phones = [{"label": "cell phone",
-               "confidence": round(random.uniform(0.65, 0.92), 3),
-               "bbox": [cx - 20, ph_y1, cx + 20, ph_y2]}]
+               "confidence": round(random.uniform(0.70, 0.95), 3),
+               "bbox": [cx - 25, ph_y1, cx + 25, ph_y2]}]
     return phones, persons
 
 
 # ── Annotation ────────────────────────────────────────────────────
 
 def _put_label(img: np.ndarray, text: str, x1: int, y1: int, color: tuple) -> None:
-    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.50, 1)
-    ty = max(th + 6, y1 - 4)
-    cv2.rectangle(img, (x1, ty - th - 6), (x1 + tw + 6, ty), color, -1)
-    cv2.putText(img, text, (x1 + 3, ty - 3),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 255, 255), 1, cv2.LINE_AA)
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 1)
+    ty = max(th + 8, y1 - 4)
+    cv2.rectangle(img, (x1, ty - th - 6), (x1 + tw + 8, ty + 2), color, -1)
+    cv2.putText(img, text, (x1 + 4, ty - 2),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1, cv2.LINE_AA)
 
 
 def _draw_phone_annotations(frame: np.ndarray, alert_phones: List[Dict],
@@ -158,18 +158,22 @@ def detect_phone_usage(
     use_simulation: bool = False,
 ) -> Dict:
     """
+    Detects phone usage and returns structured result each frame.
+    Anti-flicker is handled entirely on the frontend (5s hold timer).
+
     Returns:
       phone_detected, phone_status, phone_alert, phone_severity,
       phone_detections, annotated_frame
 
     Alert levels:
-      calling / zone_violation → severity="high"   (🔴 red)
-      in_hand                  → severity="medium"  (🟡 yellow)
-      safe                     → no alert            (🟢 green badge)
+      calling / zone_violation  →  severity="high"   (red)
+      in_hand                   →  severity="medium"  (yellow)
+      safe                      →  no alert           (green badge)
     """
     active_model = coco_model or coco_fallback
     frame_h      = frame.shape[0]
 
+    # ── Run detection ─────────────────────────────────────────────
     if use_simulation or active_model is None:
         phones, persons = _simulate_phone(frame)
     else:
@@ -179,58 +183,13 @@ def detect_phone_usage(
             log.warning(f"Phone inference error: {e} — simulation fallback")
             phones, persons = _simulate_phone(frame)
 
-    # ── Rolling-window smoothing ──────────────────────────────
-    # Compute raw status this frame, then vote across recent frames.
-    # This prevents single missed/extra detections from causing flicker.
-    global _status_buffer, _last_result
-
+    # ── No phone ──────────────────────────────────────────────────
     if not phones:
-        raw_status = "safe"
-    else:
-        # Quick classify to get raw status
-        frame_h   = frame.shape[0]
-        has_alert = False
-        has_hand  = False
-        for phone in phones:
-            nearest  = _nearest_person(phone["bbox"], persons)
-            near_ear = (_is_phone_near_ear(phone["bbox"], nearest["bbox"])
-                        if nearest
-                        else _is_phone_near_ear_by_frame(phone["bbox"], frame_h))
-            if no_phone_zone or near_ear:
-                has_alert = True
-            else:
-                has_hand = True
-        if has_alert:
-            raw_status = "zone_violation" if no_phone_zone else "calling"
-        else:
-            raw_status = "in_hand"
+        return {"phone_detected": False, "phone_status": "safe",
+                "phone_alert": None, "phone_severity": None,
+                "phone_detections": [], "annotated_frame": frame}
 
-    _status_buffer.append(raw_status)
-    if len(_status_buffer) > _BUFFER_SIZE:
-        _status_buffer.pop(0)
-
-    # Vote: find which status appears most frequently
-    from collections import Counter
-    vote_counts  = Counter(_status_buffer)
-    top_status, top_count = vote_counts.most_common(1)[0]
-
-    # Only switch if top status has enough votes to be reliable
-    STATUS_PRIORITY = {"zone_violation": 3, "calling": 3, "in_hand": 2, "safe": 1}
-    if top_count >= _MAJORITY_VOTES or top_status == "safe":
-        smooth_status = top_status
-    else:
-        # Not enough votes — keep last known non-safe status if available
-        smooth_status = (_last_result.get("phone_status") or "safe")
-
-    # If smooth result is safe, return safe immediately
-    if smooth_status == "safe":
-        _last_result = {"phone_detected": False, "phone_status": "safe",
-                        "phone_alert": None, "phone_severity": None,
-                        "phone_detections": [], "annotated_frame": frame}
-        return _last_result
-
-    # ── Build full result for non-safe status ─────────────────
-
+    # ── Classify each detected phone ──────────────────────────────
     alert_phones  = []
     silent_phones = []
 
@@ -239,8 +198,7 @@ def detect_phone_usage(
         if nearest:
             near_ear = _is_phone_near_ear(phone["bbox"], nearest["bbox"])
         else:
-            # COCO missed person detection (tight crop / close-up)
-            # Use frame-position heuristic instead
+            # COCO missed person (tight crop / close-up) — use frame position
             near_ear = _is_phone_near_ear_by_frame(phone["bbox"], frame_h)
 
         if no_phone_zone:
@@ -250,8 +208,10 @@ def detect_phone_usage(
         else:
             silent_phones.append({**phone, "status": "in_hand"})
 
+    # ── Draw bounding boxes ───────────────────────────────────────
     annotated = _draw_phone_annotations(frame, alert_phones, silent_phones)
 
+    # ── Build response ────────────────────────────────────────────
     if alert_phones:
         status    = alert_phones[0]["status"]
         alert_msg = ("Phone Usage Not Allowed in This Area"
@@ -260,16 +220,15 @@ def detect_phone_usage(
         all_dets  = [{"label": p["label"], "confidence": p["confidence"],
                       "bbox": p["bbox"], "status": p.get("status")}
                      for p in alert_phones + silent_phones]
-        _last_result = {"phone_detected": True, "phone_status": status,
-                        "phone_alert": alert_msg, "phone_severity": "high",
-                        "phone_detections": all_dets, "annotated_frame": annotated}
-        return _last_result
+        return {"phone_detected": True, "phone_status": status,
+                "phone_alert": alert_msg, "phone_severity": "high",
+                "phone_detections": all_dets, "annotated_frame": annotated}
 
-    # In-hand only — yellow alert
+    # In-hand — yellow alert
     all_dets = [{"label": p["label"], "confidence": p["confidence"],
                  "bbox": p["bbox"], "status": "in_hand"}
                 for p in silent_phones]
-    _last_result = {
+    return {
         "phone_detected":   True,
         "phone_status":     "in_hand",
         "phone_alert":      "Phone Detected in Hand",
@@ -277,4 +236,3 @@ def detect_phone_usage(
         "phone_detections": all_dets,
         "annotated_frame":  annotated,
     }
-    return _last_result
