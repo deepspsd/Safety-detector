@@ -66,9 +66,9 @@ export default function LiveMonitor() {
   const [jobId,          setJobId]          = useState(null)
   const [jobStatus,      setJobStatus]      = useState(null)
   const [modelMode,      setModelMode]      = useState('')
-  // Phone detection state
-  const [noPhoneZone,    setNoPhoneZone]    = useState(!!savedNoPhoneZone)
-  const [phoneStatus,    setPhoneStatus]    = useState('safe') // safe|in_hand|calling|zone_violation
+  // Phone detection state — default ON so detection works immediately
+  const [noPhoneZone,    setNoPhoneZone]    = useState(savedNoPhoneZone !== undefined ? !!savedNoPhoneZone : true)
+  const [phoneStatus,    setPhoneStatus]    = useState('safe')
   // Detection filters — for None role: seed from saved custom PPE config
   const defaultFilters = (user?.role === 'None' && customPpeItems?.length)
     ? customPpeItems
@@ -377,32 +377,31 @@ export default function LiveMonitor() {
             </div>
           </div>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-            {/* Phone status badge */}
-            {streaming && (
-              <span style={{
-                fontSize:'0.72rem', fontWeight:600, padding:'3px 10px', borderRadius:99,
-                background: phoneStatus === 'safe'
-                  ? 'rgba(16,185,129,0.12)'
-                  : phoneStatus === 'in_hand'
-                  ? 'rgba(234,179,8,0.12)'
-                  : 'rgba(239,68,68,0.12)',
-                color: phoneStatus === 'safe'
-                  ? '#10b981'
-                  : phoneStatus === 'in_hand'
-                  ? '#eab308'
-                  : '#ef4444',
-                border: `1px solid ${phoneStatus === 'safe'
-                  ? 'rgba(16,185,129,0.3)'
-                  : phoneStatus === 'in_hand'
-                  ? 'rgba(234,179,8,0.3)'
-                  : 'rgba(239,68,68,0.3)'}`,
-              }}>
-                {phoneStatus === 'safe'           ? '🟢 No Phone'
-                 : phoneStatus === 'in_hand'      ? '🟡 Phone in Hand'
-                 : phoneStatus === 'calling'      ? '🔴 Calling!'
-                 : '🔴 Zone Violation'}
-              </span>
-            )}
+            {/* Phone status badge — always visible */}
+            <span style={{
+              fontSize:'0.72rem', fontWeight:600, padding:'3px 10px', borderRadius:99,
+              background: phoneStatus === 'safe'
+                ? 'rgba(16,185,129,0.12)'
+                : phoneStatus === 'in_hand'
+                ? 'rgba(234,179,8,0.12)'
+                : 'rgba(239,68,68,0.12)',
+              color: phoneStatus === 'safe'
+                ? '#10b981'
+                : phoneStatus === 'in_hand'
+                ? '#eab308'
+                : '#ef4444',
+              border: `1px solid ${phoneStatus === 'safe'
+                ? 'rgba(16,185,129,0.3)'
+                : phoneStatus === 'in_hand'
+                ? 'rgba(234,179,8,0.3)'
+                : 'rgba(239,68,68,0.3)'}`,
+              transition: 'all 0.3s',
+            }}>
+              {phoneStatus === 'safe'        ? '🟢 No Phone'
+               : phoneStatus === 'in_hand'  ? '🟡 Phone in Hand'
+               : phoneStatus === 'calling'  ? '🔴 Calling Alert'
+               : '🔴 Zone Violation'}
+            </span>
             {/* Toggle button */}
             <button
               onClick={async () => {

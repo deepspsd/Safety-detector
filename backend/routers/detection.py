@@ -79,7 +79,7 @@ async def detection_websocket(websocket: WebSocket):
         # ── Shared mutable state (safe: both coroutines on same event-loop thread) ──
         state = {
             "filters":       handshake_filters,
-            "no_phone_zone": bool(auth_data.get("no_phone_zone", False)),
+            "no_phone_zone": bool(auth_data.get("no_phone_zone", True)),  # default ON
             "frame_count":   0,
             "alive":         True,
         }

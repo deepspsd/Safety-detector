@@ -717,9 +717,12 @@ def _run_pipeline(frame: np.ndarray, role: str,
     # (yolo_service and phone_service are both in the same package).
     from services import phone_service as _phone_svc
     phone_result = _phone_svc.detect_phone_usage(
-        frame=annotated,          # draw phone annotations on top of PPE annotations
+        frame=annotated,
         no_phone_zone=no_phone_zone,
-        coco_model=_helmet_model,  # already loaded COCO model — no extra download
+        # Primary: yolov8m.pt loaded for Traffic Police (COCO, has class 67)
+        coco_model=_helmet_model,
+        # Fallback: use _model only if it's a COCO model (not the PPE-specific ppe.pt)
+        coco_fallback=(_model if not _model_is_ppe else None),
         use_simulation=_use_simulation,
     )
 
