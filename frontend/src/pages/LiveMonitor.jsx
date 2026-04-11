@@ -125,19 +125,32 @@ export default function LiveMonitor() {
       setFrameCount(f => f + 1)
       if (data.model_mode) setModelMode(data.model_mode)
 
-      // Phone status with 2.5s hold — prevents rapid flickering
+      // Phone status with 5s hold — prevents rapid flickering
+      // Timer resets on EVERY non-safe detection so alert stays while phone is visible.
       if (data.phone_status) {
         const now      = Date.now()
         const latch    = phoneStatusLatchRef.current
         const incoming = data.phone_status
-        // Only downgrade (e.g. red→green) after hold period expires
+        const HOLD_MS  = 5000
         const priority = { zone_violation: 3, calling: 3, in_hand: 2, safe: 1 }
-        if ((priority[incoming] || 1) >= (priority[latch.status] || 1) || now > latch.until) {
-          phoneStatusLatchRef.current = {
-            status: incoming,
-            until:  now + (incoming !== 'safe' ? 2500 : 0),
+        const inPri    = priority[incoming] || 1
+        const latPri   = priority[latch.status] || 1
+
+        if (incoming !== 'safe') {
+          // Phone detected: always upgrade to higher/equal severity and RESET hold timer
+          if (inPri >= latPri || now > latch.until) {
+            phoneStatusLatchRef.current = { status: incoming, until: now + HOLD_MS }
+            setPhoneStatus(incoming)
+          } else {
+            // Same or lower priority but still detected — just refresh the hold timer
+            phoneStatusLatchRef.current = { ...latch, until: now + HOLD_MS }
           }
-          setPhoneStatus(incoming)
+        } else {
+          // Phone gone — only clear after hold period expires
+          if (now > latch.until) {
+            phoneStatusLatchRef.current = { status: 'safe', until: 0 }
+            setPhoneStatus('safe')
+          }
         }
       }
 

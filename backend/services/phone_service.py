@@ -27,6 +27,13 @@ COLOR_YELLOW = (0,  200, 220)
 _sim_frames_left = 0
 _sim_near_ear    = False
 
+# Rolling window buffer — holds last 6 statuses for smoothing
+# Only report a new status if it appears in majority of recent frames.
+_BUFFER_SIZE    = 6
+_MAJORITY_VOTES = 4   # need 4/6 frames to confirm a status change
+_status_buffer: list = []   # list of recent 'phone_status' strings
+_last_result:   dict = {}   # last emitted result (reused during hold)
+
 
 # ── Geometry ──────────────────────────────────────────────────────
 
@@ -172,10 +179,57 @@ def detect_phone_usage(
             log.warning(f"Phone inference error: {e} — simulation fallback")
             phones, persons = _simulate_phone(frame)
 
+    # ── Rolling-window smoothing ──────────────────────────────
+    # Compute raw status this frame, then vote across recent frames.
+    # This prevents single missed/extra detections from causing flicker.
+    global _status_buffer, _last_result
+
     if not phones:
-        return {"phone_detected": False, "phone_status": "safe",
-                "phone_alert": None, "phone_severity": None,
-                "phone_detections": [], "annotated_frame": frame}
+        raw_status = "safe"
+    else:
+        # Quick classify to get raw status
+        frame_h   = frame.shape[0]
+        has_alert = False
+        has_hand  = False
+        for phone in phones:
+            nearest  = _nearest_person(phone["bbox"], persons)
+            near_ear = (_is_phone_near_ear(phone["bbox"], nearest["bbox"])
+                        if nearest
+                        else _is_phone_near_ear_by_frame(phone["bbox"], frame_h))
+            if no_phone_zone or near_ear:
+                has_alert = True
+            else:
+                has_hand = True
+        if has_alert:
+            raw_status = "zone_violation" if no_phone_zone else "calling"
+        else:
+            raw_status = "in_hand"
+
+    _status_buffer.append(raw_status)
+    if len(_status_buffer) > _BUFFER_SIZE:
+        _status_buffer.pop(0)
+
+    # Vote: find which status appears most frequently
+    from collections import Counter
+    vote_counts  = Counter(_status_buffer)
+    top_status, top_count = vote_counts.most_common(1)[0]
+
+    # Only switch if top status has enough votes to be reliable
+    STATUS_PRIORITY = {"zone_violation": 3, "calling": 3, "in_hand": 2, "safe": 1}
+    if top_count >= _MAJORITY_VOTES or top_status == "safe":
+        smooth_status = top_status
+    else:
+        # Not enough votes — keep last known non-safe status if available
+        smooth_status = (_last_result.get("phone_status") or "safe")
+
+    # If smooth result is safe, return safe immediately
+    if smooth_status == "safe":
+        _last_result = {"phone_detected": False, "phone_status": "safe",
+                        "phone_alert": None, "phone_severity": None,
+                        "phone_detections": [], "annotated_frame": frame}
+        return _last_result
+
+    # ── Build full result for non-safe status ─────────────────
 
     alert_phones  = []
     silent_phones = []
@@ -206,15 +260,16 @@ def detect_phone_usage(
         all_dets  = [{"label": p["label"], "confidence": p["confidence"],
                       "bbox": p["bbox"], "status": p.get("status")}
                      for p in alert_phones + silent_phones]
-        return {"phone_detected": True, "phone_status": status,
-                "phone_alert": alert_msg, "phone_severity": "high",
-                "phone_detections": all_dets, "annotated_frame": annotated}
+        _last_result = {"phone_detected": True, "phone_status": status,
+                        "phone_alert": alert_msg, "phone_severity": "high",
+                        "phone_detections": all_dets, "annotated_frame": annotated}
+        return _last_result
 
     # In-hand only — yellow alert
     all_dets = [{"label": p["label"], "confidence": p["confidence"],
                  "bbox": p["bbox"], "status": "in_hand"}
                 for p in silent_phones]
-    return {
+    _last_result = {
         "phone_detected":   True,
         "phone_status":     "in_hand",
         "phone_alert":      "Phone Detected in Hand",
@@ -222,3 +277,4 @@ def detect_phone_usage(
         "phone_detections": all_dets,
         "annotated_frame":  annotated,
     }
+    return _last_result
