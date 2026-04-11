@@ -80,6 +80,9 @@ export default function LiveMonitor() {
   const noPhoneZoneRef = useRef(noPhoneZone)
   useEffect(() => { noPhoneZoneRef.current = noPhoneZone }, [noPhoneZone])
 
+  // Phone status latch — hold alert state for 2.5s to prevent flickering
+  const phoneStatusLatchRef = useRef({ status: 'safe', until: 0 })
+
   const videoRef        = useRef(null)
   const canvasRef       = useRef(null)
   const wsRef           = useRef(null)
@@ -121,7 +124,22 @@ export default function LiveMonitor() {
 
       setFrameCount(f => f + 1)
       if (data.model_mode) setModelMode(data.model_mode)
-      if (data.phone_status) setPhoneStatus(data.phone_status)
+
+      // Phone status with 2.5s hold — prevents rapid flickering
+      if (data.phone_status) {
+        const now      = Date.now()
+        const latch    = phoneStatusLatchRef.current
+        const incoming = data.phone_status
+        // Only downgrade (e.g. red→green) after hold period expires
+        const priority = { zone_violation: 3, calling: 3, in_hand: 2, safe: 1 }
+        if ((priority[incoming] || 1) >= (priority[latch.status] || 1) || now > latch.until) {
+          phoneStatusLatchRef.current = {
+            status: incoming,
+            until:  now + (incoming !== 'safe' ? 2500 : 0),
+          }
+          setPhoneStatus(incoming)
+        }
+      }
 
       setDetectionInfo({
         isCompliant:      data.is_compliant,
