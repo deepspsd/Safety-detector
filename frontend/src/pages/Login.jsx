@@ -2,16 +2,16 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
-import { Shield, Mail, Lock, User, Eye, EyeOff } from 'lucide-react'
+import { Shield, Mail, Lock, Eye, EyeOff } from 'lucide-react'
 
 export default function Login() {
-  const [email, setEmail] = useState('')
+  const [email,    setEmail]    = useState('')
   const [password, setPassword] = useState('')
   const [showPass, setShowPass] = useState(false)
-  const [loading, setLoading] = useState(false)
-  const { login } = useAuth()
+  const [loading,  setLoading]  = useState(false)
+  const { login }    = useAuth()
   const { addToast } = useToast()
-  const navigate = useNavigate()
+  const navigate     = useNavigate()
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -29,57 +29,84 @@ export default function Login() {
   }
 
   return (
-    <div className="auth-bg">
-      <div className="auth-card">
-        <div className="auth-logo">
-          <div className="auth-logo-icon"><Shield size={22} color="#fff" /></div>
-          <span>OccuSafe</span>
-        </div>
-        <h1 className="auth-title">Occupational Safety Monitoring</h1>
-        <p className="auth-sub">Sign in to your safety monitoring system</p>
+    <div className="auth-page">
+      <div className="auth-card" style={{ maxWidth: 440 }}>
 
-        <form className="auth-form" onSubmit={handleSubmit}>
+        {/* Header — matches Signup page style */}
+        <div className="auth-header">
+          <div className="auth-logo">
+            <Shield size={22} color="#fff" />
+          </div>
+          <h1 className="auth-title">OccuSafe</h1>
+          <p className="auth-subtitle">Sign in to your safety monitoring system</p>
+        </div>
+
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* Email */}
           <div className="form-group">
-            <label className="form-label">Email Address</label>
-            <div style={{ position: 'relative' }}>
-              <Mail size={15} style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', color:'var(--text-muted)' }} />
+            <label className="form-label">EMAIL ADDRESS</label>
+            <div className="input-wrapper">
+              <Mail size={16} className="input-icon" />
               <input
                 className="form-input"
-                style={{ paddingLeft: 36 }}
-                type="email" placeholder="you@example.com"
-                value={email} onChange={e => setEmail(e.target.value)}
-                autoComplete="email" required
+                type="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                autoComplete="email"
+                required
               />
             </div>
           </div>
 
+          {/* Password */}
           <div className="form-group">
-            <label className="form-label">Password</label>
-            <div style={{ position: 'relative' }}>
-              <Lock size={15} style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', color:'var(--text-muted)' }} />
+            <label className="form-label">PASSWORD</label>
+            <div className="input-wrapper">
+              <Lock size={16} className="input-icon" />
               <input
                 className="form-input"
-                style={{ paddingLeft: 36, paddingRight: 40 }}
-                type={showPass ? 'text' : 'password'} placeholder="••••••••"
-                value={password} onChange={e => setPassword(e.target.value)}
-                autoComplete="current-password" required
+                style={{ paddingRight: 42 }}
+                type={showPass ? 'text' : 'password'}
+                placeholder="••••••••"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                autoComplete="current-password"
+                required
               />
-              <button type="button" onClick={() => setShowPass(p => !p)}
-                style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', color:'var(--text-muted)', cursor:'pointer' }}>
-                {showPass ? <EyeOff size={15} /> : <Eye size={15} />}
+              <button
+                type="button"
+                onClick={() => setShowPass(p => !p)}
+                style={{
+                  position: 'absolute', right: 12, top: '50%',
+                  transform: 'translateY(-50%)',
+                  background: 'none', border: 'none',
+                  color: 'var(--text-muted)', cursor: 'pointer',
+                }}
+              >
+                {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
           </div>
 
-          <button className="btn btn-primary btn-lg" type="submit" disabled={loading} style={{ marginTop: 8, width: '100%', justifyContent: 'center' }}>
-            {loading ? <span className="spinner" style={{ width:18, height:18, borderWidth:2 }} /> : 'Sign In'}
+          <button
+            className="btn btn-primary btn-block"
+            type="submit"
+            disabled={loading}
+            style={{ marginTop: 4 }}
+          >
+            {loading
+              ? <><span className="spinner" /> Signing in…</>
+              : 'Sign In'}
           </button>
         </form>
 
-        <div className="auth-footer">
+        <p style={{ textAlign: 'center', marginTop: 20, fontSize: '0.85rem', color: 'var(--text-muted)' }}>
           Don't have an account?{' '}
-          <Link to="/signup" style={{ fontWeight: 600 }}>Create one</Link>
-        </div>
+          <Link to="/signup" style={{ color: 'var(--accent-construction)', fontWeight: 600 }}>
+            Create one
+          </Link>
+        </p>
       </div>
     </div>
   )

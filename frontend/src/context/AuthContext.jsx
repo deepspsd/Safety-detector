@@ -4,15 +4,24 @@ import { authApi, usersApi } from '../api/api'
 const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [user,           setUser]           = useState(null)
+  const [loading,        setLoading]        = useState(true)
+  const [customPpeItems, setCustomPpeItems] = useState([])  // user's saved PPE selection
 
   const fetchMe = useCallback(async () => {
     try {
       const res = await authApi.me()
       setUser(res.data)
+      // Also load custom PPE config so LiveMonitor can use it immediately
+      try {
+        const cfgRes = await usersApi.getConfig()
+        setCustomPpeItems(cfgRes.data.custom_ppe_items || [])
+      } catch {
+        setCustomPpeItems([])
+      }
     } catch {
       setUser(null)
+      setCustomPpeItems([])
       localStorage.removeItem('token')
     } finally {
       setLoading(false)
@@ -40,12 +49,17 @@ export function AuthProvider({ children }) {
   const logout = () => {
     localStorage.removeItem('token')
     setUser(null)
+    setCustomPpeItems([])
   }
 
   const updateUser = (data) => setUser(prev => ({ ...prev, ...data }))
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, signup, logout, updateUser, fetchMe }}>
+    <AuthContext.Provider value={{
+      user, loading, login, signup, logout,
+      updateUser, fetchMe,
+      customPpeItems, setCustomPpeItems,
+    }}>
       {children}
     </AuthContext.Provider>
   )

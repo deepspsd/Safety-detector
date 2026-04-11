@@ -9,6 +9,7 @@ const ROLES = [
   { id: 'Traffic Police',      icon: '🚓', label: 'Traffic Police',        desc: 'Helmet & safety compliance'                },
   { id: 'College',             icon: '🎓', label: 'College / Campus',      desc: 'ID card & uniform monitoring'              },
   { id: 'Home',                icon: '🏠', label: 'Home / Private',        desc: 'Face recognition — unknown person alert'   },
+  { id: 'None',                icon: '🛠️', label: 'Custom / None',         desc: 'Define your own PPE rules in Settings'     },
 ]
 
 // Map OSM place types → role suggestions

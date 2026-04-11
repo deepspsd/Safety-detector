@@ -1,7 +1,8 @@
+import json
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from database import get_db, User, UserConfig
 from routers.auth import get_current_user
 
@@ -19,14 +20,38 @@ class ConfigUpdate(BaseModel):
     notify_sound: Optional[bool] = None
     notify_ui: Optional[bool] = None
     detection_sensitivity: Optional[float] = None
+    # Custom PPE list — list of violation class names e.g. ["NO-Hardhat","NO-Gloves"]
+    custom_ppe_items: Optional[List[str]] = None
+
+
+def _get_or_create_config(db: Session, user_id: int) -> UserConfig:
+    config = db.query(UserConfig).filter(UserConfig.user_id == user_id).first()
+    if not config:
+        config = UserConfig(user_id=user_id)
+        db.add(config)
+        db.commit()
+        db.refresh(config)
+    return config
+
+
+def _parse_custom_ppe(config: UserConfig) -> List[str]:
+    """Safely parse the JSON-encoded custom_ppe_items column."""
+    if not config.custom_ppe_items:
+        return []
+    try:
+        val = json.loads(config.custom_ppe_items)
+        return val if isinstance(val, list) else []
+    except Exception:
+        return []
 
 
 @router.put("/me")
 def update_profile(data: ProfileUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    valid_roles = {"Construction Worker", "Doctor", "Traffic Police", "College", "Home", "None"}
     if data.name is not None:
         current_user.name = data.name
     if data.role is not None:
-        current_user.role = data.role
+        current_user.role = data.role if data.role in valid_roles else current_user.role
     db.commit()
     db.refresh(current_user)
     return {"id": current_user.id, "email": current_user.email, "name": current_user.name, "role": current_user.role}
@@ -34,27 +59,20 @@ def update_profile(data: ProfileUpdate, db: Session = Depends(get_db), current_u
 
 @router.get("/me/config")
 def get_config(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    config = db.query(UserConfig).filter(UserConfig.user_id == current_user.id).first()
-    if not config:
-        config = UserConfig(user_id=current_user.id)
-        db.add(config)
-        db.commit()
-        db.refresh(config)
+    config = _get_or_create_config(db, current_user.id)
     return {
-        "camera_type": config.camera_type,
-        "rtsp_url": config.rtsp_url,
-        "notify_sound": config.notify_sound,
-        "notify_ui": config.notify_ui,
-        "detection_sensitivity": config.detection_sensitivity
+        "camera_type":          config.camera_type,
+        "rtsp_url":             config.rtsp_url,
+        "notify_sound":         config.notify_sound,
+        "notify_ui":            config.notify_ui,
+        "detection_sensitivity": config.detection_sensitivity,
+        "custom_ppe_items":     _parse_custom_ppe(config),
     }
 
 
 @router.put("/me/config")
 def update_config(data: ConfigUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    config = db.query(UserConfig).filter(UserConfig.user_id == current_user.id).first()
-    if not config:
-        config = UserConfig(user_id=current_user.id)
-        db.add(config)
+    config = _get_or_create_config(db, current_user.id)
     if data.camera_type is not None:
         config.camera_type = data.camera_type
     if data.rtsp_url is not None:
@@ -65,5 +83,7 @@ def update_config(data: ConfigUpdate, db: Session = Depends(get_db), current_use
         config.notify_ui = data.notify_ui
     if data.detection_sensitivity is not None:
         config.detection_sensitivity = data.detection_sensitivity
+    if data.custom_ppe_items is not None:
+        config.custom_ppe_items = json.dumps(data.custom_ppe_items)
     db.commit()
-    return {"message": "Config updated"}
+    return {"message": "Config updated", "custom_ppe_items": _parse_custom_ppe(config)}

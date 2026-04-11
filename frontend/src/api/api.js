@@ -72,8 +72,11 @@ export const authApi = {
 // ── Users ─────────────────────────────────────
 export const usersApi = {
   updateProfile: (data) => api.put('/users/me', data),
-  getConfig: () => api.get('/users/me/config'),
-  updateConfig: (data) => api.put('/users/me/config', data)
+  getConfig:     ()     => api.get('/users/me/config'),
+  updateConfig:  (data) => api.put('/users/me/config', data),
+  // Custom PPE helpers (convenience wrappers)
+  getCustomPpe:    ()       => api.get('/users/me/config').then(r => r.data.custom_ppe_items || []),
+  updateCustomPpe: (items)  => api.put('/users/me/config', { custom_ppe_items: items }),
 }
 
 // ── Alerts ────────────────────────────────────

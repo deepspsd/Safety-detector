@@ -22,11 +22,12 @@ from functools import partial
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
-from database import get_db, User
+from database import get_db, User, UserConfig
 from auth_utils import decode_token
 from services import yolo_service, face_service
 from services.alert_service import save_alert
 from config import settings
+from routers.users import _parse_custom_ppe
 
 router = APIRouter(tags=["detection"])
 
@@ -66,9 +67,18 @@ async def detection_websocket(websocket: WebSocket):
         print(f"\n[WS] ===== NEW CONNECTION =====")
         print(f"[WS] User: {user.name} | Role: {role}")
 
+        # For 'None' role: load custom_ppe_items from the user's saved config
+        # as the INITIAL filter list; the frontend can still override mid-stream.
+        handshake_filters = list(auth_data.get("filters", []))
+        if role == "None" and not handshake_filters:
+            db_config = db.query(UserConfig).filter(UserConfig.user_id == user.id).first()
+            if db_config:
+                handshake_filters = _parse_custom_ppe(db_config)
+                print(f"[WS] Loaded custom PPE from DB: {handshake_filters}")
+
         # ── Shared mutable state (safe: both coroutines on same event-loop thread) ──
         state = {
-            "filters":     list(auth_data.get("filters", [])),
+            "filters":     handshake_filters,
             "frame_count": 0,
             "alive":       True,
         }

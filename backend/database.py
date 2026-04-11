@@ -50,6 +50,10 @@ class UserConfig(Base):
     notify_sound = Column(Boolean, default=True)
     notify_ui = Column(Boolean, default=True)
     detection_sensitivity = Column(Float, default=0.5)
+    # JSON-encoded list of violation class names the user wants monitored.
+    # e.g. '["NO-Hardhat","NO-Gloves"]'
+    # Used as active filters when role == "None", or as overrides for other roles.
+    custom_ppe_items = Column(Text, nullable=True)
     user = relationship("User", back_populates="config")
 
 

@@ -50,7 +50,7 @@ const SEV_CLASS = {
 }
 
 export default function LiveMonitor() {
-  const { user }    = useAuth()
+  const { user, customPpeItems } = useAuth()
   const { addToast } = useToast()
 
   const [mode,           setMode]           = useState('webcam')
@@ -64,8 +64,11 @@ export default function LiveMonitor() {
   const [jobId,          setJobId]          = useState(null)
   const [jobStatus,      setJobStatus]      = useState(null)
   const [modelMode,      setModelMode]      = useState('')
-  // Detection filters — all enabled by default
-  const [activeFilters,  setActiveFilters]  = useState(() => PPE_FILTERS.map(f => f.id))
+  // Detection filters — for None role: seed from saved custom PPE config
+  const defaultFilters = (user?.role === 'None' && customPpeItems?.length)
+    ? customPpeItems
+    : PPE_FILTERS.map(f => f.id)
+  const [activeFilters,  setActiveFilters]  = useState(defaultFilters)
   const [showFilters,    setShowFilters]    = useState(false)
 
   const videoRef        = useRef(null)
@@ -534,7 +537,44 @@ export default function LiveMonitor() {
               <HardHat size={15} style={{ marginRight: 6, verticalAlign: 'middle' }} />
               Role Rules — {user?.role || 'Not set'}
             </h3>
-            <RoleRules role={user?.role} />
+            {user?.role === 'None' && activeFilters.length > 0 ? (
+              <div>
+                <div style={{
+                  padding: '8px 12px', borderRadius: 8, marginBottom: 10,
+                  background: 'rgba(16,185,129,0.08)',
+                  border: '1px solid rgba(16,185,129,0.25)',
+                  fontSize: '0.78rem', color: 'var(--accent-green)',
+                  display: 'flex', alignItems: 'center', gap: 6,
+                }}>
+                  <ShieldCheck size={13} /> Filters loaded from your Custom Safety Settings
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {activeFilters.map(f => {
+                    const label = f.replace('NO-', '')
+                    const icons = { Hardhat:'⛑️', Gloves:'🧤', Goggles:'🥽', Mask:'😷', 'Safety Vest':'🦺', 'Safety Shoes':'👟', 'ID Card':'🪪', Uniform:'👕' }
+                    return (
+                      <span key={f} style={{
+                        padding: '3px 10px', borderRadius: 99, fontSize: '0.77rem',
+                        background: 'rgba(16,185,129,0.12)', color: 'var(--accent-green)',
+                        border: '1px solid rgba(16,185,129,0.25)', fontWeight: 600,
+                      }}>
+                        {icons[label] || '🛡️'} {label}
+                      </span>
+                    )
+                  })}
+                </div>
+              </div>
+            ) : user?.role === 'None' ? (
+              <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                No custom PPE items selected. Go to{' '}
+                <a href="/settings" style={{ color: 'var(--accent-green)' }}>
+                  Settings → Safety Rules
+                </a>{' '}
+                to configure.
+              </div>
+            ) : (
+              <RoleRules role={user?.role} />
+            )}
           </div>
 
           {/* Model info card */}

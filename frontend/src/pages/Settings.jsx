@@ -16,7 +16,7 @@ const CAMERA_TYPES = [
 ]
 
 const ROLES = [
-  'Construction Worker', 'Doctor', 'Traffic Police', 'College', 'Home'
+  'Construction Worker', 'Doctor', 'Traffic Police', 'College', 'Home', 'None'
 ]
 
 // PPE requirements by role (for display)
@@ -29,7 +29,7 @@ const ROLE_PPE = {
 }
 
 export default function Settings() {
-  const { user, updateUser } = useAuth()
+  const { user, updateUser, customPpeItems, setCustomPpeItems } = useAuth()
   const { addToast }         = useToast()
   const { theme, toggle, isDark } = useTheme()
 
@@ -39,12 +39,18 @@ export default function Settings() {
   const [faceLabel, setFaceLabel] = useState('Owner')
   const [faceImg,   setFaceImg]   = useState(null)
   const [saving,    setSaving]    = useState(false)
-  const [activeTab, setActiveTab] = useState('appearance')  // default to appearance tab
+  const [activeTab, setActiveTab] = useState('appearance')
   const [locationLoading, setLocationLoading] = useState(false)
-  const [locationStatus,  setLocationStatus]  = useState(null) // { ok, message }
+  const [locationStatus,  setLocationStatus]  = useState(null)
+  // Custom PPE — local copy editable in the Safety Rules tab
+  const [customPpe, setCustomPpe] = useState(customPpeItems || [])
 
   useEffect(() => {
-    usersApi.getConfig().then(r => setConfig(r.data)).catch(() => {})
+    usersApi.getConfig().then(r => {
+      setConfig(r.data)
+      // Sync custom PPE from latest DB value
+      if (r.data.custom_ppe_items?.length) setCustomPpe(r.data.custom_ppe_items)
+    }).catch(() => {})
     if (user?.role === 'Home') {
       facesApi.list().then(r => setFaces(r.data)).catch(() => {})
     }
@@ -66,6 +72,16 @@ export default function Settings() {
       updateUser(profile)
       addToast('Profile updated', `Role set to ${profile.role}`, 'success')
     } catch { addToast('Update failed', '', 'danger') }
+    finally { setSaving(false) }
+  }
+
+  const savePpe = async () => {
+    setSaving(true)
+    try {
+      await usersApi.updateCustomPpe(customPpe)
+      setCustomPpeItems(customPpe)   // update context so LiveMonitor picks it up
+      addToast('Safety Rules saved', `${customPpe.length} item(s) selected`, 'success')
+    } catch { addToast('Save failed', '', 'danger') }
     finally { setSaving(false) }
   }
 
@@ -174,10 +190,11 @@ export default function Settings() {
   }
 
   const tabs = [
-    { id: 'appearance',    label: '🎨 Appearance' },
-    { id: 'camera',        label: '📷 Camera'     },
-    { id: 'notifications', label: '🔔 Alerts'     },
-    { id: 'profile',       label: '👤 Profile'    },
+    { id: 'appearance',    label: '🎨 Appearance'   },
+    { id: 'safety_rules',  label: '🛡️ Safety Rules'  },
+    { id: 'camera',        label: '📷 Camera'        },
+    { id: 'notifications', label: '🔔 Alerts'        },
+    { id: 'profile',       label: '👤 Profile'       },
     ...(user?.role === 'Home' ? [{ id: 'faces', label: '🔍 Faces' }] : []),
   ]
 
@@ -308,6 +325,93 @@ export default function Settings() {
           </div>
         </div>
       )}
+
+      {/* ── Safety Rules Tab ── */}
+      {activeTab === 'safety_rules' && (() => {
+        const ALL_PPE = [
+          { id: 'NO-Hardhat',      label: 'Hardhat / Helmet', icon: '⛑️',  desc: 'Head protection' },
+          { id: 'NO-Gloves',       label: 'Gloves',           icon: '🧤',  desc: 'Hand protection'  },
+          { id: 'NO-Goggles',      label: 'Goggles',          icon: '🥽',  desc: 'Eye protection'   },
+          { id: 'NO-Mask',         label: 'Mask',             icon: '😷',  desc: 'Face / respiratory protection' },
+          { id: 'NO-Safety Vest',  label: 'Safety Vest',      icon: '🦺',  desc: 'High-visibility vest' },
+          { id: 'NO-Safety Shoes', label: 'Safety Shoes',     icon: '👟',  desc: 'Foot protection'  },
+          { id: 'NO-ID Card',      label: 'ID Card',          icon: '🪪',  desc: 'Identity verification' },
+          { id: 'NO-Uniform',      label: 'Uniform',          icon: '👕',  desc: 'Standard uniform compliance' },
+        ]
+        const toggle = (id) => setCustomPpe(prev =>
+          prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+        )
+        return (
+          <div className="card card-p" style={{ maxWidth: 600 }}>
+            <h3 style={{ fontSize: '1rem', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Shield size={18} color="var(--accent-green)" /> Custom Safety Rules
+            </h3>
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 20 }}>
+              Select which PPE items to monitor. These rules apply when you're in <strong>Live Monitor</strong>.
+              {user?.role === 'None'
+                ? ' Your role is set to Custom — these selections will be your active detection filters.'
+                : ' These override the default rules for your role.'}
+            </p>
+
+            {user?.role === 'None' && (
+              <div style={{
+                padding: '10px 14px', borderRadius: 8, marginBottom: 18,
+                background: 'rgba(16,185,129,0.08)',
+                border: '1px solid rgba(16,185,129,0.25)',
+                fontSize: '0.8rem', color: 'var(--accent-green)',
+                display: 'flex', alignItems: 'center', gap: 8,
+              }}>
+                <Shield size={14} /> Custom role active — detection uses only your selected items below.
+              </div>
+            )}
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(240px,1fr))', gap: 10, marginBottom: 24 }}>
+              {ALL_PPE.map(item => {
+                const on = customPpe.includes(item.id)
+                return (
+                  <label key={item.id} onClick={() => toggle(item.id)} style={{
+                    display: 'flex', alignItems: 'center', gap: 14,
+                    padding: '12px 16px', borderRadius: 12, cursor: 'pointer',
+                    background: on ? 'rgba(16,185,129,0.08)' : 'var(--bg-card)',
+                    border: `1.5px solid ${on ? 'rgba(16,185,129,0.4)' : 'var(--border)'}`,
+                    transition: 'all 0.15s', userSelect: 'none',
+                  }}>
+                    <span style={{ fontSize: '1.4rem', flexShrink: 0 }}>{item.icon}</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, fontSize: '0.875rem', color: on ? 'var(--accent-green)' : 'var(--text-primary)' }}>
+                        {item.label}
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 2 }}>{item.desc}</div>
+                    </div>
+                    <div style={{
+                      width: 20, height: 20, borderRadius: '50%', flexShrink: 0,
+                      border: `2px solid ${on ? '#10b981' : 'var(--border)'}`,
+                      background: on ? '#10b981' : 'transparent',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      transition: 'all 0.15s',
+                    }}>
+                      {on && <CheckCircle size={12} color="#fff" />}
+                    </div>
+                  </label>
+                )
+              })}
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <button className="btn btn-primary" onClick={savePpe} disabled={saving}>
+                {saving
+                  ? <><span className="spinner" style={{ width:15, height:15, borderWidth:2 }} /> Saving…</>
+                  : `Save (${customPpe.length} selected)`}
+              </button>
+              {customPpe.length > 0 && (
+                <button className="btn btn-ghost" onClick={() => setCustomPpe([])} style={{ fontSize: '0.82rem' }}>
+                  Clear All
+                </button>
+              )}
+            </div>
+          </div>
+        )
+      })()}
 
       {/* ── Camera Tab ── */}
       {activeTab === 'camera' && (

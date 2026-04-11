@@ -38,7 +38,7 @@ def signup(data: SignupRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Email already registered")
 
     # Validate role
-    valid_roles = {"Construction Worker", "Doctor", "Traffic Police", "College", "Home"}
+    valid_roles = {"Construction Worker", "Doctor", "Traffic Police", "College", "Home", "None"}
     role = data.role if data.role in valid_roles else "Construction Worker"
 
     user = User(
