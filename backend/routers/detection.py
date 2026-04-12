@@ -36,7 +36,8 @@ router = APIRouter(tags=["detection"])
 _inference_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="yolo")
 
 # Per-user cooldown: dict[user_id → last_alert_timestamp]
-_last_alert_time: dict = {}
+_last_alert_time:       dict = {}
+_last_phone_alert_time: dict = {}   # separate cooldown for phone alerts
 
 
 async def _get_user(token: str, db: Session) -> User | None:
@@ -196,7 +197,7 @@ async def detection_websocket(websocket: WebSocket):
                                   f"missing={missing} filters_used={det_filters} "
                                   f"compliant={result.get('is_compliant')}")
 
-                    # ── Build response ──────────────────────────────
+                     # ── Build response ──────────────────────────────
                     response = {
                         "annotated_frame":  result.get("annotated_frame"),
                         "detections":       detections,
@@ -210,9 +211,13 @@ async def detection_websocket(websocket: WebSocket):
                         "persons":          result.get("persons", []),
                         "model_mode":       result.get("model_mode", "unknown"),
                         "active_filters":   state["filters"],
+                        # Phone detection fields
+                        "phone_status":     result.get("phone_status", "safe"),
+                        "phone_detected":   result.get("phone_detected", False),
+                        "phone_alert":      result.get("phone_alert"),
                     }
 
-                    # ── Save alert (cooldown + confidence gate) ─────
+                    # ── Save PPE alert (cooldown + confidence gate) ─────
                     if not result.get("is_compliant") and result.get("alert_message"):
                         uid      = user.id
                         now      = time.time()
@@ -235,6 +240,26 @@ async def detection_websocket(websocket: WebSocket):
                                 snapshot_b64=result.get("snapshot_b64"),
                             )
                             response["alert_saved"] = True
+
+                    # ── Save PHONE alert (separate cooldown — 15 s) ─────
+                    phone_sev = result.get("phone_severity")
+                    phone_msg = result.get("phone_alert")
+                    if phone_sev == "high" and phone_msg:
+                        uid  = user.id
+                        now  = time.time()
+                        if now - _last_phone_alert_time.get(uid, 0) > 15:
+                            _last_phone_alert_time[uid] = now
+                            save_alert(
+                                db=db,
+                                user_id=uid,
+                                message=phone_msg,
+                                role=role,
+                                severity="high",
+                                detected_issue=phone_msg,
+                                confidence=0.85,
+                                snapshot_b64=result.get("snapshot_b64"),
+                            )
+                            response["phone_alert_saved"] = True
 
                     await websocket.send_json(response)
 

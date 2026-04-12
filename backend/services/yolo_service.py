@@ -221,8 +221,6 @@ def load_model():
         _orig2 = torch.load
         def _p2(*a, **kw): kw.setdefault("weights_only", False); return _orig2(*a, **kw)
         torch.load = _p2
-        # yolov8m.pt: higher accuracy model for helmet (motorcycle/construction) detection.
-        # Swap this path for a dedicated helmet .pt file if available.
         _helmet_model = YOLO("yolov8m.pt")
         torch.load = _orig2
         log.info("✅ Helmet model loaded: yolov8m.pt (Traffic Police role)")
@@ -234,26 +232,37 @@ def load_model():
         _helmet_model = None
         print("⚠️  Helmet model unavailable — Traffic Police will use ppe.pt")
 
-    # ── 3. Load dedicated phone detection model (yolov8l.pt) ──────
-    # yolov8l = Large COCO model (~87 MB, auto-downloads on first run).
-    # Significantly higher accuracy than yolov8m for small objects like phones.
-    log.info("Loading phone detection model…")
-    try:
-        from ultralytics import YOLO
-        import torch
-        _orig3 = torch.load
-        def _p3(*a, **kw): kw.setdefault("weights_only", False); return _orig3(*a, **kw)
-        torch.load = _p3
-        _phone_model = YOLO("yolov8l.pt")   # auto-downloads ~87 MB on first run
-        torch.load = _orig3
-        log.info("✅ Phone model loaded: yolov8l.pt (Large COCO, class 67 = cell phone)")
-        print("✅ Phone detection model loaded: yolov8l.pt (Large COCO — high accuracy)")
-    except Exception as e:
-        try: torch.load = _orig3
-        except Exception: pass
-        log.warning(f"yolov8l.pt unavailable ({e}) — phone detection falls back to yolov8m.pt")
-        _phone_model = _helmet_model   # fall back to medium COCO model already loaded
-        print("⚠️  Phone model unavailable — using yolov8m.pt as fallback")
+    # ── 3. Load dedicated phone detection model ────────────────────
+    # Priority cascade: yolov8x.pt (best, ~137 MB, auto-downloads)
+    #                 → yolov8l.pt (~87 MB, auto-downloads)
+    #                 → yolov8m.pt (52 MB, already on disk — guaranteed fallback)
+    # All are COCO models with class 67 = cell phone.
+    # yolov8x (extra-large) achieves the highest detection accuracy.
+    log.info("Loading dedicated phone detection model…")
+    _phone_candidates = ["yolov8x.pt", "yolov8l.pt", "yolov8m.pt"]
+    _phone_loaded     = False
+    for _cand in _phone_candidates:
+        try:
+            from ultralytics import YOLO
+            import torch
+            _orig3 = torch.load
+            def _p3(*a, **kw): kw.setdefault("weights_only", False); return _orig3(*a, **kw)
+            torch.load = _p3
+            _phone_model = YOLO(_cand)
+            torch.load = _orig3
+            log.info(f"✅ Phone model loaded: {_cand} (COCO, class 67 = cell phone)")
+            print(f"✅ Phone detection model: {_cand}")
+            _phone_loaded = True
+            break
+        except Exception as e:
+            try: torch.load = _orig3
+            except Exception: pass
+            log.warning(f"{_cand} unavailable ({type(e).__name__}) — trying next…")
+    if not _phone_loaded:
+        _phone_model = _helmet_model   # last resort: reuse yolov8m already loaded
+        print("⚠️  Phone model using yolov8m.pt as final fallback")
+
+
 
 # ─────────────────────────────────────────────────────────────────
 # Frame I/O
