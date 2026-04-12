@@ -77,6 +77,14 @@ VIOLATION_LABEL_MAP = {
 # Classes that are purely simulated (not detected by ppe.pt natively)
 SIM_ONLY_VIOLATIONS = {'NO-Gloves', 'NO-Goggles', 'NO-Safety Shoes', 'NO-ID Card', 'NO-Uniform'}
 
+# ── Traffic Police label remap ────────────────────────────────────
+# ppe.pt uses "Hardhat" / "NO-Hardhat" — for Traffic Police display
+# we remap these human-readable labels to "Helmet" / "No Helmet".
+TRAFFIC_POLICE_LABEL_REMAP: Dict[str, str] = {
+    'No Hardhat': 'No Helmet',
+    'Hardhat':    'Helmet',
+}
+
 # ─────────────────────────────────────────────────────────────────
 # Role-based required PPE  (maps to violation class names)
 # Fields:
@@ -152,9 +160,13 @@ _model_is_ppe   = False  # True when ppe.pt loaded (vs generic COCO)
 
 
 def _get_model_for_role(role: str):
-    """Return the correct model instance for the given role."""
-    if role == "Traffic Police" and _helmet_model is not None:
-        return _helmet_model, True   # (model, is_ppe)
+    """
+    Return the correct model instance for the given role.
+    Always returns ppe.pt — the _helmet_model (yolov8m.pt / COCO) uses different
+    class indices and cannot be used with PPE_CLASS_NAMES mapping.
+    Traffic Police helmet labels are remapped via TRAFFIC_POLICE_LABEL_REMAP
+    after detection in _run_pipeline.
+    """
     return _model, _model_is_ppe
 
 
@@ -454,13 +466,18 @@ def _associate_to_persons(
 # ─────────────────────────────────────────────────────────────────
 
 def _simulate(frame: np.ndarray, role: str,
-              detection_filters: Optional[List[str]] = None) -> List[Dict]:
+              detection_filters: Optional[List[str]] = None,
+              frame_index: int = -1) -> List[Dict]:
     """
     Generate realistic simulated detections for when ppe.pt is unavailable.
     Produces 1–2 persons, each with randomised PPE status.
     Handles both native ppe.pt classes AND simulated classes (Gloves, Goggles).
     Respects detection_filters — only simulates selected PPE classes.
+    frame_index >= 0: use deterministic RNG seeded per frame (for video upload)
+    frame_index < 0:  use global random (for live feed — varied results)
     """
+    # Deterministic RNG for stable per-frame results in video scanning
+    _rng = random.Random(frame_index) if frame_index >= 0 else random
     h, w = frame.shape[:2]
     rules = ROLE_RULES.get(role, ROLE_RULES["Home"])
     req_violations = rules.get("required_violations", [])
@@ -494,13 +511,13 @@ def _simulate(frame: np.ndarray, role: str,
 
         detections.append({
             "label":      "Person",
-            "confidence": round(random.uniform(0.82, 0.97), 3),
+            "confidence": round(_rng.uniform(0.82, 0.97), 3),
             "bbox":       [px, py, px2, py2],
             "det_type":   "person",
         })
 
         for req_v in all_req:
-            is_violation = random.random() < 0.35   # 35% violation chance per item
+            is_violation = _rng.random() < 0.35   # 35% violation chance per item
 
             # Vertical zone: helmet/mask/goggles → upper 25%; gloves/vest → mid
             upper = ("Hardhat" in req_v or "Mask" in req_v or "Goggles" in req_v)
@@ -530,7 +547,7 @@ def _simulate(frame: np.ndarray, role: str,
 
             detections.append({
                 "label":      label,
-                "confidence": round(random.uniform(0.65, 0.95), 3),
+                "confidence": round(_rng.uniform(0.65, 0.95), 3),
                 "bbox":       [ix1, iy1, ix2, iy2],
                 "det_type":   det_type,
             })
@@ -671,7 +688,8 @@ def _compliance_summary(
 
 def _run_pipeline(frame: np.ndarray, role: str,
                   detection_filters: Optional[List[str]] = None,
-                  no_phone_zone: bool = False) -> Dict:
+                  no_phone_zone: bool = False,
+                  frame_index: int = -1) -> Dict:
     """
     Shared pipeline used by both process_frame and process_frame_numpy.
     detection_filters: if provided, only these violation classes are evaluated.
@@ -689,13 +707,13 @@ def _run_pipeline(frame: np.ndarray, role: str,
     }
 
     if _use_simulation or active_model is None:
-        raw = _simulate(frame, role, detection_filters=detection_filters)
+        raw = _simulate(frame, role, detection_filters=detection_filters, frame_index=frame_index)
     else:
         try:
             raw = _run_inference_with(frame, active_model, active_is_ppe)
         except Exception as e:
             log.error(f"Inference error (role={role}): {e}")
-            raw = _simulate(frame, role, detection_filters=detection_filters)
+            raw = _simulate(frame, role, detection_filters=detection_filters, frame_index=frame_index)
 
     # Strictly filter raw detections to only keep selected classes
     before_filter = [d['label'] for d in raw]
@@ -729,6 +747,16 @@ def _run_pipeline(frame: np.ndarray, role: str,
 
     enriched = _associate_to_persons(persons, ppe_dets, role,
                                      detection_filters=detection_filters)
+
+    # ── Traffic Police: remap 'Hardhat' → 'Helmet' in all human-readable labels ──
+    if role == "Traffic Police":
+        for p in enriched:
+            p["violation_labels"] = [
+                TRAFFIC_POLICE_LABEL_REMAP.get(vl, vl) for vl in p.get("violation_labels", [])
+            ]
+            p["ppe_found"] = [
+                TRAFFIC_POLICE_LABEL_REMAP.get(pf, pf) for pf in p.get("ppe_found", [])
+            ]
 
     is_compliant, missing, alert_msg, severity = _compliance_summary(enriched, role)
 
@@ -791,9 +819,10 @@ def _run_pipeline(frame: np.ndarray, role: str,
         "phone_status":     phone_status,
         "phone_detected":   phone_result.get("phone_detected", False),
         "model_mode": (
-            "Traffic:yolov8m" if (role == "Traffic Police" and _helmet_model is not None)
-            else ("ppe.pt" if _model_is_ppe else ("simulation" if _use_simulation else settings.YOLO_MODEL))
+            "ppe.pt" if _model_is_ppe
+            else ("simulation" if _use_simulation else settings.YOLO_MODEL)
         ),
+        "phone_severity": phone_result.get("phone_severity", "low"),
     }
 
 
@@ -817,12 +846,14 @@ def process_frame(b64_frame: str, role: str,
 
 def process_frame_numpy(frame: np.ndarray, role: str,
                          detection_filters: Optional[List[str]] = None,
-                         no_phone_zone: bool = False) -> Dict:
+                         no_phone_zone: bool = False,
+                         frame_index: int = -1) -> Dict:
     """
     Full violation pipeline from a numpy frame directly.
     Called by the video upload router (avoids double encode/decode).
+    frame_index: passed through to _simulate for deterministic results in video.
     """
     if frame is None:
         return {"error": "Invalid frame"}
     return _run_pipeline(frame, role, detection_filters=detection_filters,
-                         no_phone_zone=no_phone_zone)
+                         no_phone_zone=no_phone_zone, frame_index=frame_index)

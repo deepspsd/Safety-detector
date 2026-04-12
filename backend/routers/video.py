@@ -40,6 +40,7 @@ def process_video_job(job_id: str, video_path: str, role: str, user_id: int):
     frame_num = 0
     processed = 0
     total_violations = 0
+    ppe_summary: dict = {}   # {ppe_item_label: count_of_frames_violated}
 
     from database import SessionLocal
     db = SessionLocal()
@@ -65,21 +66,31 @@ def process_video_job(job_id: str, video_path: str, role: str, user_id: int):
                 b64 = yolo_service.encode_frame(frame)
                 result = face_service.process_face_frame(b64, user_id, db)
             else:
-                result = yolo_service.process_frame_numpy(frame, role)
+                result = yolo_service.process_frame_numpy(
+                    frame, role, frame_index=frame_num
+                )
 
             if not result.get("is_compliant") and result.get("alert_message"):
                 ts_sec = round(frame_num / fps, 1)
                 n_violations = result.get("violations_count", 0)
                 total_violations += n_violations
 
+                # Track per-PPE-item violation counts for the summary section
+                for item in result.get("missing_items", []):
+                    ppe_summary[item] = ppe_summary.get(item, 0) + 1
+
                 alert_info = {
-                    "timestamp_sec": ts_sec,
-                    "message": result["alert_message"],
-                    "severity": result["severity"],
-                    "missing_items": result.get("missing_items", []),
+                    "timestamp_sec":  ts_sec,
+                    "message":        result["alert_message"],
+                    "severity":       result["severity"],
+                    "missing_items":  result.get("missing_items", []),
                     "violations_count": n_violations,
-                    "persons_count": result.get("persons_count", 0),
+                    "persons_count":  result.get("persons_count", 0),
                 }
+                # Attach thumbnail for first 10 alerts only (keeps memory usage low)
+                if len(alerts_found) < 10 and result.get("annotated_frame"):
+                    alert_info["thumbnail_b64"] = result["annotated_frame"]
+
                 alerts_found.append(alert_info)
 
                 # Save to DB (cap at 20 distinct alerts)
@@ -96,12 +107,16 @@ def process_video_job(job_id: str, video_path: str, role: str, user_id: int):
                     )
 
         _job_status[job_id] = {
-            "status": "complete",
-            "progress": 100,
+            "status":          "complete",
+            "progress":        100,
             "frames_processed": processed,
-            "total_alerts": len(alerts_found),
+            "total_alerts":    len(alerts_found),
             "total_violations": total_violations,
-            "alerts": alerts_found[:50],
+            "alerts":          alerts_found[:50],
+            # Per-PPE-item breakdown (sorted by most-violated first)
+            "ppe_summary":     dict(
+                sorted(ppe_summary.items(), key=lambda x: x[1], reverse=True)
+            ),
         }
 
     except Exception as e:

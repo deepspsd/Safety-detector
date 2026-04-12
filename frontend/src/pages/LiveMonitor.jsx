@@ -25,7 +25,7 @@ const FRAME_INTERVAL = 80 // ms → ~12.5 fps
 // Role rule descriptions for the info panel
 const ROLE_PPE_RULES = {
   'Doctor':              ['😷 Mask required', '🧤 Gloves required'],
-  'Traffic Police':      ['⛑️ Hardhat required'],
+  'Traffic Police':      ['⛑️ Helmet required'],
   'Construction Worker': ['⛑️ Hardhat required', '🦺 Safety Vest required', '😷 Mask required', '🧤 Gloves required', '🥽 Goggles required', '👟 Safety Shoes required'],
   'College':             ['🪪 ID Card required', 'Uniform required'],
   'Home':                ['🔍 Face recognition — unknown persons trigger alert'],
@@ -782,45 +782,155 @@ function RoleRules({ role }) {
 }
 
 function VideoJobPanel({ status }) {
+  const SEV_COLORS = {
+    critical: { bg: 'rgba(220,38,38,0.15)',  color: '#f87171', border: 'rgba(220,38,38,0.3)' },
+    high:     { bg: 'rgba(234,88,12,0.12)',  color: '#fb923c', border: 'rgba(234,88,12,0.3)' },
+    medium:   { bg: 'rgba(234,179,8,0.12)', color: '#fbbf24', border: 'rgba(234,179,8,0.3)' },
+    low:      { bg: 'rgba(16,185,129,0.10)', color: '#34d399', border: 'rgba(16,185,129,0.3)' },
+  }
+
+  const isComplete   = status.status === 'complete'
+  const isProcessing = status.status === 'processing'
+  const isError      = status.status === 'error'
+  const ppeSummary   = status.ppe_summary || {}
+  const ppeSummaryEntries = Object.entries(ppeSummary)
+  const maxViolCount = ppeSummaryEntries.length ? Math.max(...ppeSummaryEntries.map(([,v]) => v)) : 1
+
   return (
     <div className="card card-p" style={{ marginTop: 14, padding: 16 }}>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10 }}>
-        {status.status === 'processing' && <span className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} />}
-        {status.status === 'complete'   && <CheckCircle size={16} color="var(--accent-green)" />}
-        <strong style={{ fontSize: '0.85rem' }}>
-          {status.status === 'processing'
-            ? `Scanning violations… ${status.progress}%`
-            : status.status === 'complete'
-            ? `Done — ${status.total_alerts} alerts, ${status.total_violations ?? 0} violations`
-            : 'Error during processing'}
+
+      {/* Header */}
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 12 }}>
+        {isProcessing && <span className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} />}
+        {isComplete   && <CheckCircle size={16} color="var(--accent-green)" />}
+        {isError      && <AlertTriangle size={16} color="var(--accent-red)" />}
+        <strong style={{ fontSize: '0.88rem' }}>
+          {isProcessing
+            ? `Scanning for violations… ${status.progress}%`
+            : isComplete
+            ? `✅ Done — ${status.total_alerts} alert${status.total_alerts !== 1 ? 's' : ''} · ${status.total_violations ?? 0} violations`
+            : '❌ Processing error'}
         </strong>
       </div>
 
-      {status.status === 'processing' && (
-        <div className="progress-bar" style={{ marginBottom: 10 }}>
+      {/* Progress bar */}
+      {isProcessing && (
+        <div className="progress-bar" style={{ marginBottom: 14 }}>
           <div className="progress-fill" style={{ width: `${status.progress}%`, background: 'var(--accent-cyan)' }} />
         </div>
       )}
 
-      {status.alerts?.slice(0, 6).map((a, i) => (
-        <div key={i} style={{
-          fontSize: '0.78rem', padding: '6px 0',
-          borderTop: '1px solid var(--border)',
-          color: 'var(--text-secondary)', marginTop: 4,
-          display: 'flex', justifyContent: 'space-between', gap: 8
-        }}>
-          <span style={{ color: 'var(--accent-orange)' }}>@{a.timestamp_sec}s</span>
-          <span style={{ flex: 1 }}>{a.message}</span>
-          {a.violations_count > 0 && (
-            <span style={{
-              background: 'rgba(220,38,38,0.15)', color: '#f87171',
-              padding: '1px 7px', borderRadius: 99, fontSize: '0.70rem', fontWeight: 600, flexShrink: 0
+      {/* Stats row */}
+      {isComplete && (
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
+          {[
+            { label: 'Frames scanned',   val: status.frames_processed ?? 0 },
+            { label: 'Alerts found',     val: status.total_alerts ?? 0 },
+            { label: 'Total violations', val: status.total_violations ?? 0 },
+          ].map(({ label, val }) => (
+            <div key={label} style={{
+              flex: 1, minWidth: 90, textAlign: 'center',
+              padding: '8px 10px', borderRadius: 8,
+              background: 'var(--bg-secondary)', border: '1px solid var(--border)',
             }}>
-              {a.violations_count} violating
-            </span>
+              <div style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--text-primary)' }}>{val}</div>
+              <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: 2 }}>{label}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* PPE Miss Summary */}
+      {isComplete && ppeSummaryEntries.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)',
+            letterSpacing: '0.05em', marginBottom: 8 }}>MOST-MISSED PPE ITEMS</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {ppeSummaryEntries.map(([item, count]) => (
+              <div key={item} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)',
+                  minWidth: 110, flexShrink: 0 }}>{item}</span>
+                <div style={{ flex: 1, height: 6, borderRadius: 3,
+                  background: 'var(--bg-secondary)', overflow: 'hidden' }}>
+                  <div style={{
+                    height: '100%', borderRadius: 3,
+                    width: `${Math.round((count / maxViolCount) * 100)}%`,
+                    background: 'var(--accent-red)', transition: 'width 0.4s',
+                  }} />
+                </div>
+                <span style={{ fontSize: '0.72rem', fontWeight: 700,
+                  color: 'var(--accent-red)', minWidth: 28, textAlign: 'right' }}>{count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Alert Timeline */}
+      {status.alerts?.length > 0 && (
+        <div>
+          <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)',
+            letterSpacing: '0.05em', marginBottom: 8 }}>VIOLATION TIMELINE</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6,
+            maxHeight: 320, overflowY: 'auto', paddingRight: 4 }}>
+            {status.alerts.map((a, i) => {
+              const sev = SEV_COLORS[a.severity] || SEV_COLORS.medium
+              return (
+                <div key={i} style={{
+                  display: 'flex', gap: 10, alignItems: 'flex-start',
+                  padding: '8px 10px', borderRadius: 8,
+                  background: sev.bg, border: `1px solid ${sev.border}`,
+                }}>
+                  {a.thumbnail_b64 && (
+                    <img src={a.thumbnail_b64} alt="violation frame"
+                      style={{ width: 52, height: 36, objectFit: 'cover',
+                        borderRadius: 4, flexShrink: 0, border: `1px solid ${sev.border}` }} />
+                  )}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between',
+                      alignItems: 'center', gap: 6, marginBottom: a.missing_items?.length ? 4 : 0 }}>
+                      <span style={{ fontSize: '0.78rem', fontWeight: 700, color: sev.color }}
+                        >@{a.timestamp_sec}s</span>
+                      {a.violations_count > 0 && (
+                        <span style={{ fontSize: '0.68rem', fontWeight: 700, color: sev.color,
+                          padding: '1px 7px', borderRadius: 99, border: `1px solid ${sev.border}`,
+                          background: sev.bg, flexShrink: 0 }}>
+                          {a.violations_count}/{a.persons_count} person{a.persons_count !== 1 ? 's' : ''}
+                        </span>
+                      )}
+                    </div>
+                    {a.missing_items?.length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                        {a.missing_items.map((m, j) => (
+                          <span key={j} style={{
+                            fontSize: '0.68rem', padding: '1px 7px', borderRadius: 99,
+                            background: 'rgba(0,0,0,0.25)', color: sev.color, fontWeight: 600,
+                          }}>⚠ {m}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+          {isComplete && (
+            <div style={{ fontSize: '0.70rem', color: 'var(--text-muted)',
+              textAlign: 'center', marginTop: 8 }}>
+              Showing {status.alerts.length} of {status.total_alerts} alerts
+            </div>
           )}
         </div>
-      ))}
+      )}
+
+      {isError && (
+        <div style={{ fontSize: '0.82rem', color: 'var(--accent-red)',
+          padding: '8px 12px', borderRadius: 8,
+          background: 'rgba(220,38,38,0.1)', border: '1px solid rgba(220,38,38,0.3)' }}>
+          Processing error — try uploading the video again
+        </div>
+      )}
     </div>
   )
 }
+
