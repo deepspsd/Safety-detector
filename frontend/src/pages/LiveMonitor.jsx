@@ -714,7 +714,7 @@ export default function LiveMonitor() {
               </div>
               {modelMode === 'simulation' && (
                 <div style={{ fontSize: '0.72rem', color: 'var(--accent-orange)', marginTop: 6 }}>
-                  Download ppe.pt -> biswadeep-roy/Safety-Detection-YOLOv8
+                  Download ppe.pt - biswadeep-roy/Safety-Detection-YOLOv8
                 </div>
               )}
             </div>
@@ -945,7 +945,7 @@ function VideoJobPanel({ status }) {
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   border: '2px solid rgba(255,255,255,0.4)',
                 }}>
-                  <span style={{ fontSize: 22, marginLeft: 4, color: '#fff' }}>></span>
+                  <span style={{ fontSize: 22, marginLeft: 4, color: '#fff' }}>&#9654;</span>
                 </div>
               </div>
             )}
@@ -1174,7 +1174,7 @@ function VideoJobPanel({ status }) {
                     </div>
                   </div>
                   {/* Seek arrow */}
-                  <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', flexShrink: 0, alignSelf: 'center' }}>></span>
+                  <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', flexShrink: 0, alignSelf: 'center' }}>&#9654;</span>
                 </div>
               )
             })}

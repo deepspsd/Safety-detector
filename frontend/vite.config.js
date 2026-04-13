@@ -34,12 +34,7 @@ export default defineConfig({
   build: {
     rollupOptions: {
       output: {
-        manualChunks: {
-          react:  ['react', 'react-dom'],
-          router: ['react-router-dom'],
-          charts: ['recharts'],
-          icons:  ['lucide-react'],
-        },
+        // Removed manualChunks to fix Vite 8 build error
       },
     },
   },
