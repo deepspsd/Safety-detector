@@ -680,7 +680,8 @@ export default function LiveMonitor() {
               <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
                 No custom PPE items selected. Go to{' '}
                 <a href="/settings" style={{ color: 'var(--accent-green)' }}>
-                  Settings -> Safety Rules
+                  Settings / Safety Rules
+
                 </a>{' '}
                 to configure.
               </div>
