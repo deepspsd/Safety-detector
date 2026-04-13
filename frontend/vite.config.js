@@ -23,7 +23,12 @@ export default defineConfig({
         target: 'ws://localhost:8000',
         ws: true,
       },
+      '/uploads': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
     },
+
   },
 
   build: {

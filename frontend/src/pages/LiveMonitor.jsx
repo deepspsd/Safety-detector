@@ -477,7 +477,7 @@ export default function LiveMonitor() {
 
       <div className="grid-2" style={{ alignItems: 'start' }}>
 
-        {/* â”€â”€ Left: Video feed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+        {/* -- Left: Video feed -------------------------------- */}
         <div>
           <div className="video-container" style={{ minHeight: 300 }}>
             <video ref={videoRef} style={{ display: 'none' }} muted />
@@ -556,7 +556,7 @@ export default function LiveMonitor() {
               {uploadProgress > 0 && uploadProgress < 100 && (
                 <div style={{ marginTop: 12 }}>
                   <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: 6 }}>
-                    Uploadingâ€¦ {uploadProgress}%
+                    Uploading... {uploadProgress}%
                   </div>
                   <div className="progress-bar">
                     <div className="progress-fill" style={{ width: `${uploadProgress}%`, background: 'var(--accent-blue)' }} />
@@ -583,7 +583,7 @@ export default function LiveMonitor() {
           )}
         </div>
 
-        {/* â”€â”€ Right: Detection info panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+        {/* -- Right: Detection info panel --------------------- */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
           {/* Status card */}
@@ -680,7 +680,7 @@ export default function LiveMonitor() {
               <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
                 No custom PPE items selected. Go to{' '}
                 <a href="/settings" style={{ color: 'var(--accent-green)' }}>
-                  Settings â†’ Safety Rules
+                  Settings -> Safety Rules
                 </a>{' '}
                 to configure.
               </div>
@@ -713,7 +713,7 @@ export default function LiveMonitor() {
               </div>
               {modelMode === 'simulation' && (
                 <div style={{ fontSize: '0.72rem', color: 'var(--accent-orange)', marginTop: 6 }}>
-                  Download ppe.pt â†’ biswadeep-roy/Safety-Detection-YOLOv8
+                  Download ppe.pt -> biswadeep-roy/Safety-Detection-YOLOv8
                 </div>
               )}
             </div>
@@ -724,7 +724,7 @@ export default function LiveMonitor() {
   )
 }
 
-// â”€â”€ Sub-components â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Sub-components -----------------------------------------------
 
 function PersonCard({ person, index }) {
   const isViolator = !person.is_compliant
@@ -861,7 +861,7 @@ function VideoJobPanel({ status }) {
     playing ? vid.pause() : vid.play()
   }
 
-  // â”€â”€ Custom timeline click â†’ seek â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // -- Custom timeline click -> seek ------------------------------
   const handleTimelineClick = (e) => {
     const rect = e.currentTarget.getBoundingClientRect()
     const ratio = (e.clientX - rect.left) / rect.width
@@ -874,7 +874,7 @@ function VideoJobPanel({ status }) {
   return (
     <div style={{ marginTop: 14 }}>
 
-      {/* â”€â”€ Header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* -- Header ----------------------------------- */}
       <div className="card card-p" style={{ padding: 16, marginBottom: 12 }}>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 12 }}>
           {isProcessing && <span className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} />}
@@ -918,7 +918,7 @@ function VideoJobPanel({ status }) {
         )}
       </div>
 
-      {/* â”€â”€ Annotated Video Player â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* -- Annotated Video Player -------------------- */}
       {isComplete && videoUrl && (
         <div className="card card-p" style={{ padding: 0, overflow: 'hidden', marginBottom: 12 }}>
 
@@ -944,7 +944,7 @@ function VideoJobPanel({ status }) {
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   border: '2px solid rgba(255,255,255,0.4)',
                 }}>
-                  <span style={{ fontSize: 22, marginLeft: 4, color: '#fff' }}>â–¶</span>
+                  <span style={{ fontSize: 22, marginLeft: 4, color: '#fff' }}>></span>
                 </div>
               </div>
             )}
@@ -962,7 +962,7 @@ function VideoJobPanel({ status }) {
             )}
           </div>
 
-          {/* â”€â”€ Custom Timeline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+          {/* -- Custom Timeline ------------------------ */}
           <div style={{ padding: '12px 16px 4px', background: 'var(--bg-card)' }}>
 
             {/* Time scrubber with violation markers */}
@@ -1095,7 +1095,7 @@ function VideoJobPanel({ status }) {
         </div>
       )}
 
-      {/* â”€â”€ PPE Miss Summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* -- PPE Miss Summary ------------------------- */}
       {isComplete && ppeSummaryEntries.length > 0 && (
         <div className="card card-p" style={{ padding: 16, marginBottom: 12 }}>
           <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)',
@@ -1118,7 +1118,7 @@ function VideoJobPanel({ status }) {
         </div>
       )}
 
-      {/* â”€â”€ Violation Timeline List â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* -- Violation Timeline List ------------------- */}
       {vts.length > 0 && (
         <div className="card card-p" style={{ padding: 16 }}>
           <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)',
@@ -1173,7 +1173,7 @@ function VideoJobPanel({ status }) {
                     </div>
                   </div>
                   {/* Seek arrow */}
-                  <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', flexShrink: 0, alignSelf: 'center' }}>â–¶</span>
+                  <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', flexShrink: 0, alignSelf: 'center' }}>></span>
                 </div>
               )
             })}
