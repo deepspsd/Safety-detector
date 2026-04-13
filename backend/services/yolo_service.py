@@ -237,59 +237,71 @@ def load_model():
             return
 
     # ── 2. Load dedicated helmet model for Traffic Police ─────────
-    # Model: keremberke/yolov8m-hard-hat-detection
-    # Classes: 0=helmet (wearing), 1=head (not wearing) — purpose-built accuracy
-    # Download URL: https://huggingface.co/keremberke/yolov8m-hard-hat-detection/resolve/main/best.pt
-    # Falls back to strict ppe.pt logic if download unavailable.
-    global _helmet_model, _helmet_model_dedicated
-    _helmet_model_dedicated = False
-    log.info("Loading dedicated helmet model for Traffic Police…")
-    import os, urllib.request
-    _hm_orig = None
-    try:
-        from ultralytics import YOLO as _YOLO_hm
-        import torch
-        _hm_orig = torch.load
-        def _hm_patch(*a, **kw): kw.setdefault("weights_only", False); return _hm_orig(*a, **kw)
-        torch.load = _hm_patch
+    # Runs in a background thread to NEVER block server startup.
+    # The file helmet_model.pt must be >10 MB to be considered valid.
+    # (A 2-3 MB file = corrupt/partial download → delete and re-download.)
+    import os, threading
+    HELMET_MIN_BYTES = 10 * 1024 * 1024  # 10 MB
 
-        if os.path.exists(_HELMET_MODEL_PATH):
-            # Already downloaded on a previous run — just load it
-            _helmet_model = _YOLO_hm(_HELMET_MODEL_PATH)
-            _helmet_model_dedicated = True
-            print(f"✅ Dedicated helmet model loaded from cache: {_HELMET_MODEL_PATH}")
-            log.info(f"✅ Helmet model loaded from cache ({_HELMET_MODEL_PATH})")
-        else:
-            # Try to download from HuggingFace (no extra package needed)
-            print("⏬ Downloading dedicated helmet model (keremberke/yolov8m-hard-hat-detection)…")
-            print(f"   URL: {_HELMET_MODEL_URL}")
-            print("   This is a one-time ~52 MB download. Please wait…")
-            urllib.request.urlretrieve(_HELMET_MODEL_URL, _HELMET_MODEL_PATH)
-            _helmet_model = _YOLO_hm(_HELMET_MODEL_PATH)
-            _helmet_model_dedicated = True
-            log.info("✅ Dedicated helmet model downloaded and loaded.")
-            print("✅ Dedicated helmet model ready — keremberke/yolov8m-hard-hat-detection")
-    except Exception as _hme:
-        # Restore torch.load if patched
+    def _load_helmet_bg():
+        """Background thread: download + load dedicated helmet model."""
+        global _helmet_model, _helmet_model_dedicated
+        import urllib.request
+        _hm_orig2 = None
         try:
-            if _hm_orig: torch.load = _hm_orig
-        except Exception:
-            pass
-        # Clean up incomplete download
-        try:
-            if os.path.exists(_HELMET_MODEL_PATH) and not _helmet_model_dedicated:
-                os.remove(_HELMET_MODEL_PATH)
-        except Exception:
-            pass
-        _helmet_model = None
-        log.warning(f"Dedicated helmet model unavailable ({_hme}) — ppe.pt strict logic will be used")
-        print(f"⚠️  Helmet model download failed ({type(_hme).__name__}: {_hme})")
-        print("   Traffic Police will use ppe.pt with strict helmet logic instead.")
-    finally:
-        try:
-            if _hm_orig: torch.load = _hm_orig
-        except Exception:
-            pass
+            from ultralytics import YOLO as _YOLO_hm
+            import torch
+            _hm_orig2 = torch.load
+            def _hm_patch2(*a, **kw): kw.setdefault("weights_only", False); return _hm_orig2(*a, **kw)
+            torch.load = _hm_patch2
+
+            # Validate existing file — reject partial downloads
+            if os.path.exists(_HELMET_MODEL_PATH):
+                sz = os.path.getsize(_HELMET_MODEL_PATH)
+                if sz < HELMET_MIN_BYTES:
+                    print(f"⚠️  Removing corrupt helmet_model.pt ({sz//1024} KB < 10 MB)")
+                    os.remove(_HELMET_MODEL_PATH)
+
+            if os.path.exists(_HELMET_MODEL_PATH):
+                # Valid cached model — just load it
+                _helmet_model = _YOLO_hm(_HELMET_MODEL_PATH)
+                _helmet_model_dedicated = True
+                print(f"✅ Dedicated helmet model loaded from cache: {_HELMET_MODEL_PATH}")
+            else:
+                # Download from HuggingFace (one-time, ~52 MB)
+                print("⏬ [background] Downloading dedicated helmet model…")
+                print(f"   URL: {_HELMET_MODEL_URL}")
+                urllib.request.urlretrieve(_HELMET_MODEL_URL, _HELMET_MODEL_PATH)
+                if os.path.getsize(_HELMET_MODEL_PATH) < HELMET_MIN_BYTES:
+                    raise ValueError("Downloaded file is too small — likely a network error")
+                _helmet_model = _YOLO_hm(_HELMET_MODEL_PATH)
+                _helmet_model_dedicated = True
+                print("✅ Dedicated helmet model ready — keremberke/yolov8m-hard-hat-detection")
+        except Exception as _hme:
+            try:
+                if _hm_orig2: torch.load = _hm_orig2
+            except Exception:
+                pass
+            # Clean up partial download
+            try:
+                if os.path.exists(_HELMET_MODEL_PATH) and not _helmet_model_dedicated:
+                    os.remove(_HELMET_MODEL_PATH)
+            except Exception:
+                pass
+            _helmet_model = None
+            _helmet_model_dedicated = False
+            print(f"⚠️  Helmet model unavailable ({type(_hme).__name__}). Strict ppe.pt logic will be used.")
+        finally:
+            try:
+                if _hm_orig2: torch.load = _hm_orig2
+            except Exception:
+                pass
+
+    # Start the download thread — server startup continues immediately
+    _ht = threading.Thread(target=_load_helmet_bg, daemon=True)
+    _ht.start()
+    print("ℹ️  Helmet model loading in background (does not block startup)…")
+
 
     # ── 3. Load dedicated phone detection model ────────────────────
     # Priority cascade: yolov8x.pt (best, ~137 MB, auto-downloads)
@@ -1072,3 +1084,4 @@ def process_frame_numpy(frame: np.ndarray, role: str,
         return {"error": "Invalid frame"}
     return _run_pipeline(frame, role, detection_filters=detection_filters,
                          no_phone_zone=no_phone_zone, frame_index=frame_index)
+ 
