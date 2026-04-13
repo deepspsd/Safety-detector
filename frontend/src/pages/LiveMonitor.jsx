@@ -647,7 +647,7 @@ export default function LiveMonitor() {
           <div className="card card-p">
             <h3 style={{ fontSize: '0.95rem', marginBottom: 12 }}>
               <HardHat size={15} style={{ marginRight: 6, verticalAlign: 'middle' }} />
-              Role Rules â€” {user?.role || 'Not set'}
+              Role Rules - {user?.role || 'Not set'}
             </h3>
             {user?.role === 'None' && activeFilters.length > 0 ? (
               <div>
