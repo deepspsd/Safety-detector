@@ -152,11 +152,22 @@ COLOR_PERSON    = (200, 160,  60)  # Amber
 # ─────────────────────────────────────────────────────────────────
 # Model state  (loaded once at startup)
 # ─────────────────────────────────────────────────────────────────
-_model         = None   # general PPE model (ppe.pt)
-_helmet_model  = None   # specialized helmet model for Traffic Police role
-_phone_model   = None   # dedicated phone detection model (yolov8l.pt, COCO class 67)
-_use_simulation = False
-_model_is_ppe   = False  # True when ppe.pt loaded (vs generic COCO)
+_model                  = None   # general PPE model (ppe.pt)
+_helmet_model           = None   # dedicated helmet model (keremberke / fallback)
+_helmet_model_dedicated = False  # True when keremberke model (helmet/head classes)
+_phone_model            = None   # dedicated phone detection model (COCO class 67)
+_use_simulation         = False
+_model_is_ppe           = False  # True when ppe.pt loaded (vs generic COCO)
+
+# ── Keremberke hard-hat-detection model constants ─────────────────
+# https://huggingface.co/keremberke/yolov8m-hard-hat-detection
+_HELMET_MODEL_URL  = (
+    "https://huggingface.co/keremberke/yolov8m-hard-hat-detection/resolve/main/best.pt"
+)
+_HELMET_MODEL_PATH = "helmet_model.pt"      # local cache path
+# Classes in keremberke model — used by _run_traffic_police_helmet_pipeline
+_HELMET_COMPLIANT_NAMES = {'helmet', 'hard hat', 'hardhat', 'with helmet'}
+_HELMET_VIOLATION_NAMES = {'head', 'no helmet', 'no_helmet', 'without helmet'}
 
 
 def _get_model_for_role(role: str):
@@ -225,31 +236,66 @@ def load_model():
             print("ℹ️  Running in SIMULATION mode. Place ppe.pt in backend/")
             return
 
-    # ── 2. Load specialized helmet model for Traffic Police ─────
-    log.info("Loading Traffic Police helmet model…")
+    # ── 2. Load dedicated helmet model for Traffic Police ─────────
+    # Model: keremberke/yolov8m-hard-hat-detection
+    # Classes: 0=helmet (wearing), 1=head (not wearing) — purpose-built accuracy
+    # Download URL: https://huggingface.co/keremberke/yolov8m-hard-hat-detection/resolve/main/best.pt
+    # Falls back to strict ppe.pt logic if download unavailable.
+    global _helmet_model, _helmet_model_dedicated
+    _helmet_model_dedicated = False
+    log.info("Loading dedicated helmet model for Traffic Police…")
+    import os, urllib.request
+    _hm_orig = None
     try:
-        from ultralytics import YOLO
+        from ultralytics import YOLO as _YOLO_hm
         import torch
-        _orig2 = torch.load
-        def _p2(*a, **kw): kw.setdefault("weights_only", False); return _orig2(*a, **kw)
-        torch.load = _p2
-        _helmet_model = YOLO("yolov8m.pt")
-        torch.load = _orig2
-        log.info("✅ Helmet model loaded: yolov8m.pt (Traffic Police role)")
-        print("✅ Helmet model loaded for Traffic Police role (yolov8m.pt)")
-    except Exception as e:
-        try: torch.load = _orig2
-        except Exception: pass
-        log.warning(f"Helmet model unavailable: {e} — Traffic will use ppe.pt")
+        _hm_orig = torch.load
+        def _hm_patch(*a, **kw): kw.setdefault("weights_only", False); return _hm_orig(*a, **kw)
+        torch.load = _hm_patch
+
+        if os.path.exists(_HELMET_MODEL_PATH):
+            # Already downloaded on a previous run — just load it
+            _helmet_model = _YOLO_hm(_HELMET_MODEL_PATH)
+            _helmet_model_dedicated = True
+            print(f"✅ Dedicated helmet model loaded from cache: {_HELMET_MODEL_PATH}")
+            log.info(f"✅ Helmet model loaded from cache ({_HELMET_MODEL_PATH})")
+        else:
+            # Try to download from HuggingFace (no extra package needed)
+            print("⏬ Downloading dedicated helmet model (keremberke/yolov8m-hard-hat-detection)…")
+            print(f"   URL: {_HELMET_MODEL_URL}")
+            print("   This is a one-time ~52 MB download. Please wait…")
+            urllib.request.urlretrieve(_HELMET_MODEL_URL, _HELMET_MODEL_PATH)
+            _helmet_model = _YOLO_hm(_HELMET_MODEL_PATH)
+            _helmet_model_dedicated = True
+            log.info("✅ Dedicated helmet model downloaded and loaded.")
+            print("✅ Dedicated helmet model ready — keremberke/yolov8m-hard-hat-detection")
+    except Exception as _hme:
+        # Restore torch.load if patched
+        try:
+            if _hm_orig: torch.load = _hm_orig
+        except Exception:
+            pass
+        # Clean up incomplete download
+        try:
+            if os.path.exists(_HELMET_MODEL_PATH) and not _helmet_model_dedicated:
+                os.remove(_HELMET_MODEL_PATH)
+        except Exception:
+            pass
         _helmet_model = None
-        print("⚠️  Helmet model unavailable — Traffic Police will use ppe.pt")
+        log.warning(f"Dedicated helmet model unavailable ({_hme}) — ppe.pt strict logic will be used")
+        print(f"⚠️  Helmet model download failed ({type(_hme).__name__}: {_hme})")
+        print("   Traffic Police will use ppe.pt with strict helmet logic instead.")
+    finally:
+        try:
+            if _hm_orig: torch.load = _hm_orig
+        except Exception:
+            pass
 
     # ── 3. Load dedicated phone detection model ────────────────────
     # Priority cascade: yolov8x.pt (best, ~137 MB, auto-downloads)
     #                 → yolov8l.pt (~87 MB, auto-downloads)
     #                 → yolov8m.pt (52 MB, already on disk — guaranteed fallback)
     # All are COCO models with class 67 = cell phone.
-    # yolov8x (extra-large) achieves the highest detection accuracy.
     log.info("Loading dedicated phone detection model…")
     _phone_candidates = ["yolov8x.pt", "yolov8l.pt", "yolov8m.pt"]
     _phone_loaded     = False
@@ -271,8 +317,8 @@ def load_model():
             except Exception: pass
             log.warning(f"{_cand} unavailable ({type(e).__name__}) — trying next…")
     if not _phone_loaded:
-        _phone_model = _helmet_model   # last resort: reuse yolov8m already loaded
-        print("⚠️  Phone model using yolov8m.pt as final fallback")
+        _phone_model = _helmet_model if not _helmet_model_dedicated else None
+        print("⚠️  Phone model unavailable — falling back to simulation for phone detection")
 
 
 
@@ -640,7 +686,13 @@ def _draw_results(
         else:
             color = COLOR_COMPLIANT
             cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
-            ok_txt = f"\u2713 Compliant {person['confidence']:.0%}"
+            # Role-specific compliant label
+            if role == "Traffic Police":
+                ok_txt = f"\u2713 Helmet OK {person['confidence']:.0%}"
+            elif person.get('ppe_found'):
+                ok_txt = f"\u2713 {person['ppe_found'][0]} OK {person['confidence']:.0%}"
+            else:
+                ok_txt = f"\u2713 Compliant {person['confidence']:.0%}"
             cv2.putText(annotated, ok_txt, (x1 + 4, y1 - 6),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.50, color, 1, cv2.LINE_AA)
 
@@ -682,8 +734,111 @@ def _compliance_summary(
     return False, all_missing, msg, rules["severity"]
 
 
+# Traffic Police dedicated helmet pipelines
 # ─────────────────────────────────────────────────────────────────
-# Core pipeline helpers
+
+def _run_traffic_police_dedicated(frame: np.ndarray) -> Optional[List[Dict]]:
+    """
+    Run the keremberke/yolov8m-hard-hat-detection model.
+    Each detection IS a person — the model outputs:
+      'helmet' / 'hard hat' → person wearing helmet  → GREEN (compliant)
+      'head'  / 'no helmet' → person without helmet  → RED  (violation)
+    Returns None on error (caller will fall back to strict-ppe).
+    """
+    if _helmet_model is None:
+        return None
+    try:
+        results = _helmet_model(
+            frame, conf=0.28, iou=0.45, verbose=False
+        )
+    except Exception as e:
+        log.error(f"[TrafficPolice] Helmet model inference error: {e}")
+        return None
+
+    enriched: List[Dict] = []
+    for r in results:
+        for box in r.boxes:
+            cls_name = _helmet_model.names.get(int(box.cls[0]), "").lower()
+            conf = round(float(box.conf[0]), 3)
+            x1, y1, x2, y2 = [int(v) for v in box.xyxy[0]]
+
+            is_helmet = cls_name in _HELMET_COMPLIANT_NAMES
+            enriched.append({
+                "bbox":                [x1, y1, x2, y2],
+                "confidence":          conf,
+                "ppe_found":           ["Helmet"] if is_helmet else [],
+                "ppe_missing":         [] if is_helmet else ["NO-Hardhat"],
+                "assigned_violations": [] if is_helmet else ["NO-Hardhat"],
+                "is_compliant":        is_helmet,
+                "violation_labels":    [] if is_helmet else ["No Helmet"],
+            })
+    return enriched
+
+
+def _run_traffic_police_strict_ppe(
+    frame: np.ndarray,
+    frame_index: int = -1,
+) -> List[Dict]:
+    """
+    Fallback when dedicated helmet model is not available.
+    Runs ppe.pt (or simulation) with STRICT logic:
+      - Person with 'Hardhat' detected → GREEN (compliant)
+      - Person with 'NO-Hardhat' detected OR no helmet detected at all → RED (violation)
+    This fixes the false-green bug where undetected helmets passed as compliant.
+    """
+    if _use_simulation or _model is None:
+        raw = _simulate(frame, "Traffic Police", frame_index=frame_index)
+    else:
+        try:
+            raw = _run_inference_with(frame, _model, _model_is_ppe)
+        except Exception as e:
+            log.error(f"[TrafficPolice strict] inference error: {e}")
+            raw = _simulate(frame, "Traffic Police", frame_index=frame_index)
+
+    persons  = [d for d in raw if d["det_type"] == "person"]
+    ppe_dets = [d for d in raw if d["det_type"] in ("violation", "compliant")]
+
+    # Fallback: create one synthetic person spanning all PPE detections if no Person class
+    if not persons and ppe_dets:
+        xs = [d["bbox"][0] for d in ppe_dets] + [d["bbox"][2] for d in ppe_dets]
+        ys = [d["bbox"][1] for d in ppe_dets] + [d["bbox"][3] for d in ppe_dets]
+        h, w = frame.shape[:2]
+        persons = [{
+            "label": "Person", "confidence": 0.82,
+            "bbox": [max(0, min(xs)-30), max(0, min(ys)-30),
+                     min(w-1, max(xs)+30), min(h-1, max(ys)+30)],
+            "det_type": "person",
+        }]
+
+    enriched: List[Dict] = []
+    for person in persons:
+        p_box = person["bbox"]
+        # Find all PPE items belonging to this person
+        assigned_c = [d["label"] for d in ppe_dets
+                      if d["det_type"] == "compliant" and _belongs_to_person(p_box, d["bbox"])]
+        assigned_v = [d["label"] for d in ppe_dets
+                      if d["det_type"] == "violation" and _belongs_to_person(p_box, d["bbox"])]
+
+        # STRICT: helmet OK only when ppe.pt EXPLICITLY detects 'Hardhat'
+        # If no helmet class detected at all (neither Hardhat nor NO-Hardhat), treat as violation
+        hardhat_ok  = "Hardhat" in assigned_c
+        no_hardhat  = "NO-Hardhat" in assigned_v or not hardhat_ok
+
+        is_compliant = hardhat_ok and not no_hardhat
+        enriched.append({
+            "bbox":                p_box,
+            "confidence":          person["confidence"],
+            "ppe_found":           ["Helmet"] if hardhat_ok else [],
+            "ppe_missing":         [] if is_compliant else ["NO-Hardhat"],
+            "assigned_violations": assigned_v,
+            "is_compliant":        is_compliant,
+            "violation_labels":    [] if is_compliant else ["No Helmet"],
+        })
+    return enriched
+
+
+# ─────────────────────────────────────────────────────────────────
+# Core pipeline
 # ─────────────────────────────────────────────────────────────────
 
 def _run_pipeline(frame: np.ndarray, role: str,
@@ -695,6 +850,73 @@ def _run_pipeline(frame: np.ndarray, role: str,
     detection_filters: if provided, only these violation classes are evaluated.
     no_phone_zone: if True, any phone detection triggers an alert.
     """
+    print(f"[PIPELINE] role={role} | sim={_use_simulation} | ded_helmet={_helmet_model_dedicated} | filters={detection_filters}")
+
+    # ── Traffic Police: use dedicated helmet pipeline ─────────────────
+    if role == "Traffic Police":
+        if _helmet_model_dedicated:
+            # Try the dedicated keremberke model first
+            enriched = _run_traffic_police_dedicated(frame)
+            if enriched is None:
+                # Model failed — fall back
+                enriched = _run_traffic_police_strict_ppe(frame, frame_index=frame_index)
+        else:
+            # Use ppe.pt with strict logic
+            enriched = _run_traffic_police_strict_ppe(frame, frame_index=frame_index)
+
+        is_compliant, missing, alert_msg, severity = _compliance_summary(enriched, "Traffic Police")
+        annotated = _draw_results(frame, enriched, [], "Traffic Police")
+        ann_b64   = encode_frame(annotated)
+        snap_b64  = encode_frame(annotated, quality=85) if not is_compliant else None
+        violations = [p for p in enriched if not p["is_compliant"]]
+        ui_detections = [
+            {"label": ("Helmet" if p["is_compliant"] else "No Helmet"),
+             "confidence": p["confidence"], "bbox": p["bbox"]}
+            for p in enriched
+        ]
+
+        # Phone detection still runs for Traffic Police
+        from services import phone_service as _phone_svc
+        phone_result = _phone_svc.detect_phone_usage(
+            frame=annotated,
+            no_phone_zone=no_phone_zone,
+            coco_model=_phone_model,
+            coco_fallback=None,  # helmet model not suitable for phone detection
+            use_simulation=_use_simulation,
+        )
+        annotated_with_phone = phone_result["annotated_frame"]
+        ann_b64  = encode_frame(annotated_with_phone)
+        snap_b64 = encode_frame(annotated_with_phone, quality=85) if (
+            not is_compliant or phone_result["phone_alert"]
+        ) else None
+        phone_alert  = phone_result.get("phone_alert")
+        phone_status = phone_result.get("phone_status", "safe")
+        phone_dets   = phone_result.get("phone_detections", [])
+        if phone_alert:
+            is_compliant = False
+            alert_msg = f"{alert_msg} | {phone_alert}" if alert_msg else phone_alert
+            if not severity or severity == "low":
+                severity = phone_result.get("phone_severity", "high")
+
+        return {
+            "persons":          enriched,
+            "violations":       violations,
+            "detections":       ui_detections + phone_dets,
+            "is_compliant":     is_compliant,
+            "missing_items":    missing,
+            "violations_count": len(violations),
+            "persons_count":    len(enriched),
+            "alert_message":    alert_msg if not is_compliant else None,
+            "severity":         severity if not is_compliant else None,
+            "annotated_frame":  ann_b64,
+            "snapshot_b64":     snap_b64,
+            "phone_status":     phone_status,
+            "phone_detected":   phone_result.get("phone_detected", False),
+            "model_mode":       "helmet:keremberke" if _helmet_model_dedicated else "helmet:ppe.pt(strict)",
+            "phone_severity":   phone_result.get("phone_severity", "low"),
+        }
+
+    # ── All other roles: general PPE pipeline ───────────────────────
     print(f"[PIPELINE] role={role} | sim={_use_simulation} | filters={detection_filters}")
     active_model, active_is_ppe = _get_model_for_role(role)
 
@@ -748,15 +970,8 @@ def _run_pipeline(frame: np.ndarray, role: str,
     enriched = _associate_to_persons(persons, ppe_dets, role,
                                      detection_filters=detection_filters)
 
-    # ── Traffic Police: remap 'Hardhat' → 'Helmet' in all human-readable labels ──
-    if role == "Traffic Police":
-        for p in enriched:
-            p["violation_labels"] = [
-                TRAFFIC_POLICE_LABEL_REMAP.get(vl, vl) for vl in p.get("violation_labels", [])
-            ]
-            p["ppe_found"] = [
-                TRAFFIC_POLICE_LABEL_REMAP.get(pf, pf) for pf in p.get("ppe_found", [])
-            ]
+    # ── Traffic Police: remap already done inside dedicated/strict pipeline ──
+    # (no remap needed here anymore)
 
     is_compliant, missing, alert_msg, severity = _compliance_summary(enriched, role)
 

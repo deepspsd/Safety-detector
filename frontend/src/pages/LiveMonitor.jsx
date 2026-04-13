@@ -697,13 +697,18 @@ export default function LiveMonitor() {
                 <span style={{
                   width: 8, height: 8, borderRadius: '50%',
                   background: modelMode === 'ppe.pt' ? 'var(--accent-green)' :
-                               modelMode === 'simulation' ? '#f59e0b' : 'var(--accent-blue)',
+                               modelMode === 'simulation' ? '#f59e0b' :
+                               modelMode?.startsWith('helmet:') ? '#818cf8' : 'var(--accent-blue)',
                   display: 'inline-block', flexShrink: 0
                 }} />
                 {modelMode === 'ppe.pt'
                   ? 'ppe.pt — Custom PPE model (10 classes)'
                   : modelMode === 'simulation'
                   ? 'Simulation mode — Place ppe.pt in backend/'
+                  : modelMode === 'helmet:keremberke'
+                  ? '⛑️ Dedicated Helmet Model (keremberke/yolov8m)'
+                  : modelMode === 'helmet:ppe.pt(strict)'
+                  ? '⛑️ Helmet via ppe.pt — strict logic (downloading…)'
                   : `${modelMode} — COCO fallback`}
               </div>
               {modelMode === 'simulation' && (
