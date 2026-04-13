@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
 import { videoApi } from '../api/api'
@@ -880,8 +880,13 @@ function VideoJobPanel({ status }) {
           {isProcessing && <span className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} />}
           {isComplete   && <CheckCircle size={16} color="var(--accent-green)" />}
           {isError      && <AlertTriangle size={16} color="var(--accent-red)" />}
-          <strong style={{ fontSize: '0.88rem'Analysis complete - ${status.total_alerts} alert${status.total_alerts !== 1 ? 's' : ''} · ${status.total_violations ?? 0} violations · ${videoDur}s`
+          <strong style={{ fontSize: '0.88rem' }}>
+            {isProcessing
+              ? `Scanning for violations... ${status.progress}%`
+              : isComplete
+              ? `Analysis complete - ${status.total_alerts} alert${status.total_alerts !== 1 ? 's' : ''} · ${status.total_violations ?? 0} violations · ${videoDur}s`
               : 'Processing error'}
+
           </strong>
         </div>
 
