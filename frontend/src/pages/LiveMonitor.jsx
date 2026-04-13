@@ -20,27 +20,27 @@ function getWsURL() {
   return `ws://${wsHost}:8000/ws/detect`
 }
 const WS_URL = getWsURL()
-const FRAME_INTERVAL = 80 // ms â†’ ~12.5 fps
+const FRAME_INTERVAL = 80 // ms -> ~12.5 fps
 
 // Role rule descriptions for the info panel
 const ROLE_PPE_RULES = {
-  'Doctor':              ['ðŸ˜· Mask required', 'ðŸ§¤ Gloves required'],
-  'Traffic Police':      ['â›‘ï¸ Helmet required'],
-  'Construction Worker': ['â›‘ï¸ Hardhat required', 'ðŸ¦º Safety Vest required', 'ðŸ˜· Mask required', 'ðŸ§¤ Gloves required', 'ðŸ¥½ Goggles required', 'ðŸ‘Ÿ Safety Shoes required'],
-  'College':             ['ðŸªª ID Card required', 'Uniform required'],
-  'Home':                ['ðŸ” Face recognition â€” unknown persons trigger alert'],
+  'Doctor':              ['Mask required', 'Gloves required'],
+  'Traffic Police':      ['Helmet required'],
+  'Construction Worker': ['Hardhat required', 'Safety Vest required', 'Mask required', 'Gloves required', 'Goggles required', 'Safety Shoes required'],
+  'College':             ['ID Card required', 'Uniform required'],
+  'Home':                ['Face recognition - unknown persons trigger alert'],
 }
 
 // All filterable PPE classes
 const PPE_FILTERS = [
-  { id: 'NO-Hardhat',      label: 'Hardhat',      icon: 'â›‘ï¸' },
-  { id: 'NO-Safety Vest',  label: 'Safety Vest',  icon: 'ðŸ¦º' },
-  { id: 'NO-Mask',         label: 'Mask',         icon: 'ðŸ˜·' },
-  { id: 'NO-Gloves',       label: 'Gloves',       icon: 'ðŸ§¤' },
-  { id: 'NO-Goggles',      label: 'Goggles',      icon: 'ðŸ¥½' },
-  { id: 'NO-Safety Shoes', label: 'Safety Shoes', icon: 'ðŸ‘Ÿ' },
-  { id: 'NO-ID Card',      label: 'ID Card',      icon: 'ðŸªª' },
-  { id: 'NO-Uniform',      label: 'Uniform',      icon: 'ðŸ‘•' },
+  { id: 'NO-Hardhat',      label: 'Hardhat',      icon: '👷' },
+  { id: 'NO-Safety Vest',  label: 'Safety Vest',  icon: '🦺' },
+  { id: 'NO-Mask',         label: 'Mask',         icon: '😷' },
+  { id: 'NO-Gloves',       label: 'Gloves',       icon: '🧤' },
+  { id: 'NO-Goggles',      label: 'Goggles',      icon: '🥽' },
+  { id: 'NO-Safety Shoes', label: 'Safety Shoes', icon: '👟' },
+  { id: 'NO-ID Card',      label: 'ID Card',      icon: '🪪' },
+  { id: 'NO-Uniform',      label: 'Uniform',      icon: '👕' },
 ]
 
 // Severity badge colours
@@ -66,10 +66,10 @@ export default function LiveMonitor() {
   const [jobId,          setJobId]          = useState(null)
   const [jobStatus,      setJobStatus]      = useState(null)
   const [modelMode,      setModelMode]      = useState('')
-  // Phone detection state â€” default ON so detection works immediately
+  // Phone detection state — default ON so detection works immediately
   const [noPhoneZone,    setNoPhoneZone]    = useState(savedNoPhoneZone !== undefined ? !!savedNoPhoneZone : true)
   const [phoneStatus,    setPhoneStatus]    = useState('safe')
-  // Detection filters â€” for None role: seed from saved custom PPE config
+  // Detection filters — for None role: seed from saved custom PPE config
   const defaultFilters = (user?.role === 'None' && customPpeItems?.length)
     ? customPpeItems
     : PPE_FILTERS.map(f => f.id)
@@ -80,7 +80,7 @@ export default function LiveMonitor() {
   const noPhoneZoneRef = useRef(noPhoneZone)
   useEffect(() => { noPhoneZoneRef.current = noPhoneZone }, [noPhoneZone])
 
-  // Phone status latch â€” hold alert state for 2.5s to prevent flickering
+  // Phone status latch — hold alert state for 2.5s to prevent flickering
   const phoneStatusLatchRef = useRef({ status: 'safe', until: 0 })
 
   const videoRef        = useRef(null)
@@ -89,7 +89,7 @@ export default function LiveMonitor() {
   const streamRef       = useRef(null)
   const intervalRef     = useRef(null)
   const pollRef         = useRef(null)
-  // Ref always holds the LATEST activeFilters â€” avoids stale closure in ws callbacks
+  // Ref always holds the LATEST activeFilters — avoids stale closure in ws callbacks
   const activeFiltersRef = useRef(activeFilters)
 
   const token = localStorage.getItem('token')
@@ -97,7 +97,7 @@ export default function LiveMonitor() {
   // Keep the ref in sync with state on every render
   useEffect(() => { activeFiltersRef.current = activeFilters }, [activeFilters])
 
-  // â”€â”€ WebSocket connection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // —————————————————————————————————————————————————————————————————————————————
   const connectWs = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return
     const ws = new WebSocket(WS_URL)
@@ -117,7 +117,7 @@ export default function LiveMonitor() {
       const data = JSON.parse(e.data)
       // Ignore status-only messages (connected, filters_updated) without frame data
       if (data.status === 'connected') { setConnected(true); return }
-      if (data.status === 'filters_updated') return  // â† was erroneously clearing detectionInfo
+      if (data.status === 'filters_updated') return  // ← was erroneously clearing detectionInfo
       if (data.error) { console.warn('[WS] error:', data.error); return }
       // Only process messages that actually have detection results
       if (data.annotated_frame === undefined && data.is_compliant === undefined) return
@@ -125,7 +125,7 @@ export default function LiveMonitor() {
       setFrameCount(f => f + 1)
       if (data.model_mode) setModelMode(data.model_mode)
 
-      // Phone status with 5s hold â€” prevents rapid flickering
+      // Phone status with 5s hold — prevents rapid flickering
       // Timer resets on EVERY non-safe detection so alert stays while phone is visible.
       if (data.phone_status) {
         const now      = Date.now()
@@ -142,11 +142,11 @@ export default function LiveMonitor() {
             phoneStatusLatchRef.current = { status: incoming, until: now + HOLD_MS }
             setPhoneStatus(incoming)
           } else {
-            // Same or lower priority but still detected â€” just refresh the hold timer
+            // Same or lower priority but still detected — just refresh the hold timer
             phoneStatusLatchRef.current = { ...latch, until: now + HOLD_MS }
           }
         } else {
-          // Phone gone â€” only clear after hold period expires
+          // Phone gone — only clear after hold period expires
           if (now > latch.until) {
             phoneStatusLatchRef.current = { status: 'safe', until: 0 }
             setPhoneStatus('safe')
@@ -178,7 +178,7 @@ export default function LiveMonitor() {
       if (!data.is_compliant && data.alert_message) {
         setCurrentAlert({ message: data.alert_message, severity: data.severity })
         if (data.alert_saved) {
-          addToast('âš ï¸ Alert Saved!', data.alert_message, 'danger', 5000)
+          addToast('⚠️ Alert Saved!', data.alert_message, 'danger', 5000)
         }
       } else {
         setCurrentAlert(null)
@@ -186,9 +186,9 @@ export default function LiveMonitor() {
     }
     ws.onclose = () => setConnected(false)
     ws.onerror = () => setConnected(false)
-  }, [token, addToast])  // refs are stable â€” no need to add activeFiltersRef here
+  }, [token, addToast])  // refs are stable — no need to add activeFiltersRef here
 
-  // â”€â”€ Webcam â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // —————————————————————————————————————————————————————————————————————————————
   const startWebcam = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } })
@@ -239,10 +239,10 @@ export default function LiveMonitor() {
 
   useEffect(() => () => stopStream(), [stopStream])
 
-  // activeFiltersRef keeps the ref in sync â€” no extra WebSocket message needed
+  // activeFiltersRef keeps the ref in sync — no extra WebSocket message needed
   // Filters are embedded in every frame payload above for zero-latency enforcement
 
-  // â”€â”€ Upload â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // —————————————————————————————————————————————————————————————————————————————
   const handleUpload = async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -252,7 +252,7 @@ export default function LiveMonitor() {
       const id  = res.data.job_id
       setJobId(id)
       setJobStatus({ status: 'processing', progress: 0 })
-      addToast('Video uploaded', 'Violation scanning startedâ€¦', 'info')
+      addToast('Video uploaded', 'Violation scanning started…', 'info')
 
       pollRef.current = setInterval(async () => {
         const s = await videoApi.status(id)
@@ -261,8 +261,8 @@ export default function LiveMonitor() {
           clearInterval(pollRef.current)
           if (s.data.status === 'complete') {
             addToast(
-              'âœ… Video processed',
-              `Found ${s.data.total_alerts} alerts Â· ${s.data.total_violations ?? 0} total violations`,
+              '✅ Video processed',
+              `Found ${s.data.total_alerts} alerts · ${s.data.total_violations ?? 0} total violations`,
               'success'
             )
           }
@@ -273,7 +273,7 @@ export default function LiveMonitor() {
     }
   }
 
-  // â”€â”€ Violation badge colours â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // —————————————————————————————————————————————————————————————————————————————
   const violationBg = currentAlert
     ? 'rgba(220,38,38,0.12)'
     : 'rgba(16,185,129,0.08)'
@@ -283,16 +283,16 @@ export default function LiveMonitor() {
 
   return (
     <div className="page-container">
-      {/* â”€â”€ Header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ————————————————————————————————————————————————————————————————————————————— */}
       <div className="page-header">
         <div>
           <h1 className="page-title">Occupational Safety Monitoring</h1>
           <p className="page-subtitle">
-            Real-time violation detection Â· Role: <strong style={{ color: 'var(--accent-blue)' }}>{user?.role || 'Not set'}</strong>
+            Real-time violation detection · Role: <strong style={{ color: 'var(--accent-blue)' }}>{user?.role || 'Not set'}</strong>
             {modelMode && (
               <span style={{ marginLeft: 10, fontSize: '0.72rem', color: 'var(--text-muted)',
                 background: 'rgba(255,255,255,0.06)', padding: '2px 8px', borderRadius: 99 }}>
-                {modelMode === 'ppe.pt' ? 'ðŸŽ¯ ppe.pt' : modelMode === 'simulation' ? 'ðŸ”µ Simulation' : `âš™ ${modelMode}`}
+                {modelMode === 'ppe.pt' ? '🎯 ppe.pt' : modelMode === 'simulation' ? '🔵 Simulation' : `⚙️ ${modelMode}`}
               </span>
             )}
           </p>
@@ -311,7 +311,7 @@ export default function LiveMonitor() {
         </div>
       </div>
 
-      {/* â”€â”€ Detection Filter Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ————————————————————————————————————————————————————————————————————————————— */}
       <div style={{
         marginBottom: 16, padding: '10px 14px', borderRadius: 10,
         background: 'var(--bg-secondary)', border: '1px solid var(--border)',
@@ -333,7 +333,7 @@ export default function LiveMonitor() {
               onClick={() => setActiveFilters([])}>None</button>
             <button className="btn btn-ghost btn-sm" style={{ padding:'3px 10px', fontSize:'0.72rem' }}
               onClick={() => setShowFilters(s => !s)}>
-              {showFilters ? 'â–² Hide' : 'â–¼ Edit'}
+              {showFilters ? '▲ Hide' : '▼ Edit'}
             </button>
           </div>
         </div>
@@ -393,11 +393,11 @@ export default function LiveMonitor() {
           </div>
         )}
 
-        {/* â”€â”€ Phone Zone Row â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+        {/* ————————————————————————————————————————————————————————————————————————————— */}
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
           borderTop:'1px solid var(--border)', marginTop:10, paddingTop:10 }}>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-            <span style={{ fontSize:'1rem' }}>ðŸ“±</span>
+            <span style={{ fontSize:'1rem' }}>📱</span>
             <div>
               <div style={{ fontSize:'0.82rem', fontWeight:700, color:'var(--text-primary)' }}>
                 No Phone Zone
@@ -408,7 +408,7 @@ export default function LiveMonitor() {
             </div>
           </div>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-            {/* Phone status badge â€” always visible */}
+            {/* Phone status badge — always visible */}
             <span style={{
               fontSize:'0.72rem', fontWeight:600, padding:'3px 10px', borderRadius:99,
               background: phoneStatus === 'safe'
@@ -428,10 +428,10 @@ export default function LiveMonitor() {
                 : 'rgba(239,68,68,0.3)'}`,
               transition: 'all 0.3s',
             }}>
-              {phoneStatus === 'safe'        ? 'ðŸŸ¢ No Phone'
-               : phoneStatus === 'in_hand'  ? 'ðŸŸ¡ Phone in Hand'
-               : phoneStatus === 'calling'  ? 'ðŸ”´ Calling Alert'
-               : 'ðŸ”´ Zone Violation'}
+              {phoneStatus === 'safe'        ? '🟢 No Phone'
+               : phoneStatus === 'in_hand'  ? '🟡 Phone in Hand'
+               : phoneStatus === 'calling'  ? '🔴 Calling Alert'
+               : '🔴 Zone Violation'}
             </span>
             {/* Toggle button */}
             <button
@@ -460,12 +460,12 @@ export default function LiveMonitor() {
         </div>
       </div>
 
-      {/* â”€â”€ Mode Tabs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ————————————————————————————————————————————————————————————————————————————— */}
       <div className="tab-bar" style={{ marginBottom: 20, maxWidth: 460 }}>
         {[
-          { id: 'webcam', label: 'ðŸ“· Webcam' },
-          { id: 'rtsp',   label: 'ðŸ“¡ CCTV/RTSP' },
-          { id: 'upload', label: 'ðŸŽ¬ Upload Video' },
+          { id: 'webcam', label: 'Webcam' },
+          { id: 'rtsp',   label: 'CCTV / RTSP' },
+          { id: 'upload', label: 'Upload Video' },
         ].map(m => (
           <button key={m.id}
             className={`tab ${mode === m.id ? 'active' : ''}`}
@@ -663,14 +663,14 @@ export default function LiveMonitor() {
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                   {activeFilters.map(f => {
                     const label = f.replace('NO-', '')
-                    const icons = { Hardhat:'â›‘ï¸', Gloves:'ðŸ§¤', Goggles:'ðŸ¥½', Mask:'ðŸ˜·', 'Safety Vest':'ðŸ¦º', 'Safety Shoes':'ðŸ‘Ÿ', 'ID Card':'ðŸªª', Uniform:'ðŸ‘•' }
+                    const icons = {}
                     return (
                       <span key={f} style={{
                         padding: '3px 10px', borderRadius: 99, fontSize: '0.77rem',
                         background: 'rgba(16,185,129,0.12)', color: 'var(--accent-green)',
                         border: '1px solid rgba(16,185,129,0.25)', fontWeight: 600,
                       }}>
-                        {icons[label] || 'ðŸ›¡ï¸'} {label}
+                        {label}
                       </span>
                     )
                   })}
@@ -704,12 +704,12 @@ export default function LiveMonitor() {
                 {modelMode === 'ppe.pt'
                   ? 'ppe.pt â€” Custom PPE model (10 classes)'
                   : modelMode === 'simulation'
-                  ? 'Simulation mode â€” Place ppe.pt in backend/'
+                  ? 'Simulation mode - Place ppe.pt in backend/'
                   : modelMode === 'helmet:keremberke'
-                  ? 'â›‘ï¸ Dedicated Helmet Model (keremberke/yolov8m)'
+                  ? 'Dedicated Helmet Model (keremberke/yolov8m)'
                   : modelMode === 'helmet:ppe.pt(strict)'
-                  ? 'â›‘ï¸ Helmet via ppe.pt â€” strict logic (downloadingâ€¦)'
-                  : `${modelMode} â€” COCO fallback`}
+                  ? 'Helmet via ppe.pt - strict logic (downloading...)'
+                  : `${modelMode} - COCO fallback`}
               </div>
               {modelMode === 'simulation' && (
                 <div style={{ fontSize: '0.72rem', color: 'var(--accent-orange)', marginTop: 6 }}>
@@ -880,12 +880,8 @@ function VideoJobPanel({ status }) {
           {isProcessing && <span className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} />}
           {isComplete   && <CheckCircle size={16} color="var(--accent-green)" />}
           {isError      && <AlertTriangle size={16} color="var(--accent-red)" />}
-          <strong style={{ fontSize: '0.88rem' }}>
-            {isProcessing
-              ? `Scanning for violationsâ€¦ ${status.progress}%`
-              : isComplete
-              ? `âœ… Analysis complete â€” ${status.total_alerts} alert${status.total_alerts !== 1 ? 's' : ''} Â· ${status.total_violations ?? 0} violations Â· ${videoDur}s`
-              : 'âŒ Processing error'}
+          <strong style={{ fontSize: '0.88rem'Analysis complete - ${status.total_alerts} alert${status.total_alerts !== 1 ? 's' : ''} · ${status.total_violations ?? 0} violations · ${videoDur}s`
+              : 'Processing error'}
           </strong>
         </div>
 
@@ -1029,10 +1025,10 @@ function VideoJobPanel({ status }) {
                   boxShadow: '0 4px 20px rgba(0,0,0,0.6)',
                 }}>
                   <div style={{ fontSize: '0.72rem', fontWeight: 700, color: (SEV_COLORS[tooltip.vt.severity]||SEV_COLORS.medium).color, marginBottom: 2 }}>
-                    â± {tooltip.vt.ts}s
+                    @ {tooltip.vt.ts}s
                   </div>
                   {tooltip.vt.items?.map((item, j) => (
-                    <div key={j} style={{ fontSize: '0.70rem', color: 'var(--text-secondary)' }}>âš  {item}</div>
+                    <div key={j} style={{ fontSize: '0.70rem', color: 'var(--text-secondary)' }}>! {item}</div>
                   ))}
                   <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: 2 }}>
                     Click to seek
@@ -1052,7 +1048,7 @@ function VideoJobPanel({ status }) {
                   color: '#fff', cursor: 'pointer', padding: '3px 14px', fontSize: '0.78rem',
                   fontWeight: 600,
                 }}>
-                  {playing ? 'â¸ Pause' : 'â–¶ Play'}
+                  {playing ? 'Pause' : 'Play'}
                 </button>
                 <a
                   href={videoUrl}
@@ -1063,7 +1059,7 @@ function VideoJobPanel({ status }) {
                     fontSize: '0.78rem', textDecoration: 'none', fontWeight: 600,
                   }}
                 >
-                  â¬‡ Download
+                  Download
                 </a>
               </div>
               <span style={{ fontSize: '0.70rem', color: 'var(--text-muted)' }}>
