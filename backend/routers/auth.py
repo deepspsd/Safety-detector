@@ -33,39 +33,52 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 @router.post("/signup", response_model=TokenResponse)
 def signup(data: SignupRequest, db: Session = Depends(get_db)):
-    existing = db.query(User).filter(User.email == data.email).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
+    try:
+        existing = db.query(User).filter(User.email == data.email).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Email already registered")
 
-    # Validate role
-    valid_roles = {"Construction Worker", "Doctor", "Traffic Police", "College", "Home", "None"}
-    role = data.role if data.role in valid_roles else "Construction Worker"
+        if not data.email or "@" not in data.email:
+            raise HTTPException(status_code=422, detail="Invalid email address")
+        if len(data.password) < 6:
+            raise HTTPException(status_code=422, detail="Password must be at least 6 characters")
 
-    user = User(
-        email=data.email,
-        name=data.name,
-        hashed_password=get_password_hash(data.password),
-        role=role,                          # ← save role immediately
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    # Create default config
-    config = UserConfig(user_id=user.id)
-    db.add(config)
-    db.commit()
-    token = create_access_token({"sub": user.email})
-    return {"access_token": token, "token_type": "bearer"}
+        valid_roles = {"Construction Worker", "Doctor", "Traffic Police", "College", "Home", "None"}
+        role = data.role if data.role in valid_roles else "Construction Worker"
 
+        user = User(
+            email=data.email,
+            name=data.name or data.email.split("@")[0],
+            hashed_password=get_password_hash(data.password),
+            role=role,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        config = UserConfig(user_id=user.id)
+        db.add(config)
+        db.commit()
+        token = create_access_token({"sub": user.email})
+        return {"access_token": token, "token_type": "bearer"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Signup failed: {str(e)}")
 
 
 @router.post("/login", response_model=TokenResponse)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == form_data.username).first()
-    if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(status_code=400, detail="Invalid credentials")
-    token = create_access_token({"sub": user.email})
-    return {"access_token": token, "token_type": "bearer"}
+    try:
+        user = db.query(User).filter(User.email == form_data.username).first()
+        if not user or not verify_password(form_data.password, user.hashed_password):
+            raise HTTPException(status_code=400, detail="Invalid credentials")
+        token = create_access_token({"sub": user.email})
+        return {"access_token": token, "token_type": "bearer"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
 
 
 @router.get("/me")

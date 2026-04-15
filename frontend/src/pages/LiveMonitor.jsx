@@ -83,12 +83,14 @@ export default function LiveMonitor() {
   // Phone status latch — hold alert state for 2.5s to prevent flickering
   const phoneStatusLatchRef = useRef({ status: 'safe', until: 0 })
 
-  const videoRef        = useRef(null)
-  const canvasRef       = useRef(null)
+  const videoRef        = useRef(null)   // live webcam element (always plays)
+  const canvasRef       = useRef(null)   // display-only: shows annotated frames from WS
+  const captureRef      = useRef(null)   // hidden: captures raw frames to send to WS
   const wsRef           = useRef(null)
   const streamRef       = useRef(null)
   const intervalRef     = useRef(null)
   const pollRef         = useRef(null)
+  const hasAnnotatedRef = useRef(false)  // true once first annotated frame received
   // Ref always holds the LATEST activeFilters — avoids stale closure in ws callbacks
   const activeFiltersRef = useRef(activeFilters)
 
@@ -165,12 +167,21 @@ export default function LiveMonitor() {
         phoneStatus:      data.phone_status     || 'safe',
       })
 
-      // Draw annotated frame
+      // Draw annotated frame onto the DISPLAY canvas.
+      // captureRef handles sending; canvasRef shows bounding boxes.
       if (data.annotated_frame && canvasRef.current) {
+        hasAnnotatedRef.current = true
         const img = new Image()
         img.onload = () => {
-          const ctx = canvasRef.current?.getContext('2d')
-          if (ctx) ctx.drawImage(img, 0, 0, canvasRef.current.width, canvasRef.current.height)
+          const cv = canvasRef.current
+          if (!cv) return
+          // Resize canvas to match frame if needed
+          if (img.width > 0 && cv.width !== img.width) {
+            cv.width  = img.width
+            cv.height = img.height
+          }
+          const ctx = cv.getContext('2d')
+          if (ctx) ctx.drawImage(img, 0, 0, cv.width, cv.height)
         }
         img.src = data.annotated_frame
       }
@@ -191,29 +202,34 @@ export default function LiveMonitor() {
   // —————————————————————————————————————————————————————————————————————————————
   const startWebcam = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } })
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480, facingMode: 'environment' }
+      })
       streamRef.current = stream
       if (videoRef.current) {
         videoRef.current.srcObject = stream
         await videoRef.current.play()
       }
+      hasAnnotatedRef.current = false
       connectWs()
       setStreaming(true)
 
+      // Use a SEPARATE hidden canvas to capture raw frames for the backend.
+      // The visible canvasRef is ONLY updated when annotated frames arrive from WS.
+      // This prevents raw frames from overwriting bounding-box overlays every 80ms.
       intervalRef.current = setInterval(() => {
-        if (!videoRef.current || !canvasRef.current || !wsRef.current) return
+        if (!videoRef.current || !captureRef.current || !wsRef.current) return
         if (wsRef.current.readyState !== WebSocket.OPEN) return
         const vw = videoRef.current.videoWidth  || 640
         const vh = videoRef.current.videoHeight || 480
-        canvasRef.current.width  = vw
-        canvasRef.current.height = vh
-        const ctx = canvasRef.current.getContext('2d')
-        ctx.drawImage(videoRef.current, 0, 0)
-        const b64 = canvasRef.current.toDataURL('image/jpeg', 0.65)
-        const filtersNow = activeFiltersRef.current
+        captureRef.current.width  = vw
+        captureRef.current.height = vh
+        const ctx = captureRef.current.getContext('2d')
+        ctx.drawImage(videoRef.current, 0, 0, vw, vh)
+        const b64 = captureRef.current.toDataURL('image/jpeg', 0.65)
         wsRef.current.send(JSON.stringify({
           frame: b64,
-          filters: filtersNow,
+          filters: activeFiltersRef.current,
           no_phone_zone: noPhoneZoneRef.current,
         }))
       }, FRAME_INTERVAL)
@@ -479,10 +495,27 @@ export default function LiveMonitor() {
 
         {/* -- Left: Video feed -------------------------------- */}
         <div>
-          <div className="video-container" style={{ minHeight: 300 }}>
-            <video ref={videoRef} style={{ display: 'none' }} muted />
+          <div className="video-container" style={{ minHeight: 300, position: 'relative' }}>
+            {/* Hidden capture canvas — raw frames only, never shown to user */}
+            <canvas ref={captureRef} style={{ display: 'none' }} />
+
+            {/* Live video: shown as background until first annotated frame arrives */}
+            <video ref={videoRef} muted playsInline
+              style={{
+                display: streaming ? 'block' : 'none',
+                position: 'absolute', top: 0, left: 0,
+                width: '100%', height: '100%', objectFit: 'cover',
+              }}
+            />
+
+            {/* Annotated display canvas: overlays bounding boxes on top of live video */}
             <canvas ref={canvasRef} className="video-canvas"
-              style={{ display: streaming ? 'block' : 'none' }} />
+              style={{
+                display: streaming ? 'block' : 'none',
+                position: 'absolute', top: 0, left: 0,
+                width: '100%', height: '100%',
+              }}
+            />
 
             {!streaming && mode !== 'upload' && (
               <div className="no-feed">
@@ -521,7 +554,7 @@ export default function LiveMonitor() {
                 fontSize: '0.72rem', fontWeight: 700,
                 boxShadow: '0 2px 8px rgba(220,38,38,0.4)'
               }}>
-                ðŸš¨ {detectionInfo.violationsCount}/{detectionInfo.personsCount} violating
+                {detectionInfo.violationsCount}/{detectionInfo.personsCount} violating
               </div>
             )}
 
@@ -607,8 +640,8 @@ export default function LiveMonitor() {
                     : <AlertTriangle size={20} color="var(--accent-red)" />}
                   <strong style={{ color: detectionInfo.isCompliant ? 'var(--accent-green)' : 'var(--accent-red)' }}>
                     {detectionInfo.isCompliant
-                      ? `âœ“ All ${detectionInfo.personsCount} person(s) compliant`
-                      : `âš  ${detectionInfo.violationsCount}/${detectionInfo.personsCount} person(s) violating`}
+                      ? `All ${detectionInfo.personsCount} person(s) compliant`
+                      : ` ${detectionInfo.violationsCount}/${detectionInfo.personsCount} person(s) violating`}
                   </strong>
                 </div>
 
@@ -761,7 +794,7 @@ function PersonCard({ person, index }) {
             <span key={j} style={{
               padding: '1px 7px', borderRadius: 99,
               background: 'rgba(16,185,129,0.15)', color: '#34d399', fontSize: '0.70rem'
-            }}>âœ“ {p}</span>
+            }}>{p}</span>
           ))}
         </div>
       )}
@@ -958,7 +991,7 @@ function VideoJobPanel({ status }) {
                 padding: '4px 12px', fontSize: '0.78rem', fontWeight: 700,
                 boxShadow: '0 2px 12px rgba(220,38,38,0.5)',
               }}>
-                ðŸš¨ {vts[activeVtIdx].items?.join(', ') || 'Violation'}
+                 {vts[activeVtIdx].items?.join(', ') || 'Violation'}
               </div>
             )}
           </div>
@@ -1169,7 +1202,7 @@ function VideoJobPanel({ status }) {
                         <span key={j} style={{
                           fontSize: '0.68rem', padding: '1px 7px', borderRadius: 99,
                           background: 'rgba(0,0,0,0.25)', color: sev.color, fontWeight: 600,
-                        }}>âš  {m}</span>
+                        }}> {m}</span>
                       ))}
                     </div>
                   </div>
