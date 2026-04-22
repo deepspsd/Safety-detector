@@ -8,18 +8,27 @@ import {
   User, ShieldCheck, ShieldAlert, HardHat
 } from 'lucide-react'
 
-// WebSocket URL: automatically uses same host as the page, port 8000
-// Works from PC (localhost) and mobile (network IP) without any config change
+// WebSocket URLs — use Vite proxy in development (same trick as api.js)
 function getWsURL() {
-  const envURL = import.meta.env.VITE_API_BASE_URL
-  if (envURL && envURL !== 'http://localhost:8000') {
-    return envURL.replace(/^http/, 'ws') + '/ws/detect'
+  if (import.meta.env.MODE === 'development') {
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+    return `${proto}://${window.location.host}/ws/detect`
   }
-  const host = window.location.hostname
-  const wsHost = (host === 'localhost' || host === '127.0.0.1') ? 'localhost' : host
-  return `ws://${wsHost}:8000/ws/detect`
+  const envURL = import.meta.env.VITE_API_BASE_URL
+  if (envURL) return envURL.replace(/^http/, 'ws') + '/ws/detect'
+  return `ws://localhost:8000/ws/detect`
 }
-const WS_URL = getWsURL()
+function getCctvWsURL() {
+  if (import.meta.env.MODE === 'development') {
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+    return `${proto}://${window.location.host}/ws/detect-cctv`
+  }
+  const envURL = import.meta.env.VITE_API_BASE_URL
+  if (envURL) return envURL.replace(/^http/, 'ws') + '/ws/detect-cctv'
+  return `ws://localhost:8000/ws/detect-cctv`
+}
+const WS_URL      = getWsURL()
+const CCTV_WS_URL = getCctvWsURL()
 const FRAME_INTERVAL = 80 // ms -> ~12.5 fps
 
 // Role rule descriptions for the info panel
@@ -66,6 +75,10 @@ export default function LiveMonitor() {
   const [jobId,          setJobId]          = useState(null)
   const [jobStatus,      setJobStatus]      = useState(null)
   const [modelMode,      setModelMode]      = useState('')
+  // CCTV extras
+  const [camFps,         setCamFps]         = useState(0)
+  const [faceResult,     setFaceResult]     = useState(null)
+  const [enableFace,     setEnableFace]     = useState(true)  // face recognition toggle
   // Phone detection state — default ON so detection works immediately
   const [noPhoneZone,    setNoPhoneZone]    = useState(savedNoPhoneZone !== undefined ? !!savedNoPhoneZone : true)
   const [phoneStatus,    setPhoneStatus]    = useState('safe')
@@ -75,6 +88,9 @@ export default function LiveMonitor() {
     : PPE_FILTERS.map(f => f.id)
   const [activeFilters,  setActiveFilters]  = useState(defaultFilters)
   const [showFilters,    setShowFilters]    = useState(false)
+  // keep enableFace in a ref so WS callbacks always read latest value
+  const enableFaceRef = useRef(enableFace)
+  useEffect(() => { enableFaceRef.current = enableFace }, [enableFace])
 
   // Keep noPhoneZone in a ref so WS callbacks always read latest value
   const noPhoneZoneRef = useRef(noPhoneZone)
@@ -86,6 +102,7 @@ export default function LiveMonitor() {
   const videoRef        = useRef(null)   // live webcam element (always plays)
   const canvasRef       = useRef(null)   // display-only: shows annotated frames from WS
   const captureRef      = useRef(null)   // hidden: captures raw frames to send to WS
+  const cctvImgRef      = useRef(null)   // <img> showing raw MJPEG CCTV stream
   const wsRef           = useRef(null)
   const streamRef       = useRef(null)
   const intervalRef     = useRef(null)
@@ -238,6 +255,151 @@ export default function LiveMonitor() {
     }
   }
 
+  // ——————————————————————————————————————————————————————————————————————————————
+  // CCTV / IP Camera mode — backend pulls frames directly from the camera URL
+  const startCctv = useCallback(() => {
+    const url = rtspUrl.trim()
+
+    // ── Validate URL before connecting ───────────────────────────────────────
+    if (!url) {
+      addToast('Missing URL', 'Enter the IP camera stream URL first', 'danger')
+      return
+    }
+
+    const isHttp  = url.startsWith('http://')  || url.startsWith('https://')
+    const isRtsp  = url.startsWith('rtsp://')  || url.startsWith('rtsps://')
+    if (!isHttp && !isRtsp) {
+      addToast('Invalid URL', 'URL must start with http:// or rtsp://', 'danger')
+      return
+    }
+
+    // Check for malformed IP addresses (e.g. "10165.131.102" missing a dot)
+    if (isHttp) {
+      try {
+        const parsed = new URL(url)
+        const host   = parsed.hostname
+        // If it looks like an IP (all digits and dots), validate each octet
+        if (/^[\d.]+$/.test(host)) {
+          const octets = host.split('.')
+          if (octets.length !== 4) {
+            addToast(
+              'Invalid IP address',
+              `"${host}" is not a valid IPv4 address — check for missing or extra dots.\nExample: 10.165.131.102`,
+              'danger'
+            )
+            return
+          }
+          const bad = octets.find(o => o === '' || isNaN(Number(o)) || Number(o) > 255)
+          if (bad !== undefined) {
+            addToast(
+              'Invalid IP address',
+              `Each part of an IP must be 0–255. Check "${host}".`,
+              'danger'
+            )
+            return
+          }
+        }
+      } catch {
+        addToast('Invalid URL', `Cannot parse URL: "${url}"`, 'danger')
+        return
+      }
+    }
+
+    if (wsRef.current?.readyState === WebSocket.OPEN) return
+
+    setFaceResult(null); setCamFps(0)
+    const ws = new WebSocket(CCTV_WS_URL)
+    wsRef.current = ws
+    hasAnnotatedRef.current = false
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({
+        token,
+        camera_url:    rtspUrl.trim(),
+        filters:       activeFiltersRef.current,
+        no_phone_zone: noPhoneZoneRef.current,
+        enable_face:   enableFaceRef.current,
+      }))
+    }
+
+    ws.onmessage = (e) => {
+      const data = JSON.parse(e.data)
+      if (data.status === 'connected') { setConnected(true); setStreaming(true); return }
+      if (data.error) {
+        addToast('CCTV Error', data.error, 'danger')
+        ws.close(); setStreaming(false); setConnected(false)
+        return
+      }
+      if (data.annotated_frame === undefined && data.is_compliant === undefined) return
+
+      setFrameCount(f => f + 1)
+      if (data.model_mode) setModelMode(data.model_mode)
+      if (data.cam_fps  !== undefined) setCamFps(data.cam_fps)
+      if (data.face_result) setFaceResult(data.face_result)
+
+      // Phone status latch
+      if (data.phone_status) {
+        const now = Date.now(), latch = phoneStatusLatchRef.current
+        const incoming = data.phone_status, HOLD_MS = 5000
+        const priority = { zone_violation: 3, calling: 3, in_hand: 2, safe: 1 }
+        const inPri = priority[incoming] || 1, latPri = priority[latch.status] || 1
+        if (incoming !== 'safe') {
+          if (inPri >= latPri || now > latch.until) {
+            phoneStatusLatchRef.current = { status: incoming, until: now + HOLD_MS }
+            setPhoneStatus(incoming)
+          } else { phoneStatusLatchRef.current = { ...latch, until: now + HOLD_MS } }
+        } else if (now > latch.until) {
+          phoneStatusLatchRef.current = { status: 'safe', until: 0 }; setPhoneStatus('safe')
+        }
+      }
+
+      setDetectionInfo({
+        isCompliant:     data.is_compliant,
+        missing:         data.missing_items    || [],
+        detections:      data.detections       || [],
+        persons:         data.persons          || [],
+        violationsCount: data.violations_count ?? 0,
+        personsCount:    data.persons_count    ?? 0,
+        phoneDetected:   data.phone_detected   ?? false,
+        phoneStatus:     data.phone_status     || 'safe',
+      })
+
+      // Draw backend-annotated frame (PPE + face boxes already merged)
+      if (data.annotated_frame && canvasRef.current) {
+        hasAnnotatedRef.current = true
+        const img = new Image()
+        img.onload = () => {
+          const cv = canvasRef.current; if (!cv) return
+          if (img.width > 0 && cv.width !== img.width) { cv.width = img.width; cv.height = img.height }
+          const ctx = cv.getContext('2d'); if (ctx) ctx.drawImage(img, 0, 0, cv.width, cv.height)
+        }
+        img.src = data.annotated_frame
+      }
+
+      if (!data.is_compliant && data.alert_message) {
+        setCurrentAlert({ message: data.alert_message, severity: data.severity })
+        if (data.alert_saved || data.face_alert_saved)
+          addToast('⚠️ Alert Saved!', data.alert_message, 'danger', 5000)
+      } else { setCurrentAlert(null) }
+    }
+
+    ws.onclose = () => { setConnected(false); setStreaming(false); setFaceResult(null); setCamFps(0) }
+    ws.onerror = () => { setConnected(false); setStreaming(false) }
+
+    // Sync all live state every 2 s (filters + phone zone + face toggle)
+    intervalRef.current = setInterval(() => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          filters:       activeFiltersRef.current,
+          no_phone_zone: noPhoneZoneRef.current,
+          enable_face:   enableFaceRef.current,
+        }))
+      }
+    }, 2000)
+  }, [token, addToast, rtspUrl])
+
+
+  // ——————————————————————————————————————————————————————————————————————————————
   const stopStream = useCallback(() => {
     clearInterval(intervalRef.current)
     clearInterval(pollRef.current)
@@ -248,6 +410,8 @@ export default function LiveMonitor() {
     setCurrentAlert(null)
     setDetectionInfo(null)
     setFrameCount(0)
+    setFaceResult(null)
+    setCamFps(0)
     if (canvasRef.current) {
       canvasRef.current.getContext('2d')?.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height)
     }
@@ -499,10 +663,25 @@ export default function LiveMonitor() {
             {/* Hidden capture canvas — raw frames only, never shown to user */}
             <canvas ref={captureRef} style={{ display: 'none' }} />
 
-            {/* Live video: shown as background until first annotated frame arrives */}
+            {/* Raw MJPEG stream for CCTV mode — shown as background */}
+            {mode === 'rtsp' && streaming && (
+              <img
+                ref={cctvImgRef}
+                src={rtspUrl.trim()}
+                alt="CCTV feed"
+                style={{
+                  display: 'block',
+                  position: 'absolute', top: 0, left: 0,
+                  width: '100%', height: '100%', objectFit: 'cover',
+                }}
+                onError={() => { /* img will keep retrying for MJPEG */ }}
+              />
+            )}
+
+            {/* Live webcam video: shown as background until first annotated frame */}
             <video ref={videoRef} muted playsInline
               style={{
-                display: streaming ? 'block' : 'none',
+                display: (streaming && mode === 'webcam') ? 'block' : 'none',
                 position: 'absolute', top: 0, left: 0,
                 width: '100%', height: '100%', objectFit: 'cover',
               }}
@@ -522,7 +701,9 @@ export default function LiveMonitor() {
                 <VideoOff size={40} style={{ opacity: 0.3 }} />
                 <div>No feed active</div>
                 <div style={{ fontSize: '0.78rem' }}>
-                  {mode === 'webcam' ? 'Click Start Detection to begin' : 'Enter RTSP URL and click Start'}
+                  {mode === 'webcam'
+                    ? 'Click Start Detection to begin'
+                    : 'Confirm the IP camera URL below and click Start'}
                 </div>
               </div>
             )}
@@ -558,26 +739,157 @@ export default function LiveMonitor() {
               </div>
             )}
 
-            {/* Frame counter */}
+            {/* Frame counter + cam FPS */}
             {streaming && (
               <div style={{
-                position: 'absolute', top: 12, right: 12,
-                background: 'rgba(0,0,0,0.6)', padding: '4px 10px',
-                borderRadius: 99, fontSize: '0.72rem', color: 'var(--text-secondary)'
+                position: 'absolute', top: 12, right: 12, display: 'flex', gap: 6
               }}>
-                {frameCount} frames
+                {mode === 'rtsp' && camFps > 0 && (
+                  <div style={{
+                    background: 'rgba(99,102,241,0.75)', padding: '4px 10px',
+                    borderRadius: 99, fontSize: '0.72rem', color: '#fff', fontWeight: 700,
+                  }}>
+                    {camFps} fps
+                  </div>
+                )}
+                <div style={{
+                  background: 'rgba(0,0,0,0.6)', padding: '4px 10px',
+                  borderRadius: 99, fontSize: '0.72rem', color: 'var(--text-secondary)'
+                }}>
+                  {frameCount} frames
+                </div>
               </div>
             )}
           </div>
 
-          {/* RTSP input */}
-          {mode === 'rtsp' && (
-            <div className="form-group" style={{ marginTop: 12 }}>
-              <label className="form-label">RTSP / Stream URL</label>
-              <input className="form-input" placeholder="rtsp://192.168.1.1:554/stream"
-                value={rtspUrl} onChange={e => setRtspUrl(e.target.value)} />
+          {/* RTSP / CCTV URL input + face toggle */}
+          {mode === 'rtsp' && (() => {
+            // Inline validation — check IP while typing
+            let urlWarning = null
+            if (rtspUrl && (rtspUrl.startsWith('http://') || rtspUrl.startsWith('https://'))) {
+              try {
+                const h = new URL(rtspUrl).hostname
+                if (/^[\d.]+$/.test(h)) {
+                  const parts = h.split('.')
+                  if (parts.length !== 4) {
+                    urlWarning = `⚠️ "${h}" looks like an invalid IP — missing a dot? (e.g. 10.165.131.102)`
+                  } else if (parts.some(p => p === '' || isNaN(Number(p)) || Number(p) > 255)) {
+                    urlWarning = `⚠️ Each IP part must be 0–255. Check "${h}"`
+                  }
+                }
+              } catch { urlWarning = '⚠️ URL format is invalid' }
+            }
+
+            return (
+              <div className="form-group" style={{ marginTop: 12 }}>
+                <label className="form-label">IP Camera / MJPEG Stream URL</label>
+
+                {/* URL input with clear button */}
+                <div style={{ position: 'relative' }}>
+                  <input
+                    className="form-input"
+                    type="url"
+                    spellCheck={false}
+                    placeholder="http://10.62.212.243:8080/video"
+                    value={rtspUrl}
+                    onChange={e => setRtspUrl(e.target.value)}
+                    disabled={streaming}
+                    style={{
+                      paddingRight: rtspUrl ? 32 : 12,
+                      borderColor: urlWarning ? 'var(--accent-red, #ef4444)' : undefined,
+                    }}
+                  />
+                  {rtspUrl && !streaming && (
+                    <button
+                      type="button"
+                      onClick={() => setRtspUrl('')}
+                      title="Clear"
+                      style={{
+                        position: 'absolute', right: 8, top: '50%',
+                        transform: 'translateY(-50%)',
+                        background: 'none', border: 'none',
+                        color: 'var(--text-muted)', cursor: 'pointer',
+                        fontSize: '1rem', lineHeight: 1, padding: 0,
+                      }}
+                    >✕</button>
+                  )}
+                </div>
+
+                {/* Inline validation error */}
+                {urlWarning && (
+                  <div style={{
+                    marginTop: 6, padding: '6px 10px', borderRadius: 7,
+                    background: 'rgba(239,68,68,0.10)',
+                    border: '1px solid rgba(239,68,68,0.35)',
+                    fontSize: '0.75rem', color: '#ef4444', lineHeight: 1.5,
+                  }}>
+                    {urlWarning}
+                    {rtspUrl.includes('http://') && (() => {
+                      try {
+                        const h = new URL(rtspUrl).hostname
+                        const suggested = h.replace(/(\d{3,})(?=\d)/g, '$1.')
+                        if (suggested !== h) return ` — Did you mean ${suggested}?`
+                      } catch {}
+                      return null
+                    })()}
+                  </div>
+                )}
+
+              {/* Quick-fill preset buttons */}
+              {!streaming && (
+                <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    style={{ fontSize: '0.68rem', padding: '3px 8px', height: 'auto' }}
+                    onClick={() => setRtspUrl('http://10.62.212.243:8080/video')}
+                  >📱 IP Webcam (MJPEG)</button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    style={{ fontSize: '0.68rem', padding: '3px 8px', height: 'auto' }}
+                    onClick={() => setRtspUrl('rtsp://admin:password@192.168.1.1:554/stream')}
+                  >📷 RTSP Example</button>
+                </div>
+              )}
+
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 6 }}>
+                Supports: <code style={{ fontSize: '0.72rem' }}>http://IP:PORT/video</code> (MJPEG)
+                &nbsp;•&nbsp; <code style={{ fontSize: '0.72rem' }}>rtsp://user:pass@IP:554/stream</code>
+              </div>
+
+              {/* Face recognition toggle */}
+              <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                marginTop: 10, padding: '8px 12px', borderRadius: 8,
+                background: 'var(--bg-card)', border: '1px solid var(--border)',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: '1rem' }}>🫥</span>
+                  <div>
+                    <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-primary)' }}>Face Recognition</div>
+                    <div style={{ fontSize: '0.70rem', color: 'var(--text-muted)' }}>Identify known/unknown persons in stream</div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setEnableFace(f => !f)}
+                  style={{
+                    width: 44, height: 24, borderRadius: 12, cursor: 'pointer',
+                    border: 'none', padding: 0, transition: 'background 0.2s',
+                    background: enableFace ? '#6366f1' : 'rgba(255,255,255,0.12)',
+                    position: 'relative', flexShrink: 0,
+                  }}
+                >
+                  <span style={{
+                    position: 'absolute', top: 3, width: 18, height: 18,
+                    borderRadius: '50%', background: '#fff', transition: 'left 0.2s',
+                    left: enableFace ? 23 : 3,
+                  }} />
+                </button>
+              </div>
             </div>
-          )}
+            )
+          })()}
 
           {/* Upload input */}
           {mode === 'upload' && (
@@ -604,7 +916,11 @@ export default function LiveMonitor() {
           {mode !== 'upload' && (
             <div className="video-controls">
               {!streaming ? (
-                <button id="btn-start-detection" className="btn btn-success" onClick={startWebcam}>
+                <button
+                  id="btn-start-detection"
+                  className="btn btn-success"
+                  onClick={mode === 'rtsp' ? startCctv : startWebcam}
+                >
                   <Zap size={15} /> Start Detection
                 </button>
               ) : (
@@ -676,7 +992,80 @@ export default function LiveMonitor() {
             )}
           </div>
 
-          {/* Role rules card */}
+          {/* Face Recognition results card — CCTV mode only */}
+          {mode === 'rtsp' && streaming && (
+            <div className="card card-p">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                <h3 style={{ fontSize: '0.95rem', margin: 0 }}>🫥 Face Recognition</h3>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {faceResult && (
+                    <span style={{
+                      fontSize: '0.72rem', fontWeight: 700, padding: '2px 9px', borderRadius: 99,
+                      background: faceResult.unknown_detected ? 'rgba(239,68,68,0.15)' : 'rgba(16,185,129,0.12)',
+                      color: faceResult.unknown_detected ? '#ef4444' : '#10b981',
+                      border: `1px solid ${faceResult.unknown_detected ? 'rgba(239,68,68,0.3)' : 'rgba(16,185,129,0.3)'}`,
+                    }}>
+                      {faceResult.unknown_detected ? '⚠️ UNKNOWN' : `✓ ${faceResult.face_count} face${faceResult.face_count !== 1 ? 's' : ''}`}
+                    </span>
+                  )}
+                  <button
+                    onClick={() => setEnableFace(f => !f)}
+                    title={enableFace ? 'Disable face recognition' : 'Enable face recognition'}
+                    style={{
+                      width: 36, height: 20, borderRadius: 10, cursor: 'pointer',
+                      border: 'none', padding: 0, transition: 'background 0.2s',
+                      background: enableFace ? '#6366f1' : 'rgba(255,255,255,0.12)',
+                      position: 'relative', flexShrink: 0,
+                    }}
+                  >
+                    <span style={{
+                      position: 'absolute', top: 2, width: 16, height: 16,
+                      borderRadius: '50%', background: '#fff', transition: 'left 0.2s',
+                      left: enableFace ? 18 : 2,
+                    }} />
+                  </button>
+                </div>
+              </div>
+
+              {!enableFace ? (
+                <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>Face recognition is disabled</div>
+              ) : !faceResult || faceResult.face_count === 0 ? (
+                <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>No faces detected in frame</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {faceResult.faces?.map((face, i) => (
+                    <div key={i} style={{
+                      display: 'flex', alignItems: 'center', gap: 10,
+                      padding: '8px 12px', borderRadius: 8,
+                      background: face.is_unknown ? 'rgba(239,68,68,0.08)' : 'rgba(16,185,129,0.07)',
+                      border: `1px solid ${face.is_unknown ? 'rgba(239,68,68,0.25)' : 'rgba(16,185,129,0.2)'}`,
+                    }}>
+                      <span style={{ fontSize: '1.3rem' }}>{face.is_unknown ? '❌' : '✅'}</span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{
+                          fontSize: '0.85rem', fontWeight: 700,
+                          color: face.is_unknown ? 'var(--accent-red)' : 'var(--accent-green)',
+                        }}>
+                          {face.is_unknown ? 'UNKNOWN' : face.label}
+                        </div>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                          Confidence: {Math.round(face.confidence * 100)}%
+                        </div>
+                      </div>
+                      {face.is_unknown && (
+                        <span style={{
+                          fontSize: '0.68rem', fontWeight: 700, padding: '2px 8px',
+                          borderRadius: 99, background: 'rgba(239,68,68,0.2)', color: '#f87171',
+                          border: '1px solid rgba(239,68,68,0.3)',
+                        }}>ALERT</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="card card-p">
             <h3 style={{ fontSize: '0.95rem', marginBottom: 12 }}>
               <HardHat size={15} style={{ marginRight: 6, verticalAlign: 'middle' }} />

@@ -1,22 +1,29 @@
 @echo off
-echo =============================================
-echo   SafeGuard AI - Starting Backend Server
-echo =============================================
+title OccuSafe Backend
+color 0A
+echo ============================================
+echo   OccuSafe Backend Startup
+echo ============================================
+echo.
+
 cd /d "%~dp0"
 
-if not exist venv\Scripts\activate (
-    echo Creating virtual environment...
-    python -m venv venv
+echo [1/3] Running database migration...
+venv\Scripts\python migrate_thumbnail.py
+echo.
+
+echo [2/3] Checking imports...
+venv\Scripts\python -c "from routers import auth, users, alerts, detection, video, faces, cctv; from services import face_service, yolo_service; print('[OK] All imports OK')"
+if %ERRORLEVEL% NEQ 0 (
+    echo [ERROR] Import check failed - see error above
+    pause
+    exit /b 1
 )
-
-call venv\Scripts\activate
-
-echo Installing/checking dependencies...
-pip install -q fastapi uvicorn[standard] sqlalchemy python-jose[cryptography] passlib[bcrypt] python-multipart opencv-python Pillow numpy aiofiles pydantic-settings
-
 echo.
-echo Starting FastAPI server on http://localhost:8000
-echo API Docs: http://localhost:8000/docs
+
+echo [3/3] Starting backend on port 8000...
+echo       Access at: http://localhost:8000
+echo       Health:    http://localhost:8000/health
 echo.
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+venv\Scripts\python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 pause

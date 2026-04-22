@@ -15,14 +15,9 @@ class Settings(BaseSettings):
     YOLO_MODEL: str = "yolov8m.pt"
 
     # Confidence threshold for YOLO inference (0–1). Higher = fewer false positives.
-    DETECTION_CONF: float = 0.50
-
-    # NMS IoU threshold — lower removes more overlapping boxes.
-    NMS_IOU: float = 0.45
-
-    # IoU threshold for assigning a PPE bbox to a person bbox.
-    # A helmet overlapping ≥15% of person area = "person has helmet".
-    IOU_PERSON_PPE: float = 0.15
+    DETECTION_CONF: float = 0.35   # Lower = more sensitive (catches distant/partial PPE)
+    NMS_IOU: float = 0.40           # NMS threshold — lower removes fewer overlapping boxes
+    IOU_PERSON_PPE: float = 0.10    # Lower = PPE assigned to person even at edges
 
     # Minimum confidence for a violation to trigger an alert save.
     MIN_VIOLATION_CONF: float = 0.50

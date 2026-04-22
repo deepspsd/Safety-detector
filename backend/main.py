@@ -6,7 +6,7 @@ import os
 from database import create_tables
 from config import settings
 from services.yolo_service import load_model
-from routers import auth, users, alerts, detection, video, faces
+from routers import auth, users, alerts, detection, video, faces, cctv
 
 app = FastAPI(
     title="Safety Monitor API",
@@ -32,6 +32,7 @@ app.include_router(alerts.router)
 app.include_router(detection.router)
 app.include_router(video.router)
 app.include_router(faces.router)
+app.include_router(cctv.router)
 
 # Serve uploaded files
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
@@ -46,11 +47,25 @@ def startup():
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         datefmt="%H:%M:%S",
     )
-    # Ensure snapshots directory exists (served at /uploads/snapshots/)
     os.makedirs(os.path.join(settings.UPLOAD_DIR, "snapshots"), exist_ok=True)
     create_tables()
+
+    # ── Auto-migrate: add thumbnail_b64 to face_encodings if missing ──────────
+    try:
+        from sqlalchemy import text
+        from database import engine
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE face_encodings ADD COLUMN thumbnail_b64 TEXT"))
+            conn.commit()
+        print("✅ DB migration: thumbnail_b64 column added")
+    except Exception as e:
+        if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+            pass  # column already there — all good
+        else:
+            print(f"⚠️  Migration warning: {e}")
+
     load_model()
-    print("✅ Safety Monitor API v3.0 started — snapshots at /uploads/snapshots/")
+    print("✅ Safety Monitor API v3.0 started")
 
 
 @app.get("/")

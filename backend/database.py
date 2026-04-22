@@ -66,6 +66,7 @@ class FaceEncoding(Base):
     label = Column(String(100), nullable=False)  # "owner", custom name
     encoding_data = Column(Text, nullable=False)  # JSON array of floats
     image_path = Column(String(500), nullable=True)
+    thumbnail_b64 = Column(Text, nullable=True)   # small base64 face crop for UI preview
     created_at = Column(DateTime, default=datetime.utcnow)
     user = relationship("User", back_populates="face_encodings")
 

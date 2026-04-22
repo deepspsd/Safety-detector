@@ -1,67 +1,129 @@
 """
-Face registration router — allows Home users to register known faces.
+Faces router — Multi-Person Face Registration & Management
+• Any authenticated user can register faces (not just Home role)
+• Saves thumbnail_b64 for UI preview
+• Supports rename endpoint
 """
 import json
-import os
-import base64
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from database import get_db, User, FaceEncoding
 from routers.auth import get_current_user
 from services.face_service import encode_face_from_image
-from config import settings
 
 router = APIRouter(prefix="/faces", tags=["faces"])
 
 
 class FaceRegisterRequest(BaseModel):
     label: str
-    image_b64: str  # base64 image
+    image_b64: str   # base64 data-URL
+
+
+class FaceRenameRequest(BaseModel):
+    label: str
 
 
 @router.post("/register")
 def register_face(
     data: FaceRegisterRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ):
-    if current_user.role != "Home":
-        raise HTTPException(status_code=403, detail="Face registration is only for Home role")
+    if not data.label.strip():
+        raise HTTPException(status_code=400, detail="Label cannot be empty")
 
-    encoding = encode_face_from_image(data.image_b64)
-    if encoding is None:
-        raise HTTPException(status_code=400, detail="No face detected in the provided image")
+    result = encode_face_from_image(data.image_b64)
+    if result is None:
+        raise HTTPException(
+            status_code=400,
+            detail="No face detected in the image. Please use a clear, front-facing photo with good lighting."
+        )
 
-    # Remove existing encoding with same label
-    db.query(FaceEncoding).filter(
-        FaceEncoding.user_id == current_user.id,
-        FaceEncoding.label == data.label
-    ).delete()
+    # Try saving with thumbnail first; fall back without it if column doesn't exist yet
+    try:
+        face_record = FaceEncoding(
+            user_id       = current_user.id,
+            label         = data.label.strip(),
+            encoding_data = json.dumps(result["encoding"]),
+            thumbnail_b64 = result.get("thumbnail_b64"),
+        )
+        db.add(face_record)
+        db.commit()
+        db.refresh(face_record)
+    except Exception:
+        db.rollback()
+        # Fallback: save without thumbnail (column might not be migrated yet)
+        face_record = FaceEncoding(
+            user_id       = current_user.id,
+            label         = data.label.strip(),
+            encoding_data = json.dumps(result["encoding"]),
+        )
+        db.add(face_record)
+        db.commit()
+        db.refresh(face_record)
 
-    face_record = FaceEncoding(
-        user_id=current_user.id,
-        label=data.label,
-        encoding_data=json.dumps(encoding)
-    )
-    db.add(face_record)
-    db.commit()
-    return {"message": f"Face '{data.label}' registered successfully"}
+    return {
+        "message":       f"Face '{face_record.label}' registered successfully",
+        "id":            face_record.id,
+        "label":         face_record.label,
+        "thumbnail_b64": getattr(face_record, "thumbnail_b64", None),
+        "created_at":    face_record.created_at.isoformat(),
+    }
 
 
 @router.get("/")
-def list_faces(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    faces = db.query(FaceEncoding).filter(FaceEncoding.user_id == current_user.id).all()
-    return [{"id": f.id, "label": f.label, "created_at": f.created_at.isoformat()} for f in faces]
+def list_faces(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    faces = db.query(FaceEncoding).filter(
+        FaceEncoding.user_id == current_user.id
+    ).order_by(FaceEncoding.created_at.desc()).all()
+
+    return [
+        {
+            "id":           f.id,
+            "label":        f.label,
+            "thumbnail_b64": f.thumbnail_b64,
+            "created_at":   f.created_at.isoformat(),
+        }
+        for f in faces
+    ]
+
+
+@router.put("/{face_id}/label")
+def rename_face(
+    face_id: int,
+    data: FaceRenameRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    face = db.query(FaceEncoding).filter(
+        FaceEncoding.id == face_id,
+        FaceEncoding.user_id == current_user.id,
+    ).first()
+    if not face:
+        raise HTTPException(status_code=404, detail="Face not found")
+    if not data.label.strip():
+        raise HTTPException(status_code=400, detail="Label cannot be empty")
+    face.label = data.label.strip()
+    db.commit()
+    return {"message": "Label updated", "id": face.id, "label": face.label}
 
 
 @router.delete("/{face_id}")
-def delete_face(face_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def delete_face(
+    face_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     face = db.query(FaceEncoding).filter(
-        FaceEncoding.id == face_id, FaceEncoding.user_id == current_user.id
+        FaceEncoding.id == face_id,
+        FaceEncoding.user_id == current_user.id,
     ).first()
     if not face:
         raise HTTPException(status_code=404, detail="Face not found")
     db.delete(face)
     db.commit()
-    return {"message": "Face encoding deleted"}
+    return {"message": "Face deleted"}

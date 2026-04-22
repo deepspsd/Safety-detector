@@ -46,6 +46,9 @@ export default function Settings() {
   const [customPpe, setCustomPpe] = useState(customPpeItems || [])
   // Phone zone — local copy editable in the Phone tab
   const [noPhoneZoneLocal, setNoPhoneZoneLocal] = useState(!!savedNoPhoneZone)
+  // editing state for inline label rename
+  const [editingFaceId,    setEditingFaceId]    = useState(null)
+  const [editingFaceLabel, setEditingFaceLabel] = useState('')
 
   useEffect(() => {
     usersApi.getConfig().then(r => {
@@ -53,9 +56,8 @@ export default function Settings() {
       if (r.data.custom_ppe_items?.length) setCustomPpe(r.data.custom_ppe_items)
       if (r.data.no_phone_zone !== undefined) setNoPhoneZoneLocal(!!r.data.no_phone_zone)
     }).catch(() => {})
-    if (user?.role === 'Home') {
-      facesApi.list().then(r => setFaces(r.data)).catch(() => {})
-    }
+    // Load faces for ALL roles, not just Home
+    facesApi.list().then(r => setFaces(r.data)).catch(() => {})
   }, [user])
 
   const saveConfig = async () => {
@@ -124,6 +126,18 @@ export default function Settings() {
       setFaces(f => f.filter(x => x.id !== id))
       addToast('Face removed', '', 'success')
     } catch { addToast('Delete failed', '', 'danger') }
+  }
+
+  const renameFace = async (id, newLabel) => {
+    if (!newLabel.trim() || newLabel === faces.find(f => f.id === id)?.label) {
+      setEditingFaceId(null); return
+    }
+    try {
+      await facesApi.rename(id, newLabel.trim())
+      setFaces(prev => prev.map(f => f.id === id ? { ...f, label: newLabel.trim() } : f))
+      addToast('Name updated', `Renamed to "${newLabel.trim()}"`, 'success')
+    } catch { addToast('Rename failed', '', 'danger') }
+    setEditingFaceId(null)
   }
 
   const setConf = (k, v) => setConfig(c => ({ ...c, [k]: v }))
@@ -208,7 +222,7 @@ export default function Settings() {
     { id: 'camera',        label: '📷 Camera'        },
     { id: 'notifications', label: '🔔 Alerts'        },
     { id: 'profile',       label: '👤 Profile'       },
-    ...(user?.role === 'Home' ? [{ id: 'faces', label: '🔍 Faces' }] : []),
+    { id: 'faces',         label: '🔍 Faces'         },
   ]
 
   return (
@@ -665,53 +679,234 @@ export default function Settings() {
         </div>
       )}
 
-      {/* ── Faces Tab (Home role) ── */}
+      {/* ── Faces Tab — Smart Access Control ── */}
       {activeTab === 'faces' && (
-        <div className="card card-p" style={{ maxWidth: 600 }}>
-          <h3 style={{ fontSize: '1rem', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Shield size={18} /> Registered Faces
-          </h3>
-          <p style={{ fontSize: '0.85rem', marginBottom: 20 }}>
-            Upload a clear photo of known persons. The system will alert if an unregistered face is detected.
-          </p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 24 }}>
-            <div className="form-group">
-              <label className="form-label">Person Label</label>
-              <input className="form-input" placeholder="e.g. Owner, Family Member"
-                value={faceLabel} onChange={e => setFaceLabel(e.target.value)} />
-            </div>
-            <div>
-              <label className="btn btn-ghost" style={{ cursor: 'pointer' }}>
-                <Upload size={14} />
-                {faceImg ? 'Image selected ✓' : 'Choose Photo'}
-                <input type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFaceImage} />
-              </label>
-            </div>
-            {faceImg && (
-              <img src={faceImg} alt="Preview" style={{ width:100, height:100, objectFit:'cover', borderRadius:10, border:'1px solid var(--border)' }} />
-            )}
-            <button className="btn btn-primary" onClick={registerFace} disabled={saving || !faceImg}>
-              {saving ? <span className="spinner" style={{ width:15, height:15, borderWidth:2 }} /> : 'Register Face'}
-            </button>
-          </div>
-          {faces.length > 0 && (
-            <div>
-              <div style={{ fontSize:'0.75rem', color:'var(--text-muted)', marginBottom:10, textTransform:'uppercase', letterSpacing:'0.5px' }}>
-                Registered ({faces.length})
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 700 }}>
+
+          {/* Header */}
+          <div className="card card-p" style={{ background: 'linear-gradient(135deg,rgba(99,102,241,0.12),rgba(139,92,246,0.08))', border: '1px solid rgba(99,102,241,0.25)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+              <div style={{ fontSize: '2.5rem' }}>🔍</div>
+              <div>
+                <div style={{ fontSize: '1.05rem', fontWeight: 700, color: 'var(--text-primary)' }}>Smart Access Control</div>
+                <div style={{ fontSize: '0.80rem', color: 'var(--text-muted)', marginTop: 3 }}>
+                  Register known persons. The system alerts when an unregistered face is detected in any camera feed.
+                </div>
               </div>
-              <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+              {faces.length > 0 && (
+                <div style={{ marginLeft: 'auto', textAlign: 'center', flexShrink: 0 }}>
+                  <div style={{ fontSize: '1.6rem', fontWeight: 800, color: '#6366f1' }}>{faces.length}</div>
+                  <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', letterSpacing: '.04em' }}>REGISTERED</div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Register new face */}
+          <div className="card card-p">
+            <h3 style={{ fontSize: '0.95rem', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Upload size={16} color="#6366f1" /> Register New Person
+            </h3>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+
+              {/* Left: form */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div className="form-group">
+                  <label className="form-label">Person Name / Label</label>
+                  <input
+                    className="form-input"
+                    placeholder="e.g. Owner, Rohith, Staff 1"
+                    value={faceLabel}
+                    onChange={e => setFaceLabel(e.target.value)}
+                  />
+                </div>
+
+                {/* Drag-drop upload zone */}
+                <label style={{
+                  display: 'flex', flexDirection: 'column', alignItems: 'center',
+                  justifyContent: 'center', gap: 8, padding: '20px 16px',
+                  border: `2px dashed ${faceImg ? 'rgba(99,102,241,0.6)' : 'var(--border)'}`,
+                  borderRadius: 12, cursor: 'pointer', textAlign: 'center',
+                  background: faceImg ? 'rgba(99,102,241,0.06)' : 'rgba(255,255,255,0.02)',
+                  transition: 'all 0.2s',
+                }}>
+                  <span style={{ fontSize: '1.8rem' }}>{faceImg ? '✅' : '📷'}</span>
+                  <div style={{ fontSize: '0.82rem', fontWeight: 600, color: faceImg ? '#6366f1' : 'var(--text-secondary)' }}>
+                    {faceImg ? 'Photo selected' : 'Click to upload photo'}
+                  </div>
+                  <div style={{ fontSize: '0.70rem', color: 'var(--text-muted)' }}>
+                    JPG / PNG • Clear front-facing photo
+                  </div>
+                  <input type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFaceImage} />
+                </label>
+
+                <button
+                  className="btn btn-primary"
+                  onClick={registerFace}
+                  disabled={saving || !faceImg || !faceLabel.trim()}
+                  style={{ background: 'linear-gradient(135deg,#6366f1,#8b5cf6)' }}
+                >
+                  {saving
+                    ? <><span className="spinner" style={{ width:14, height:14, borderWidth:2 }} /> Registering…</>
+                    : <><Shield size={14} /> Register Face</>}
+                </button>
+              </div>
+
+              {/* Right: preview */}
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+                {faceImg ? (
+                  <>
+                    <img
+                      src={faceImg}
+                      alt="Preview"
+                      style={{ width: 130, height: 130, objectFit: 'cover', borderRadius: '50%',
+                               border: '3px solid #6366f1', boxShadow: '0 0 20px rgba(99,102,241,0.3)' }}
+                    />
+                    <div style={{ fontSize: '0.78rem', color: '#6366f1', fontWeight: 600 }}>{faceLabel || 'No name'}</div>
+                    <button className="btn btn-ghost btn-sm" style={{ fontSize: '0.72rem' }}
+                      onClick={() => setFaceImg(null)}>✕ Remove</button>
+                  </>
+                ) : (
+                  <div style={{ width: 130, height: 130, borderRadius: '50%',
+                                background: 'rgba(99,102,241,0.08)', border: '2px dashed rgba(99,102,241,0.3)',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                fontSize: '2.5rem' }}>👤</div>
+                )}
+                <div style={{ fontSize: '0.70rem', color: 'var(--text-muted)', textAlign: 'center', maxWidth: 130 }}>
+                  Use a clear, well-lit front-facing photo for best accuracy
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Registered faces grid */}
+          {faces.length > 0 ? (
+            <div className="card card-p">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                <h3 style={{ fontSize: '0.95rem', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <CheckCircle size={16} color="var(--accent-green)" /> Authorized Persons
+                  <span style={{ fontSize: '0.72rem', fontWeight: 700, padding: '2px 9px', borderRadius: 99,
+                                 background: 'rgba(16,185,129,0.12)', color: '#10b981',
+                                 border: '1px solid rgba(16,185,129,0.3)' }}>
+                    {faces.length} registered
+                  </span>
+                </h3>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(160px,1fr))', gap: 12 }}>
                 {faces.map(f => (
-                  <div key={f.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'10px 14px', background:'rgba(255,255,255,0.04)', borderRadius:8, border:'1px solid var(--border)' }}>
-                    <div>
-                      <div style={{ fontWeight:600, fontSize:'0.875rem' }}>{f.label}</div>
-                      <div style={{ fontSize:'0.75rem', color:'var(--text-muted)' }}>{new Date(f.created_at).toLocaleDateString()}</div>
+                  <div key={f.id} style={{
+                    display: 'flex', flexDirection: 'column', alignItems: 'center',
+                    padding: '16px 12px 12px', borderRadius: 14, gap: 10,
+                    background: 'var(--bg-card)', border: '1px solid var(--border)',
+                    position: 'relative', transition: 'box-shadow 0.2s',
+                  }}
+                    onMouseEnter={e => e.currentTarget.style.boxShadow='0 4px 20px rgba(99,102,241,0.18)'}
+                    onMouseLeave={e => e.currentTarget.style.boxShadow='none'}
+                  >
+                    {/* Delete button */}
+                    <button
+                      className="btn btn-ghost btn-icon btn-sm"
+                      onClick={() => deleteFace(f.id)}
+                      title="Remove"
+                      style={{ position: 'absolute', top: 8, right: 8, opacity: 0.6,
+                               width: 24, height: 24, padding: 0, fontSize: '0.7rem' }}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+
+                    {/* Avatar */}
+                    {f.thumbnail_b64 ? (
+                      <img
+                        src={f.thumbnail_b64}
+                        alt={f.label}
+                        style={{ width: 80, height: 80, borderRadius: '50%', objectFit: 'cover',
+                                 border: '2px solid rgba(99,102,241,0.5)',
+                                 boxShadow: '0 2px 12px rgba(99,102,241,0.25)' }}
+                      />
+                    ) : (
+                      <div style={{ width: 80, height: 80, borderRadius: '50%', fontSize: '2rem',
+                                   background: 'linear-gradient(135deg,#6366f1,#8b5cf6)',
+                                   display: 'flex', alignItems: 'center', justifyContent: 'center' }}>👤</div>
+                    )}
+
+                    {/* Authorized badge */}
+                    <span style={{ fontSize: '0.62rem', fontWeight: 700, padding: '2px 8px',
+                                   borderRadius: 99, background: 'rgba(16,185,129,0.12)',
+                                   color: '#10b981', border: '1px solid rgba(16,185,129,0.3)',
+                                   letterSpacing: '.04em' }}>✓ AUTHORIZED</span>
+
+                    {/* Editable name */}
+                    {editingFaceId === f.id ? (
+                      <input
+                        autoFocus
+                        className="form-input"
+                        style={{ textAlign: 'center', fontSize: '0.82rem', padding: '4px 8px',
+                                 width: '100%', borderRadius: 8 }}
+                        value={editingFaceLabel}
+                        onChange={e => setEditingFaceLabel(e.target.value)}
+                        onBlur={() => renameFace(f.id, editingFaceLabel)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') renameFace(f.id, editingFaceLabel)
+                          if (e.key === 'Escape') setEditingFaceId(null)
+                        }}
+                      />
+                    ) : (
+                      <div
+                        title="Click to rename"
+                        onClick={() => { setEditingFaceId(f.id); setEditingFaceLabel(f.label) }}
+                        style={{ fontWeight: 700, fontSize: '0.88rem', cursor: 'text',
+                                 color: 'var(--text-primary)', textAlign: 'center',
+                                 padding: '2px 6px', borderRadius: 6, width: '100%',
+                                 border: '1px solid transparent',
+                                 transition: 'border 0.15s' }}
+                        onMouseEnter={e => e.currentTarget.style.border='1px solid var(--border)'}
+                        onMouseLeave={e => e.currentTarget.style.border='1px solid transparent'}
+                      >
+                        {f.label}
+                      </div>
+                    )}
+
+                    <div style={{ fontSize: '0.67rem', color: 'var(--text-muted)' }}>
+                      {new Date(f.created_at).toLocaleDateString()}
                     </div>
-                    <button className="btn btn-ghost btn-icon btn-sm" onClick={() => deleteFace(f.id)}><Trash2 size={13} /></button>
                   </div>
                 ))}
               </div>
+
+              <div style={{ marginTop: 14, fontSize: '0.72rem', color: 'var(--text-muted)',
+                            display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>💡</span> Click a name to rename • Hover for delete button
+              </div>
+            </div>
+          ) : (
+            <div className="card card-p" style={{ textAlign: 'center', padding: '40px 24px' }}>
+              <div style={{ fontSize: '3rem', marginBottom: 12 }}>👥</div>
+              <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: 6 }}>No faces registered yet</div>
+              <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                Add your first person above. Once registered, the system will identify them in all camera feeds.
+              </div>
             </div>
           )}
+
+          {/* Tips */}
+          <div className="card card-p" style={{ background: 'rgba(59,130,246,0.05)', border: '1px solid rgba(59,130,246,0.2)' }}>
+            <div style={{ fontSize: '0.85rem', fontWeight: 700, marginBottom: 10, color: 'var(--text-primary)' }}>📋 Tips for Best Accuracy</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {[
+                { icon: '📸', tip: 'Use a clear, front-facing photo with good lighting' },
+                { icon: '🔢', tip: 'Register the same person multiple times from different angles for better recognition' },
+                { icon: '🚫', tip: 'Avoid photos with sunglasses, masks, or heavy blur' },
+                { icon: '👥', tip: 'Works with multiple people in the same frame simultaneously' },
+                { icon: '⚡', tip: 'Face recognition runs alongside PPE detection in real time' },
+              ].map(({ icon, tip }) => (
+                <div key={tip} style={{ display: 'flex', gap: 10, fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                  <span>{icon}</span><span>{tip}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
         </div>
       )}
     </div>

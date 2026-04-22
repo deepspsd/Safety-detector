@@ -1,27 +1,21 @@
 import axios from 'axios'
 
 // ── Smart backend URL detection ────────────────────────────────
-// If the app is opened via a network IP (e.g. http://10.x.x.x:5173 on mobile),
-// the backend is assumed to be on the SAME IP on port 8000.
-// If opened via localhost, use localhost:8000.
-// This env override is still honoured if set explicitly.
+// In development: ALWAYS use the Vite proxy (/api → localhost:8000).
+// This works correctly whether the browser opens via localhost OR
+// a LAN IP (e.g. http://10.x.x.x:5173) — the proxy rewrites it server-side.
+// In production: use the explicit env var or auto-detect.
 function getBaseURL() {
   if (import.meta.env.MODE === 'development') {
-    // In development, route through Vite's dev server proxy
-    // This bypasses Windows Firewall for port 8000 and fixes API timeouts on local network devices
-    return '/api'
+    return '/api'   // Vite proxy: strips /api, forwards to localhost:8000
   }
-
   const envURL = import.meta.env.VITE_API_BASE_URL
-  if (envURL && envURL !== 'http://localhost:8000') return envURL
-
-  // Auto-detect for production if env isn't strictly set
+  if (envURL) return envURL
+  // Production fallback
   const host = window.location.hostname
-  if (host === 'localhost' || host === '127.0.0.1') {
-    return 'http://localhost:8000'
-  }
-  console.log("BASE_URL:", host)
-  return `http://${host}:8000`
+  return host === 'localhost' || host === '127.0.0.1'
+    ? 'http://localhost:8000'
+    : `http://${host}:8000`
 }
 
 const BASE_URL = getBaseURL()
@@ -90,9 +84,10 @@ export const alertsApi = {
 
 // ── Faces ─────────────────────────────────────
 export const facesApi = {
-  list: () => api.get('/faces/'),
+  list:     ()               => api.get('/faces/'),
   register: (label, image_b64) => api.post('/faces/register', { label, image_b64 }),
-  delete: (id) => api.delete(`/faces/${id}`)
+  rename:   (id, label)     => api.put(`/faces/${id}/label`, { label }),
+  delete:   (id)            => api.delete(`/faces/${id}`),
 }
 
 // ── Video ─────────────────────────────────────
