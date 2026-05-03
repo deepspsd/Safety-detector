@@ -693,7 +693,11 @@ async def cctv_detection_websocket(websocket: WebSocket):
                         uid      = user.id
                         now_t    = time.time()
                         dets     = result.get("detections", [])
-                        top_conf = max((d.get("confidence", 0) for d in dets), default=0)
+                        # Use person confidence as fallback so violations without
+                        # a PPE bbox (College, Gloves, Goggles) still trigger alerts.
+                        persons_c = [p.get("confidence", 0) for p in result.get("persons", [])]
+                        dets_c    = [d.get("confidence", 0) for d in dets]
+                        top_conf  = max(persons_c + dets_c, default=0.5)
                         cooldown = settings.ALERT_COOLDOWN
                         if top_conf >= settings.MIN_VIOLATION_CONF and (now_t - _last_alert_time.get(uid, 0)) > cooldown:
                             _last_alert_time[uid] = now_t
@@ -708,6 +712,7 @@ async def cctv_detection_websocket(websocket: WebSocket):
                                 snapshot_b64=result.get("snapshot_b64"),
                             )
                             response["alert_saved"] = True
+
 
                     # ── Phone alert save ───────────────────────────────────
                     if result.get("phone_severity") == "high" and result.get("phone_alert"):

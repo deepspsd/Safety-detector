@@ -495,16 +495,13 @@ def _associate_to_persons(
             if role != "None" and detection_filters is not None and sim_v not in detection_filters:
                 continue
             if _use_simulation:
+                # Simulation mode: randomly assign violations
                 if sim_v in assigned_violations:
                     human_label = VIOLATION_LABEL_MAP.get(sim_v, sim_v)
                     ppe_missing.append(sim_v)
                     violation_labels.append(human_label)
-            else:
-                # Real inference: ~25% estimated miss rate for non-native classes
-                if random.random() < 0.25:
-                    human_label = VIOLATION_LABEL_MAP.get(sim_v, sim_v)
-                    ppe_missing.append(sim_v)
-                    violation_labels.append(human_label)
+            # Real model: ppe_extended.pt handles these — if not loaded, skip (do NOT phantom-flag)
+            # Extended model results are already merged into assigned_violations before this point
 
         enriched.append({
             "bbox":                 p_box,

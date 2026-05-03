@@ -221,9 +221,12 @@ async def detection_websocket(websocket: WebSocket):
                     if not result.get("is_compliant") and result.get("alert_message"):
                         uid      = user.id
                         now      = time.time()
-                        top_conf = max(
-                            (d.get("confidence", 0) for d in detections), default=0
-                        )
+                        # Use max confidence from persons (always present) then PPE detections.
+                        # This ensures College/Gloves/Goggles violations (person-level conf)
+                        # always pass the gate even when no PPE bbox detections exist.
+                        persons_conf = [p.get("confidence", 0) for p in result.get("persons", [])]
+                        dets_conf    = [d.get("confidence", 0) for d in detections]
+                        top_conf = max(persons_conf + dets_conf, default=0.5)
                         conf_ok = top_conf >= settings.MIN_VIOLATION_CONF
 
                         if conf_ok and now - _last_alert_time.get(uid, 0) > settings.ALERT_COOLDOWN:
@@ -240,6 +243,7 @@ async def detection_websocket(websocket: WebSocket):
                                 snapshot_b64=result.get("snapshot_b64"),
                             )
                             response["alert_saved"] = True
+
 
                     # ── Save PHONE alert (separate cooldown — 15 s) ─────
                     phone_sev = result.get("phone_severity")

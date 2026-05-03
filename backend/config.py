@@ -15,15 +15,16 @@ class Settings(BaseSettings):
     YOLO_MODEL: str = "yolov8m.pt"
 
     # Confidence threshold for YOLO inference (0–1). Higher = fewer false positives.
-    DETECTION_CONF: float = 0.35   # Lower = more sensitive (catches distant/partial PPE)
+    DETECTION_CONF: float = 0.30   # Lower = more sensitive (catches distant/partial PPE)
     NMS_IOU: float = 0.40           # NMS threshold — lower removes fewer overlapping boxes
     IOU_PERSON_PPE: float = 0.10    # Lower = PPE assigned to person even at edges
 
     # Minimum confidence for a violation to trigger an alert save.
-    MIN_VIOLATION_CONF: float = 0.50
+    # Must be >= DETECTION_CONF so genuine detections always pass.
+    MIN_VIOLATION_CONF: float = 0.30
 
     # Seconds between saved alerts per user (prevents DB flooding).
-    ALERT_COOLDOWN: int = 5
+    ALERT_COOLDOWN: int = 3
 
     # Process every Nth frame in video uploads (~5 fps at 25fps source).
     FRAME_SKIP: int = 3

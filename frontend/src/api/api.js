@@ -6,16 +6,11 @@ import axios from 'axios'
 // a LAN IP (e.g. http://10.x.x.x:5173) — the proxy rewrites it server-side.
 // In production: use the explicit env var or auto-detect.
 function getBaseURL() {
-  if (import.meta.env.MODE === 'development') {
-    return '/api'   // Vite proxy: strips /api, forwards to localhost:8000
-  }
   const envURL = import.meta.env.VITE_API_BASE_URL
-  if (envURL) return envURL
-  // Production fallback
-  const host = window.location.hostname
-  return host === 'localhost' || host === '127.0.0.1'
-    ? 'http://localhost:8000'
-    : `http://${host}:8000`
+  if (envURL && !envURL.includes('localhost') && !envURL.includes('127.0.0.1')) {
+    return envURL
+  }
+  return '/api'
 }
 
 const BASE_URL = getBaseURL()

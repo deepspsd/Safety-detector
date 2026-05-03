@@ -8,24 +8,26 @@ import {
   User, ShieldCheck, ShieldAlert, HardHat
 } from 'lucide-react'
 
-// WebSocket URLs — use Vite proxy in development (same trick as api.js)
+// WebSocket URLs — ALWAYS use Vite proxy (relative WS URL).
+// This ensures traffic goes through localhost:5173 → localhost:8000,
+// preventing LAN IP timeout even when the browser is opened via a network IP.
 function getWsURL() {
-  if (import.meta.env.MODE === 'development') {
-    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    return `${proto}://${window.location.host}/ws/detect`
-  }
   const envURL = import.meta.env.VITE_API_BASE_URL
-  if (envURL) return envURL.replace(/^http/, 'ws') + '/ws/detect'
-  return `ws://localhost:8000/ws/detect`
+  // Only use explicit URL if it's a real production domain (not localhost)
+  if (envURL && !envURL.includes('localhost') && !envURL.includes('127.0.0.1')) {
+    return envURL.replace(/^http/, 'ws') + '/ws/detect'
+  }
+  // Development: use Vite proxy — always routes to localhost:8000
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  return `${proto}://${window.location.host}/ws/detect`
 }
 function getCctvWsURL() {
-  if (import.meta.env.MODE === 'development') {
-    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    return `${proto}://${window.location.host}/ws/detect-cctv`
-  }
   const envURL = import.meta.env.VITE_API_BASE_URL
-  if (envURL) return envURL.replace(/^http/, 'ws') + '/ws/detect-cctv'
-  return `ws://localhost:8000/ws/detect-cctv`
+  if (envURL && !envURL.includes('localhost') && !envURL.includes('127.0.0.1')) {
+    return envURL.replace(/^http/, 'ws') + '/ws/detect-cctv'
+  }
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  return `${proto}://${window.location.host}/ws/detect-cctv`
 }
 const WS_URL      = getWsURL()
 const CCTV_WS_URL = getCctvWsURL()
