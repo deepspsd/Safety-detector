@@ -37,8 +37,8 @@
 
 ```bash
 # 1. Clone
-git clone https://github.com/rohith-dasari-1/safety-detection-tool.git
-cd safety-detection-tool
+git clone https://github.com/deepspsd/safety-detector.git
+cd safety-detector
 
 # 2. Backend
 cd backend
