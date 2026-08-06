@@ -14,5 +14,12 @@ websockets==12.0
 pydantic-settings==2.2.1
 # gdown is used to download ppe.pt from Google Drive automatically
 gdown>=5.1.0
+# OCR pipeline — Tesseract engine wrapper (system binary also required)
+# Install system binary: https://github.com/UB-Mannheim/tesseract/wiki
+# Windows: winget install UB-Mannheim.TesseractOCR
+# Linux:   sudo apt install tesseract-ocr
+pytesseract>=0.3.10
+# Zone polygon containment check (optional — ocr_service falls back if missing)
+shapely>=2.0.0
 # face-recognition is optional — install separately if dlib is available
 # pip install face-recognition

@@ -65,3 +65,9 @@ yarn-error.log*
 *.bak
 *.tmp
 *.orig
+Skill.md
+req.md
+bakery_cv_plan.md
+training/
+fine_tuning_guide.md
+banglefir_main.zip

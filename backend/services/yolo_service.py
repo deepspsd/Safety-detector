@@ -42,36 +42,61 @@ log = logging.getLogger("yolo_service")
 # ppe.pt class map  (index → name, as trained)
 # ─────────────────────────────────────────────────────────────────
 PPE_CLASS_NAMES = [
-    'Hardhat',       # 0  ✅ compliant
-    'Mask',          # 1  ✅ compliant
-    'NO-Hardhat',    # 2  ❌ violation
-    'NO-Mask',       # 3  ❌ violation
-    'NO-Safety Vest',# 4  ❌ violation
-    'Person',        # 5  👤 neutral person
-    'Safety Cone',   # 6  🟠 neutral
-    'Safety Vest',   # 7  ✅ compliant
-    'machinery',     # 8  🔵 neutral
-    'vehicle',       # 9  🔵 neutral
+    'Hardhat',              # 0  ✅ compliant
+    'Mask',                 # 1  ✅ compliant
+    'NO-Hardhat',           # 2  ❌ violation
+    'NO-Mask',              # 3  ❌ violation
+    'NO-Safety Vest',       # 4  ❌ violation
+    'Person',               # 5  👤 neutral person
+    'Safety Cone',          # 6  🟠 neutral
+    'Safety Vest',          # 7  ✅ compliant
+    'machinery',            # 8  🔵 neutral
+    'vehicle',              # 9  🔵 neutral
+    # ── Phase 1 new classes (ppe_factory_v1.pt) ────────────────
+    'Bakery-Head-Cap',      # 10 ✅ compliant (cloth cap worn correctly)
+    'NO-Bakery-Head-Cap',   # 11 ❌ violation  (cap absent / wrong)
+    'Bangles',              # 12 ❌ violation  (always flagged in food production)
+    'Document-in-hand',     # 13 🔵 neutral  (triggers OCR pipeline at entrance)
+    'Cylinder',             # 14 🔵 neutral  (usage counter)
+    'Exposed-Item',         # 15 ❌ violation  (stock kept openly)
+    'Cashbox',              # 16 🔵 neutral  (zone anchor for cash monitoring)
 ]
 
 # Sets for fast membership checks
-VIOLATION_CLASSES  = {'NO-Hardhat', 'NO-Mask', 'NO-Safety Vest'}
-COMPLIANT_CLASSES  = {'Hardhat', 'Mask', 'Safety Vest'}
+VIOLATION_CLASSES  = {
+    # Original ppe.pt violations
+    'NO-Hardhat', 'NO-Mask', 'NO-Safety Vest',
+    # Phase 1 new violations
+    'NO-Bakery-Head-Cap',   # cap absent / incorrectly worn
+    'Bangles',              # always a violation in food production
+    'Exposed-Item',         # stock kept openly
+}
+COMPLIANT_CLASSES  = {
+    'Hardhat', 'Mask', 'Safety Vest',
+    'Bakery-Head-Cap',      # cloth cap worn correctly
+}
 PERSON_CLASSES     = {'Person'}
-NEUTRAL_CLASSES    = {'Safety Cone', 'machinery', 'vehicle'}
+NEUTRAL_CLASSES    = {
+    'Safety Cone', 'machinery', 'vehicle',
+    'Document-in-hand', 'Cylinder', 'Cashbox',  # Phase 1 neutral classes
+}
 
 # Human-readable violation → missing item label
-# Native ppe.pt violation classes
+# Original ppe.pt violation classes
 VIOLATION_LABEL_MAP = {
-    'NO-Hardhat':       'No Hardhat',
-    'NO-Mask':          'No Mask',
-    'NO-Safety Vest':   'No Safety Vest',
-    # Simulated classes (not in ppe.pt — detected via simulation / future model)
-    'NO-Gloves':        'No Gloves',
-    'NO-Goggles':       'No Goggles',
-    'NO-Safety Shoes':  'No Safety Shoes',
-    'NO-ID Card':       'No ID Card',
-    'NO-Uniform':       'No Uniform',
+    'NO-Hardhat':           'No Hardhat',
+    'NO-Mask':              'No Mask',
+    'NO-Safety Vest':       'No Safety Vest',
+    # Phase 1 — bakery-specific violations
+    'NO-Bakery-Head-Cap':   'No Head Cap',
+    'Bangles':              'Bangles Detected (Violation)',
+    'Exposed-Item':         'Stock Kept Openly',
+    # Simulated classes (not detected by model natively)
+    'NO-Gloves':            'No Gloves',
+    'NO-Goggles':           'No Goggles',
+    'NO-Safety Shoes':      'No Safety Shoes',
+    'NO-ID Card':           'No ID Card',
+    'NO-Uniform':           'No Uniform',
 }
 
 # Classes that are purely simulated (not detected by ppe.pt natively)
@@ -139,6 +164,22 @@ ROLE_RULES: Dict[str, Dict] = {
         "severity": "high",
         "alert_prefix": "🛠️ Custom safety violation",
     },
+
+    # ── Phase 1: Bakery / Food Factory Worker ─────────────────────────────
+    # Violations that ppe_factory_v1.pt detects natively for this role.
+    # Bangles is ALWAYS a violation in food production regardless of other PPE.
+    "Factory Worker": {
+        "required_violations": [
+            "NO-Bakery-Head-Cap",   # cap absent / incorrectly worn
+            "Bangles",              # jewellery — always flagged
+        ],
+        "required_compliant": [
+            "Bakery-Head-Cap",      # cloth cap worn correctly
+        ],
+        "required_sim": [],
+        "severity": "critical",
+        "alert_prefix": "🏭 Factory safety violation",
+    },
 }
 
 # ─────────────────────────────────────────────────────────────────
@@ -185,9 +226,11 @@ def load_model():
     """
     Load models ONCE at startup and cache globally.
     Order of preference for the general model:
-      1. ppe.pt  (custom 10-class PPE model)
-      2. YOLO_MODEL from config (e.g. yolov8m.pt)
-      3. Simulation mode
+      1. ppe_factory_v1.pt  (17-class factory model — Phase 1)
+      2. ppe_factory_v2.pt  (17-class factory model — Phase 2, client footage)
+      3. ppe.pt             (original 10-class — fallback if v1/v2 not present)
+      4. YOLO_MODEL from config (e.g. yolov8m.pt — COCO generic)
+      5. Simulation mode
 
     Additionally loads a specialized helmet detection model for Traffic Police:
       • helmet_model: yolov8m.pt (higher accuracy, helmet-focused via conf boost)
@@ -209,12 +252,24 @@ def load_model():
             return _orig_load(*args, **kwargs)
         torch.load = _patched_load
 
-        _model = YOLO("ppe.pt")
-        torch.load = _orig_load
-        _use_simulation = False
-        _model_is_ppe = True
-        log.info("✅ PPE model loaded: ppe.pt (custom, 10 classes)")
-        print("✅ Custom ppe.pt model loaded (PPE-native, 10 classes)")
+        # Priority: ppe_factory_v1.pt (17-class) → ppe.pt (10-class) → YOLO_MODEL → simulation
+        _factory_candidates = ["ppe_factory_v1.pt", "ppe_factory_v2.pt", "ppe.pt"]
+        _loaded = False
+        for _candidate in _factory_candidates:
+            try:
+                _model = YOLO(_candidate)
+                torch.load = _orig_load
+                _use_simulation = False
+                _model_is_ppe = True
+                _nc = len(_model.names)
+                log.info(f"✅ PPE model loaded: {_candidate} ({_nc} classes)")
+                print(f"✅ PPE model loaded: {_candidate} ({_nc} classes)")
+                _loaded = True
+                break
+            except Exception as e:
+                log.warning(f"{_candidate} unavailable: {e}")
+        if not _loaded:
+            torch.load = _orig_load
     except Exception as e:
         log.warning(f"ppe.pt unavailable: {e}")
         try:
@@ -853,12 +908,39 @@ def _run_traffic_police_strict_ppe(
 def _run_pipeline(frame: np.ndarray, role: str,
                   detection_filters: Optional[List[str]] = None,
                   no_phone_zone: bool = False,
-                  frame_index: int = -1) -> Dict:
+                  frame_index: int = -1,
+                  # ── OCR gate context (all optional — only needed for entrance cameras) ──
+                  # ocr_zone_config : dict mapping zone name → list of [x,y] polygon points
+                  #                   e.g. {"entrance": [[10,20],[200,20],[200,300],[10,300]]}
+                  #                   If None, OCR hook is skipped entirely.
+                  # ocr_direction   : "inward" | "outward" (defaults to "inward")
+                  # ocr_db_session  : active SQLAlchemy Session for DB writes
+                  # ocr_camera_id   : cameras.id FK value to stamp on InvoiceLog/OrderFormLog
+                  # ocr_user_id     : users.id for save_alert() user_id field
+                  ocr_zone_config: Optional[Dict] = None,
+                  ocr_direction: Optional[str] = None,
+                  ocr_db_session=None,
+                  ocr_camera_id: Optional[int] = None,
+                  ocr_user_id: Optional[int] = None,
+                  ) -> Dict:
     """
     Shared pipeline used by both process_frame and process_frame_numpy.
     detection_filters: if provided, only these violation classes are evaluated.
     no_phone_zone: if True, any phone detection triggers an alert.
+
+    OCR gate kwargs (ocr_*) are all optional.  When ocr_zone_config is None
+    the OCR block is skipped with zero overhead.  Supply them only from callers
+    that are processing an entrance-zone camera feed.
     """
+    # Expose OCR context to the block at the end of this function via local vars.
+    # (Python closures don't need these to be global — they're in the same scope.)
+    _ocr_zone_config = ocr_zone_config
+    _ocr_direction   = ocr_direction
+    _ocr_db_session  = ocr_db_session
+    _ocr_camera_id   = ocr_camera_id
+    _ocr_user_id     = ocr_user_id
+
+
     print(f"[PIPELINE] role={role} | sim={_use_simulation} | ded_helmet={_helmet_model_dedicated} | filters={detection_filters}")
 
     # ── Traffic Police: use dedicated helmet pipeline ─────────────────
@@ -1028,6 +1110,124 @@ def _run_pipeline(frame: np.ndarray, role: str,
         if not severity or severity == "low":
             severity = phone_result.get("phone_severity", "high")
 
+
+    # ── OCR gate: Document-in-hand (class 13) at entrance zone ────────────────
+    # Triggered only when the detection pipeline produces at least one
+    # "Document-in-hand" bounding box AND the caller has supplied a zone_config
+    # dict that includes an "entrance" polygon (via kwarg; see below).
+    #
+    # ⚠️  HARDWARE DISCLAIMER: calling ocr_service does NOT open/close a physical
+    #     door or turnstile.  There is no hardware actuator integrated here.
+    #     approved=True  → document saved to DB (InvoiceLog / OrderFormLog).
+    #     approved=False → high-severity REVIEW alert saved via alert_service.
+    #     A human operator must review alerts and take physical action.
+    #     Do not assume or imply hardware integration at any point in this code.
+    _doc_dets = [d for d in raw if d["label"] == "Document-in-hand"]
+    if _doc_dets and _ocr_zone_config is not None:
+        _entrance_poly = _ocr_zone_config.get("entrance")
+        for _doc in _doc_dets:
+            _cx = (_doc["bbox"][0] + _doc["bbox"][2]) / 2
+            _cy = (_doc["bbox"][1] + _doc["bbox"][3]) / 2
+            _in_zone = _entrance_poly is None  # no polygon = always trigger
+            if _entrance_poly is not None:
+                try:
+                    from shapely.geometry import Point, Polygon as _SPoly
+                    _in_zone = _SPoly(_entrance_poly).contains(Point(_cx, _cy))
+                except Exception:
+                    # shapely not installed — fall back: trigger regardless of zone
+                    _in_zone = True
+            if not _in_zone:
+                continue
+
+            # ── Run OCR ────────────────────────────────────────────────────
+            try:
+                from services import ocr_service as _ocr
+                _direction = _ocr_direction or "inward"
+                _ocr_result = _ocr.scan_document_in_frame(
+                    frame=frame,
+                    bbox=_doc["bbox"],
+                    direction=_direction,
+                )
+            except Exception as _oe:
+                log.error(f"[OCR] scan_document_in_frame error: {_oe}")
+                continue
+
+            # Always log raw OCR text — even on approval — so admin can audit
+            log.info(
+                f"[OCR] direction={_ocr_result['direction']} "
+                f"approved={_ocr_result['approved']} "
+                f"raw_text={_ocr_result['raw_text'][:80]!r}"
+            )
+
+            if _ocr_db_session is not None:
+                if _ocr_result["approved"]:
+                    # ── Save to InvoiceLog / OrderFormLog ──────────────────
+                    try:
+                        from database import InvoiceLog, OrderFormLog
+                        _ts_str = _ocr_result.get("timestamp", "")
+                        import datetime as _dt
+                        try:
+                            _ts = _dt.datetime.fromisoformat(_ts_str.rstrip("Z"))
+                        except Exception:
+                            _ts = _dt.datetime.utcnow()
+
+                        if _ocr_result["direction"] == "inward":
+                            _log_row = InvoiceLog(
+                                camera_id=_ocr_camera_id,
+                                direction="inward",
+                                raw_ocr_text=_ocr_result["raw_text"],
+                                approved=True,
+                                snapshot_b64=_ocr_result.get("snapshot_b64"),
+                                ocr_available=_ocr_result.get("ocr_available", True),
+                                timestamp=_ts,
+                            )
+                        else:
+                            _log_row = OrderFormLog(
+                                camera_id=_ocr_camera_id,
+                                direction="outward",
+                                raw_ocr_text=_ocr_result["raw_text"],
+                                approved=True,
+                                snapshot_b64=_ocr_result.get("snapshot_b64"),
+                                ocr_available=_ocr_result.get("ocr_available", True),
+                                timestamp=_ts,
+                            )
+                        _ocr_db_session.add(_log_row)
+                        _ocr_db_session.commit()
+                        log.info(
+                            f"[OCR] {'InvoiceLog' if _ocr_result['direction'] == 'inward' else 'OrderFormLog'} "
+                            f"saved (id={_log_row.id})"
+                        )
+                    except Exception as _dbe:
+                        log.error(f"[OCR] DB save error: {_dbe}")
+
+                else:
+                    # ── Fire REVIEW alert ───────────────────────────────────
+                    # This is a COMPLIANCE LOG alert — not a hardware gate trigger.
+                    # A human operator must review this alert and decide on access.
+                    try:
+                        from services.alert_service import save_alert
+                        _ocr_msg = (
+                            f"[REVIEW — OCR GATE] "
+                            f"{'Inward' if _ocr_result['direction'] == 'inward' else 'Outward'} "
+                            f"document at entrance did NOT match expected "
+                            f"{'invoice' if _ocr_result['direction'] == 'inward' else 'order-form'} "
+                            f"pattern. Raw OCR: {_ocr_result['raw_text'][:120]!r}. "
+                            f"ACTION REQUIRED: human admin must verify document manually. "
+                            f"⚠️ No hardware gate is connected — this is a logged compliance check only."
+                        )
+                        save_alert(
+                            db=_ocr_db_session,
+                            user_id=_ocr_user_id or 0,
+                            message=_ocr_msg,
+                            role="Factory Worker",
+                            severity="high",
+                            detected_issue="Invalid/unrecognised document at entrance",
+                            confidence=None,
+                            snapshot_b64=_ocr_result.get("snapshot_b64"),
+                        )
+                    except Exception as _ae:
+                        log.error(f"[OCR] Alert save error: {_ae}")
+
     return {
         "persons":          enriched,
         "violations":       violations,
@@ -1048,6 +1248,7 @@ def _run_pipeline(frame: np.ndarray, role: str,
         ),
         "phone_severity": phone_result.get("phone_severity", "low"),
     }
+
 
 
 # ─────────────────────────────────────────────────────────────────

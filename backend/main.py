@@ -64,8 +64,35 @@ def startup():
         else:
             print(f"⚠️  Migration warning: {e}")
 
+    # ── Auto-migrate v2: extend alerts table for multi-camera factory schema ───
+    # Adds three nullable columns introduced in database.py v2.0.
+    # Each ALTER is wrapped individually so a single missing column doesn't
+    # abort the others.  Errors other than "already exists" are surfaced.
+    _v2_alert_migrations = [
+        ("camera_id",   "ALTER TABLE alerts ADD COLUMN camera_id   INTEGER REFERENCES cameras(id)"),
+        ("floor",       "ALTER TABLE alerts ADD COLUMN floor        TEXT"),
+        ("employee_id", "ALTER TABLE alerts ADD COLUMN employee_id  INTEGER REFERENCES employees(id)"),
+    ]
+    try:
+        from sqlalchemy import text
+        from database import engine
+        with engine.connect() as conn:
+            for col_name, sql in _v2_alert_migrations:
+                try:
+                    conn.execute(text(sql))
+                    conn.commit()
+                    print(f"✅ DB migration v2: alerts.{col_name} column added")
+                except Exception as col_err:
+                    col_msg = str(col_err).lower()
+                    if "duplicate column" in col_msg or "already exists" in col_msg:
+                        pass  # already migrated — skip silently
+                    else:
+                        print(f"⚠️  Migration v2 warning [{col_name}]: {col_err}")
+    except Exception as e:
+        print(f"⚠️  Migration v2 block error: {e}")
+
     load_model()
-    print("✅ Safety Monitor API v3.0 started")
+    print("✅ Safety Monitor API v4.0 started (factory monitoring schema)")
 
 
 @app.get("/")
