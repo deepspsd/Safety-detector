@@ -23,6 +23,7 @@ import base64
 import threading
 import datetime
 from concurrent.futures import ThreadPoolExecutor
+import ssl
 from typing import Optional, List, Dict
 
 import cv2
@@ -142,12 +143,15 @@ class CameraReader:
             try:
                 req = urllib.request.Request(
                     self.url,
-                    headers={
-                        "User-Agent": "Mozilla/5.0",   # some IP Webcam builds check UA
-                        "Connection": "keep-alive",
-                    },
+                    headers={"User-Agent": "Mozilla/5.0"}
                 )
-                with urllib.request.urlopen(req, timeout=10) as resp:
+                
+                # Bypass SSL validation for local cameras with self-signed certs
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                
+                with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
                     ct = resp.headers.get("Content-Type", "")
                     print(f"[CCTV] Connected — Content-Type: {ct}")
 
@@ -327,12 +331,17 @@ class CameraReader:
     def _poll_jpeg_loop(self):
         """Polling loop for single-frame endpoints like /shot.jpg."""
         import urllib.request
+        import ssl
         failures = 0
         MAX_FAIL = 20
 
         while self._running:
             try:
-                with urllib.request.urlopen(self.url, timeout=3) as resp:
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                
+                with urllib.request.urlopen(self.url, timeout=3, context=ctx) as resp:
                     data = resp.read()
                 arr = np.frombuffer(data, np.uint8)
                 frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)

@@ -52,7 +52,7 @@ if os.path.isdir(_FRONTEND_DIST):
     from fastapi.staticfiles import StaticFiles as _SF
 
     # Serve JS/CSS/assets
-    app.mount("/assets", _SF(os.path.join(_FRONTEND_DIST, "assets"), html=False), name="frontend-assets")
+    app.mount("/assets", _SF(directory=os.path.join(_FRONTEND_DIST, "assets"), html=False), name="frontend-assets")
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def serve_frontend(full_path: str):

@@ -972,6 +972,19 @@ function CamerasTab({ addToast }) {
     }
   }
 
+  const deleteCamera = async (e, id) => {
+    e.stopPropagation()
+    if (!window.confirm('Remove this camera?')) return
+    try {
+      await camerasApi.delete(id)
+      addToast('Camera removed', '', 'success')
+      if (selectedCamera?.id === id) setSelectedCamera(null)
+      await loadCameras()
+    } catch {
+      addToast('Failed to remove camera', '', 'danger')
+    }
+  }
+
   const prefillFromDiscovery = (host) => {
     const guess = host.rtsp_guesses?.[0] || ''
     setAddForm(f => ({ ...f, name: host.hostname || host.ip, rtsp_url: guess }))
@@ -1075,6 +1088,14 @@ function CamerasTab({ addToast }) {
                 </div>
               </div>
               <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{selectedCamera?.id === cam.id ? '▲ Calibrate' : '▼ Calibrate'}</div>
+              <button 
+                className="btn btn-ghost btn-sm btn-icon"
+                onClick={(e) => deleteCamera(e, cam.id)}
+                title="Remove Camera"
+                style={{ color: '#ef4444', padding: 6 }}
+              >
+                <Trash2 size={16} />
+              </button>
             </div>
 
             {/* Zone calibration panel (inline) */}

@@ -93,7 +93,7 @@ def list_cameras(
     current_user: User = Depends(get_current_user),
 ):
     """List all Camera rows, with live reader state overlaid where running."""
-    cameras = db.query(CameraModel).order_by(CameraModel.id).all()
+    cameras = db.query(CameraModel).filter(CameraModel.status != "deleted").order_by(CameraModel.id).all()
     return [_camera_to_dict(c) for c in cameras]
 
 
@@ -196,10 +196,11 @@ def delete_camera(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Stop the camera reader thread and mark the camera as offline in the DB.
-    The row is NOT deleted — use the DB directly for hard deletes if needed.
-    This is a soft-stop to preserve historical alert/log data.
+    Stop the camera reader thread and delete the camera from the DB.
+    If there are foreign key constraints (e.g. existing alerts), it falls back
+    to soft-deleting by setting status="deleted".
     """
+    from sqlalchemy.exc import IntegrityError
     cam = db.query(CameraModel).filter(CameraModel.id == camera_id).first()
     if not cam:
         raise HTTPException(status_code=404, detail="Camera not found")
@@ -207,13 +208,20 @@ def delete_camera(
     # Stop the live reader (no-op if not running)
     camera_manager.stop_camera(camera_id)
 
-    # Mark offline in DB
-    cam.status = "offline"
-    db.commit()
-    db.refresh(cam)
-
-    log.info(f"[cameras] Camera {camera_id} stopped and marked offline")
-    return _camera_to_dict(cam)
+    # Try hard delete
+    try:
+        db.delete(cam)
+        db.commit()
+        log.info(f"[cameras] Camera {camera_id} hard-deleted")
+        return {"id": camera_id, "status": "deleted"}
+    except IntegrityError:
+        # Fallback to soft delete
+        db.rollback()
+        cam.status = "deleted"
+        db.commit()
+        db.refresh(cam)
+        log.info(f"[cameras] Camera {camera_id} soft-deleted (status=deleted)")
+        return _camera_to_dict(cam)
 
 
 @router.post("/{camera_id}/restart")
