@@ -241,3 +241,275 @@ def restart_camera(
 
     log.info(f"[cameras] Camera {camera_id} restarted via API")
     return {"message": f"Camera {camera_id} restarted", **_camera_to_dict(cam)}
+
+
+# ── Zone endpoints ─────────────────────────────────────────────────────────────
+# Zones are polygon regions drawn in the camera frame's pixel space.
+# zone_name examples: "entrance", "cashbox", "window", "dough_table_1"
+# polygon_json: JSON string of [[x,y], [x,y], ...] (≥3 points)
+
+from database import ZoneConfig
+from services import zone_service as _zone_svc
+
+
+class ZoneCreate(BaseModel):
+    zone_name:    str = Field(..., min_length=1, max_length=200)
+    polygon_json: str = Field(
+        ...,
+        description=(
+            "JSON array of [x,y] pixel points, e.g. [[10,10],[200,10],[200,200],[10,200]]"
+        ),
+    )
+
+
+@router.get("/{camera_id}/zones")
+def get_zones(
+    camera_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return all configured zone polygons for this camera.
+    Response: list of { id, zone_name, polygon_json, created_at }
+    """
+    cam = db.query(CameraModel).filter(CameraModel.id == camera_id).first()
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found")
+
+    zones = db.query(ZoneConfig).filter(ZoneConfig.camera_id == camera_id).all()
+    return [
+        {
+            "id":           z.id,
+            "zone_name":    z.zone_name,
+            "polygon_json": z.polygon_json,
+            "created_at":   z.created_at.isoformat() if z.created_at else None,
+        }
+        for z in zones
+    ]
+
+
+@router.post("/{camera_id}/zones", status_code=201)
+def create_or_replace_zone(
+    camera_id: int,
+    payload: ZoneCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Create or replace a named zone polygon for this camera.
+    If a zone with the same zone_name already exists, its polygon is replaced
+    (upsert by zone_name — keeps calibration idempotent).
+
+    Polygon coordinates are raw pixel values in the camera's frame resolution.
+    Re-calibrate if the camera resolution changes.
+
+    After saving, the in-process zone cache is invalidated so the detection
+    daemon picks up the new polygon immediately.
+    """
+    cam = db.query(CameraModel).filter(CameraModel.id == camera_id).first()
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found")
+
+    # Validate polygon JSON
+    import json as _json
+    try:
+        poly = _json.loads(payload.polygon_json)
+        if not isinstance(poly, list) or len(poly) < 3:
+            raise ValueError("Polygon must have at least 3 points")
+        for pt in poly:
+            if not (isinstance(pt, (list, tuple)) and len(pt) == 2):
+                raise ValueError(f"Each point must be [x, y], got: {pt}")
+    except (ValueError, _json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid polygon_json: {exc}")
+
+    # Upsert
+    existing = (
+        db.query(ZoneConfig)
+        .filter(ZoneConfig.camera_id == camera_id, ZoneConfig.zone_name == payload.zone_name)
+        .first()
+    )
+    if existing:
+        existing.polygon_json = payload.polygon_json
+        db.commit()
+        db.refresh(existing)
+        zone = existing
+        log.info(f"[cameras] Zone '{payload.zone_name}' updated for cam {camera_id}")
+    else:
+        zone = ZoneConfig(
+            camera_id    = camera_id,
+            zone_name    = payload.zone_name,
+            polygon_json = payload.polygon_json,
+        )
+        db.add(zone)
+        db.commit()
+        db.refresh(zone)
+        log.info(f"[cameras] Zone '{payload.zone_name}' created for cam {camera_id}")
+
+    # Bust zone cache so daemon picks it up immediately
+    _zone_svc.invalidate_zone_cache(camera_id)
+
+    return {
+        "id":           zone.id,
+        "camera_id":    camera_id,
+        "zone_name":    zone.zone_name,
+        "polygon_json": zone.polygon_json,
+        "created_at":   zone.created_at.isoformat() if zone.created_at else None,
+    }
+
+
+@router.delete("/{camera_id}/zones/{zone_name}", status_code=200)
+def delete_zone(
+    camera_id: int,
+    zone_name: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Delete a named zone polygon for this camera.
+    Busts the in-process zone cache immediately.
+    """
+    zone = (
+        db.query(ZoneConfig)
+        .filter(ZoneConfig.camera_id == camera_id, ZoneConfig.zone_name == zone_name)
+        .first()
+    )
+    if not zone:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Zone '{zone_name}' not found for camera {camera_id}"
+        )
+    db.delete(zone)
+    db.commit()
+    _zone_svc.invalidate_zone_cache(camera_id)
+    log.info(f"[cameras] Zone '{zone_name}' deleted for cam {camera_id}")
+    return {"message": f"Zone '{zone_name}' deleted"}
+
+
+# ── Snapshot endpoint ──────────────────────────────────────────────────────────
+
+import base64 as _b64
+import cv2 as _cv2
+
+
+@router.get("/{camera_id}/snapshot")
+def get_snapshot(
+    camera_id: int,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return the latest frame from the camera daemon as a JPEG base64 data URI.
+    Used by the zone calibration UI to display the live frame as a canvas background.
+    Returns { frame_b64: "data:image/jpeg;base64,..." } or { frame_b64: null }
+    if the camera is offline or has no frame yet.
+    """
+    frame = camera_manager.get_latest_frame(camera_id)
+    if frame is None:
+        return {"frame_b64": None}
+    try:
+        ok, buf = _cv2.imencode(".jpg", frame, [_cv2.IMWRITE_JPEG_QUALITY, 80])
+        if not ok:
+            return {"frame_b64": None}
+        b64 = _b64.b64encode(buf.tobytes()).decode("ascii")
+        return {"frame_b64": f"data:image/jpeg;base64,{b64}"}
+    except Exception as exc:
+        log.error(f"[cameras] Snapshot encode failed for cam {camera_id}: {exc}")
+        return {"frame_b64": None}
+
+
+# ── LAN camera discovery ───────────────────────────────────────────────────────
+# Probes the local subnet for IP cameras by scanning common RTSP (554) and
+# HTTP (80) ports.  This is a connectivity ping — no authentication is
+# attempted.  The admin confirms and manually enters credentials before adding.
+#
+# Approach: pure Python socket.connect_ex scan (no zeep/WSDL/ONVIF library
+# needed for discovery), similar to what Hikvision's iVMS does internally.
+# Defaults to the server's own /24 subnet.
+
+import ipaddress as _ipaddress
+import socket as _socket
+import concurrent.futures as _futures
+
+
+def _probe_host(ip: str, ports: list[int], timeout: float = 0.4) -> Optional[dict]:
+    """Try connecting to each port. Return host info if any port responds."""
+    for port in ports:
+        try:
+            with _socket.create_connection((ip, port), timeout=timeout):
+                # Try to get hostname
+                try:
+                    hostname = _socket.gethostbyaddr(ip)[0]
+                except Exception:
+                    hostname = ""
+
+                # Guess RTSP URL patterns (Hikvision / Dahua / generic)
+                rtsp_guesses = []
+                if port == 554:
+                    rtsp_guesses = [
+                        f"rtsp://<user>:<pass>@{ip}:554/Streaming/Channels/101",   # Hikvision
+                        f"rtsp://<user>:<pass>@{ip}:554/cam/realmonitor?channel=1&subtype=0",  # Dahua
+                        f"rtsp://{ip}:554/stream1",                                 # Generic
+                    ]
+                elif port == 80:
+                    rtsp_guesses = [f"http://{ip}/video"]
+
+                return {
+                    "ip":           ip,
+                    "open_port":    port,
+                    "hostname":     hostname,
+                    "rtsp_guesses": rtsp_guesses,
+                }
+        except (ConnectionRefusedError, TimeoutError, OSError):
+            continue
+    return None
+
+
+@router.post("/discover")
+def discover_cameras(
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Scan the local LAN subnet for IP cameras by probing ports 554 (RTSP)
+    and 80 (HTTP).  Returns a list of hosts that responded.
+
+    ⚠️  This is a best-effort ping scan — it does NOT guarantee the host is
+    a camera, and it does NOT attempt authentication.  The admin should
+    review results, select real cameras, enter credentials, and use
+    POST /cameras to add them officially.
+
+    Scans the /24 subnet of the server's primary outbound interface.
+    Max 254 hosts × 2 ports = 508 probes with 0.4 s timeout, parallelised
+    in a thread pool (takes ~3-8 seconds on a typical LAN).
+    """
+    # Determine local outbound IP
+    try:
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        local_ip = "192.168.1.1"
+
+    # Build /24 host list (skip .0 and .255)
+    try:
+        network = _ipaddress.IPv4Network(f"{local_ip}/24", strict=False)
+        hosts   = [str(h) for h in network.hosts()]
+    except Exception:
+        hosts = [f"192.168.1.{i}" for i in range(1, 255)]
+
+    ports_to_try = [554, 80]
+
+    found = []
+    with _futures.ThreadPoolExecutor(max_workers=64) as pool:
+        futs = {pool.submit(_probe_host, ip, ports_to_try): ip for ip in hosts}
+        for fut in _futures.as_completed(futs):
+            result = fut.result()
+            if result:
+                found.append(result)
+
+    found.sort(key=lambda x: _ipaddress.IPv4Address(x["ip"]))
+    log.info(f"[cameras] Discovery scan found {len(found)} hosts on {local_ip}/24")
+    return {
+        "subnet":       f"{local_ip}/24",
+        "hosts_scanned": len(hosts),
+        "cameras_found": found,
+    }

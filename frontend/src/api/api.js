@@ -97,3 +97,22 @@ export const videoApi = {
   },
   status: (jobId) => api.get(`/video/status/${jobId}`)
 }
+
+// ── Cameras ───────────────────────────────────────
+export const camerasApi = {
+  list:         ()                    => api.get('/cameras/'),
+  get:          (id)                  => api.get(`/cameras/${id}`),
+  create:       (data)                => api.post('/cameras/', data),
+  update:       (id, data)            => api.put(`/cameras/${id}`, data),
+  delete:       (id)                  => api.delete(`/cameras/${id}`),
+  restart:      (id)                  => api.post(`/cameras/${id}/restart`),
+  // Zone calibration
+  getZones:     (id)                  => api.get(`/cameras/${id}/zones`),
+  createZone:   (id, zone_name, polygon_json) =>
+                  api.post(`/cameras/${id}/zones`, { zone_name, polygon_json }),
+  deleteZone:   (id, zone_name)       => api.delete(`/cameras/${id}/zones/${encodeURIComponent(zone_name)}`),
+  // Latest frame for calibration canvas
+  snapshot:     (id)                  => api.get(`/cameras/${id}/snapshot`),
+  // LAN discovery (Hikvision/Dahua/generic RTSP scan)
+  discover:     ()                    => api.post('/cameras/discover'),
+}

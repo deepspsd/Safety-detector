@@ -1244,14 +1244,11 @@ def _run_pipeline(frame: np.ndarray, role: str,
         for _doc in _doc_dets:
             _cx = (_doc["bbox"][0] + _doc["bbox"][2]) / 2
             _cy = (_doc["bbox"][1] + _doc["bbox"][3]) / 2
-            _in_zone = _entrance_poly is None  # no polygon = always trigger
-            if _entrance_poly is not None:
-                try:
-                    from shapely.geometry import Point, Polygon as _SPoly
-                    _in_zone = _SPoly(_entrance_poly).contains(Point(_cx, _cy))
-                except Exception:
-                    # shapely not installed — fall back: trigger regardless of zone
-                    _in_zone = True
+            # No polygon = always trigger (entrance not yet calibrated).
+            # Uses cv2.pointPolygonTest via zone_service — no shapely dependency.
+            from services import zone_service as _zs
+            _in_zone = (_entrance_poly is None
+                        or _zs.point_in_zone(_cx, _cy, _entrance_poly))
             if not _in_zone:
                 continue
 
@@ -1343,6 +1340,24 @@ def _run_pipeline(frame: np.ndarray, role: str,
                         )
                     except Exception as _ae:
                         log.error(f"[OCR] Alert save error: {_ae}")
+
+    # ── Cashbox zone gate ─────────────────────────────────────────────────────
+    # If a "cashbox" zone is configured, mark which enriched persons are inside.
+    # Gate is on person centroid (wrist keypoints = Phase 4 pose model).
+    # ⚠️  No hardware connected — compliance log + alert only.
+    if _ocr_zone_config:
+        from services import zone_service as _zs_gate
+        _cashbox_poly = _ocr_zone_config.get("cashbox")
+        if _cashbox_poly:
+            for _ep in enriched:
+                _pcx, _pcy = _zs_gate.bbox_center(_ep["bbox"])
+                _ep["near_cashbox"] = _zs_gate.point_in_zone(_pcx, _pcy, _cashbox_poly)
+
+    # ── Window zone gate (Phase 4 stub) ───────────────────────────────────────
+    # Window-throw trajectory detection inserted here in Phase 4.
+    # Zone name: "window". Trigger: object centroid exits through window polygon.
+    if _ocr_zone_config and _ocr_zone_config.get("window"):
+        log.debug("[zone_gate] 'window' zone configured — trajectory detection is Phase 4.")
 
     return {
         "persons":          enriched,

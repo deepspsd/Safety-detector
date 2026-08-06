@@ -67,6 +67,15 @@ class Alert(Base):
       camera_id    — which camera fired the alert
       floor        — ground / first / second / shop (denormalised for fast queries)
       employee_id  — identified violator (NULL = unknown / unidentified)
+
+    v3 additions:
+      status       — 'confirmed' | 'pending_review' | 'dismissed'
+                     High-confidence detectors write 'confirmed' directly.
+                     Low-confidence detectors (Phase 4: chewing, eating,
+                     cash-in-pocket, dirty-floor) write 'pending_review'.
+                     Admin can promote pending → confirmed via PATCH /alerts/{id}/confirm
+                     (which also fires the Telegram notification).
+                     'dismissed' = admin decided it was a false positive.
     """
     __tablename__ = "alerts"
 
@@ -85,6 +94,10 @@ class Alert(Base):
     camera_id   = Column(Integer, ForeignKey("cameras.id"),   nullable=True)
     floor       = Column(String(50), nullable=True)           # denormalised; values: ground/first/second/shop
     employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True)
+
+    # v3 — confidence tier / review workflow
+    # Default = 'confirmed' preserves backward compat for all existing rows.
+    status      = Column(String(20), nullable=False, default="confirmed")  # confirmed | pending_review | dismissed
 
     # Relationships
     user     = relationship("User",     back_populates="alerts")
@@ -153,12 +166,13 @@ class Camera(Base):
     created_at   = Column(DateTime,    default=datetime.utcnow)
 
     # Children
-    zones         = relationship("ZoneConfig",   back_populates="camera", cascade="all, delete-orphan")
-    idle_sessions = relationship("IdleSession",  back_populates="camera")
-    cylinder_logs = relationship("CylinderLog",  back_populates="camera")
-    invoice_logs  = relationship("InvoiceLog",   back_populates="camera")
-    order_logs    = relationship("OrderFormLog", back_populates="camera")
-    alerts        = relationship("Alert",        back_populates="camera", foreign_keys="Alert.camera_id")
+    zones          = relationship("ZoneConfig",          back_populates="camera", cascade="all, delete-orphan")
+    idle_sessions  = relationship("IdleSession",         back_populates="camera")
+    cylinder_logs  = relationship("CylinderLog",         back_populates="camera")
+    invoice_logs   = relationship("InvoiceLog",          back_populates="camera")
+    order_logs     = relationship("OrderFormLog",        back_populates="camera")
+    alerts         = relationship("Alert",               back_populates="camera", foreign_keys="Alert.camera_id")
+    dirty_baselines = relationship("DirtyFloorBaseline", back_populates="camera", cascade="all, delete-orphan")
 
 
 class Employee(Base):
@@ -315,6 +329,56 @@ class OrderFormLog(Base):
 # ──────────────────────────────────────────────────────────────────────────────
 # DB helpers
 # ──────────────────────────────────────────────────────────────────────────────
+
+class SystemSettings(Base):
+    """
+    Admin-editable key/value threshold store.
+
+    Replaces hardcoded Python constants in config.py / yolo_service.py so
+    thresholds can be updated via the admin UI without redeploying code.
+
+    All values are stored as strings; the rule_engine casts on read.
+    See rule_engine.py for the full list of recognised keys and their defaults.
+
+    Examples
+    --------
+      key="idle_limit_default"      value="300"    description="Idle alert (seconds)"
+      key="shift_start_ground"      value="08:00"  description="Ground floor shift start"
+      key="dirty_floor_threshold"   value="0.08"   description="Dirty-floor pixel fraction"
+    """
+    __tablename__ = "system_settings"
+
+    id          = Column(Integer,     primary_key=True, index=True)
+    key         = Column(String(100), unique=True, nullable=False, index=True)
+    value       = Column(String(500), nullable=False)
+    description = Column(String(500), nullable=True)
+    updated_at  = Column(DateTime,    default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DirtyFloorBaseline(Base):
+    """
+    Stores the path of a client-supplied clean-state reference photo for one
+    camera / zone combination.
+
+    The rule_engine's DirtyFloorDetector uses these paths to load the
+    baseline image against which live frames are compared.
+
+    Workflow:
+      1. Client provides a photo of how the zone looks when clean.
+      2. Admin uploads via POST /cameras/{id}/baseline (routers/settings.py).
+      3. DirtyFloorDetector.reload() is called so the new baseline takes effect
+         immediately without a server restart.
+    """
+    __tablename__ = "dirty_floor_baselines"
+
+    id          = Column(Integer,     primary_key=True, index=True)
+    camera_id   = Column(Integer,     ForeignKey("cameras.id"), nullable=False)
+    zone_name   = Column(String(200), nullable=False)          # e.g. "ground_entrance"
+    image_path  = Column(String(500), nullable=False)          # absolute or relative path on disk
+    uploaded_at = Column(DateTime,    default=datetime.utcnow)
+
+    camera = relationship("Camera", back_populates="dirty_baselines")
+
 
 def get_db():
     db = SessionLocal()

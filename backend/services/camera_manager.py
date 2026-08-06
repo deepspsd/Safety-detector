@@ -73,10 +73,11 @@ class _ManagedCamera:
     # After this many seconds with no fresh frame, declare offline
     _OFFLINE_TIMEOUT = 30
 
-    def __init__(self, camera_id: int, name: str, url: str):
+    def __init__(self, camera_id: int, name: str, url: str, floor: str = "ground"):
         self.camera_id   = camera_id
         self.name        = name
         self.url         = url
+        self.floor       = floor   # ground | first | second | shop
 
         # Lazy-import CameraReader so this module can be imported before
         # routers.cctv without a circular import error.
@@ -212,26 +213,39 @@ class _ManagedCamera:
 
     def _detection_loop(self):
         """
-        Runs continuously while self._det_running is True.
-        Grabs frame -> runs process_frame_numpy_tracked() -> feeds idle_service.
-        Runs at ~5 fps (sleeping ~0.2s between iterations).
+        Persistent detection + rule-engine loop (~5 fps).
+
+        Each tick:
+          1. Read latest frame from CameraReader.
+          2. Run YOLO inference + ByteTrack via yolo_service.
+          3. Feed persons to idle_service.
+          4. Run rule-engine hooks:
+               a. record_person_seen / check_shift_start
+               b. process_cylinder_detections
+               c. check_dirty_floor
+               d. check_shop_absence  (shop floor only)
+               e. gas_idle_update     (second floor only)
+        All rule-engine calls share one SQLAlchemy session opened per tick and
+        closed in a finally block — no session is held between ticks.
         """
         from services import yolo_service, idle_service
+        from services import zone_service, rule_engine
         from database import SessionLocal, Camera as CameraModel
 
         zone_name = "default"
-        # Fetch initial zone_type for camera from DB
-        db = None
+        db_init = None
         try:
-            db = SessionLocal()
-            cam = db.query(CameraModel).filter(CameraModel.id == self.camera_id).first()
+            db_init = SessionLocal()
+            cam = db_init.query(CameraModel).filter(CameraModel.id == self.camera_id).first()
             if cam and cam.zone_type:
                 zone_name = cam.zone_type
-        except Exception:
-            pass
+            # Seed settings defaults once per camera-start (safe: upsert only)
+            rule_engine.seed_defaults(db_init)
+        except Exception as exc:
+            log.warning(f"[CamMgr] init DB read error (cam={self.camera_id}): {exc}")
         finally:
-            if db:
-                try: db.close()
+            if db_init:
+                try: db_init.close()
                 except Exception: pass
 
         while self._det_running:
@@ -243,20 +257,81 @@ class _ManagedCamera:
             if frame is None:
                 continue
 
+            db = None
             try:
+                db = SessionLocal()
+
+                # ── Zone config (cached) ────────────────────────────────────
+                zones = zone_service.load_zones_without_db(self.camera_id)
+                if zones is None:
+                    zones = zone_service.load_zones_for_camera(self.camera_id, db)
+
+                # ── YOLO inference + tracking ───────────────────────────────
                 res = yolo_service.process_frame_numpy_tracked(
                     frame=frame,
                     role="Factory Worker",
                     camera_id=self.camera_id,
+                    ocr_zone_config=zones if zones else None,
                 )
-                persons = res.get("persons", [])
+                persons     = res.get("persons", [])
+                raw_dets    = res.get("detections", [])
+
+                # ── Idle service ─────────────────────────────────────────────
                 idle_service.process_frame(
                     camera_id=self.camera_id,
                     persons=persons,
                     zone_name=zone_name,
                 )
+
+                # ── Rule engine — person seen recording (shift-start) ────────
+                if persons:
+                    rule_engine.record_person_seen(self.floor)
+
+                # ── Rule engine — shift-start check (once/day/floor) ─────────
+                rule_engine.check_shift_start(self.camera_id, self.floor, db)
+
+                # ── Rule engine — cylinder tracking ──────────────────────────
+                rule_engine.process_cylinder_detections(
+                    camera_id=self.camera_id,
+                    floor=self.floor,
+                    raw_detections=raw_dets,
+                    db=db,
+                )
+
+                # ── Rule engine — dirty-floor heuristic ──────────────────────
+                rule_engine.check_dirty_floor(
+                    camera_id=self.camera_id,
+                    floor=self.floor,
+                    frame=frame,
+                    db=db,
+                )
+
+                # ── Rule engine — shop absence (shop floor only) ──────────────
+                rule_engine.check_shop_absence(
+                    camera_id=self.camera_id,
+                    floor=self.floor,
+                    persons=persons,
+                    db=db,
+                )
+
+                # ── Rule engine — gas/oven idle (second floor only) ───────────
+                if self.floor == "second":
+                    stove_polygon = (zones or {}).get("stove") or (zones or {}).get("oven")
+                    rule_engine.gas_idle_update(
+                        camera_id=self.camera_id,
+                        floor=self.floor,
+                        frame=frame,
+                        person_present=bool(persons),
+                        zone_polygon=stove_polygon,
+                        db=db,
+                    )
+
             except Exception as exc:
                 log.error(f"[CamMgr] Detection loop error (cam={self.camera_id}): {exc}")
+            finally:
+                if db:
+                    try: db.close()
+                    except Exception: pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -290,7 +365,7 @@ def start_all() -> int:
             log.warning(f"[CamMgr] Skipping camera {row.id} '{row.name}' — no rtsp_url")
             continue
         try:
-            _launch(row.id, row.name, row.rtsp_url)
+            _launch(row.id, row.name, row.rtsp_url, floor=row.floor or "ground")
             started += 1
         except Exception as exc:
             log.error(f"[CamMgr] Failed to start camera {row.id}: {exc}")
@@ -316,7 +391,7 @@ def stop_all():
     log.info("[CamMgr] stop_all(): all cameras stopped")
 
 
-def start_camera(camera_id: int, name: str, rtsp_url: str):
+def start_camera(camera_id: int, name: str, rtsp_url: str, floor: str = "ground"):
     """
     Start a reader for a single camera (live-add from POST /cameras).
     No-op if a reader is already running for camera_id.
@@ -325,7 +400,7 @@ def start_camera(camera_id: int, name: str, rtsp_url: str):
         if camera_id in _registry:
             log.info(f"[CamMgr] camera {camera_id} already running — skipped")
             return
-    _launch(camera_id, name, rtsp_url)
+    _launch(camera_id, name, rtsp_url, floor=floor)
 
 
 def stop_camera(camera_id: int):
@@ -342,14 +417,14 @@ def stop_camera(camera_id: int):
         log.warning(f"[CamMgr] stop_camera({camera_id}) — not in registry, skipped")
 
 
-def restart_camera(camera_id: int, name: str, rtsp_url: str):
+def restart_camera(camera_id: int, name: str, rtsp_url: str, floor: str = "ground"):
     """
     Stop the existing reader (if any) then start a fresh one.
     Used by POST /cameras/{id}/restart.
     """
     stop_camera(camera_id)
     time.sleep(0.5)   # brief pause to let the old thread exit cleanly
-    _launch(camera_id, name, rtsp_url)
+    _launch(camera_id, name, rtsp_url, floor=floor)
     log.info(f"[CamMgr] camera {camera_id} restarted")
 
 
@@ -402,9 +477,9 @@ def list_status() -> List[dict]:
 # Internal helper
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _launch(camera_id: int, name: str, url: str):
+def _launch(camera_id: int, name: str, url: str, floor: str = "ground"):
     """Create, register, and start a ManagedCamera.  Not lock-safe — callers manage."""
-    mc = _ManagedCamera(camera_id, name, url)
+    mc = _ManagedCamera(camera_id, name, url, floor=floor)
     mc.start()
     with _lock:
         _registry[camera_id] = mc

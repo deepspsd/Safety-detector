@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
 import { useTheme } from '../context/ThemeContext'
-import { usersApi, facesApi } from '../api/api'
+import { usersApi, facesApi, camerasApi } from '../api/api'
+import ZonePainter from '../components/ZonePainter'
 import {
   Settings as SettingsIcon, Camera, Bell, User,
   Shield, Upload, Trash2, CheckCircle, Sun, Moon,
@@ -220,6 +221,7 @@ export default function Settings() {
     { id: 'safety_rules',  label: '🛡️ Safety Rules'  },
     { id: 'phone',         label: '📱 Phone'         },
     { id: 'camera',        label: '📷 Camera'        },
+    { id: 'cameras_mgmt',  label: '🎥 Cameras'       },
     { id: 'notifications', label: '🔔 Alerts'        },
     { id: 'profile',       label: '👤 Profile'       },
     { id: 'faces',         label: '🔍 Faces'         },
@@ -909,6 +911,183 @@ export default function Settings() {
 
         </div>
       )}
+
+      {/* ── Cameras Management Tab ── */}
+      {activeTab === 'cameras_mgmt' && (
+        <CamerasTab addToast={addToast} />
+      )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────
+// CamerasTab — LAN discovery + per-camera zone calibration
+// ─────────────────────────────────────────────────────────────────
+function CamerasTab({ addToast }) {
+  const [cameras,          setCameras]          = useState([])
+  const [selectedCamera,   setSelectedCamera]   = useState(null)
+  const [discovering,      setDiscovering]      = useState(false)
+  const [discoveryResults, setDiscoveryResults] = useState(null)
+  const [addForm,          setAddForm]          = useState({ name: '', floor: 'ground', rtsp_url: '', zone_type: '' })
+  const [addingCamera,     setAddingCamera]     = useState(false)
+  const [showAddForm,      setShowAddForm]      = useState(false)
+
+  const loadCameras = useCallback(async () => {
+    try {
+      const res = await camerasApi.list()
+      setCameras(res.data)
+    } catch {
+      addToast('Failed to load cameras', '', 'danger')
+    }
+  }, [])
+
+  useEffect(() => { loadCameras() }, [loadCameras])
+
+  const discover = async () => {
+    setDiscovering(true)
+    setDiscoveryResults(null)
+    try {
+      const res = await camerasApi.discover()
+      setDiscoveryResults(res.data)
+    } catch {
+      addToast('Discovery failed', 'Check network access', 'danger')
+    } finally {
+      setDiscovering(false)
+    }
+  }
+
+  const addCamera = async () => {
+    if (!addForm.name.trim()) return addToast('Name required', '', 'warning')
+    setAddingCamera(true)
+    try {
+      await camerasApi.create({ ...addForm, status: addForm.rtsp_url ? 'online' : 'offline' })
+      addToast('Camera added', addForm.name, 'success')
+      setShowAddForm(false)
+      setAddForm({ name: '', floor: 'ground', rtsp_url: '', zone_type: '' })
+      await loadCameras()
+    } catch (err) {
+      addToast('Add failed', err.response?.data?.detail || '', 'danger')
+    } finally {
+      setAddingCamera(false)
+    }
+  }
+
+  const prefillFromDiscovery = (host) => {
+    const guess = host.rtsp_guesses?.[0] || ''
+    setAddForm(f => ({ ...f, name: host.hostname || host.ip, rtsp_url: guess }))
+    setShowAddForm(true)
+    setDiscoveryResults(null)
+  }
+
+  const STATUS_COLOUR = { online: '#4caf50', offline: '#9e9e9e', error: '#f44336' }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24, maxWidth: 860 }}>
+
+      {/* ── Header row ── */}
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <h2 style={{ fontSize: '1.1rem', fontWeight: 700, margin: 0 }}>🎥 Camera Management</h2>
+        <button className="btn btn-ghost" style={{ marginLeft: 'auto' }} onClick={loadCameras}>↻ Refresh</button>
+        <button
+          className="btn btn-secondary"
+          onClick={discover}
+          disabled={discovering}
+        >
+          {discovering
+            ? <><span className="spinner" style={{ width: 14, height: 14, marginRight: 6 }} />Scanning LAN…</>
+            : '🔍 Discover on LAN'}
+        </button>
+        <button className="btn btn-primary" onClick={() => setShowAddForm(v => !v)}>
+          {showAddForm ? '✕ Cancel' : '+ Add Camera'}
+        </button>
+      </div>
+
+      {/* ── LAN discovery results ── */}
+      {discoveryResults && (
+        <div className="card card-p">
+          <div style={{ fontWeight: 700, marginBottom: 10 }}>
+            🌐 {discoveryResults.cameras_found.length} device(s) found on {discoveryResults.subnet}
+          </div>
+          {discoveryResults.cameras_found.length === 0
+            ? <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>No cameras found. Check that cameras are powered and on the same subnet.</div>
+            : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {discoveryResults.cameras_found.map(h => (
+                  <div key={h.ip} style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--bg-card)' }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>{h.ip}</div>
+                      {h.hostname && <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{h.hostname}</div>}
+                      <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>Port {h.open_port} open</div>
+                    </div>
+                    <div style={{ fontSize: 11, color: '#888', flex: 1 }}>
+                      {h.rtsp_guesses?.[0] && <code style={{ fontSize: 10 }}>{h.rtsp_guesses[0].replace('<user>:<pass>@', '')}</code>}
+                    </div>
+                    <button className="btn btn-primary" style={{ fontSize: 12, padding: '5px 14px' }} onClick={() => prefillFromDiscovery(h)}>Add</button>
+                  </div>
+                ))}
+              </div>
+            )}
+        </div>
+      )}
+
+      {/* ── Add camera form ── */}
+      {showAddForm && (
+        <div className="card card-p">
+          <div style={{ fontWeight: 700, marginBottom: 14 }}>+ Add Camera</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Display Name *</label>
+              <input className="input" value={addForm.name} onChange={e => setAddForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Ground Floor Entrance" />
+            </div>
+            <div>
+              <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Floor</label>
+              <select className="input" value={addForm.floor} onChange={e => setAddForm(f => ({ ...f, floor: e.target.value }))}>
+                {['ground','first','second','shop'].map(f => <option key={f} value={f}>{f.charAt(0).toUpperCase() + f.slice(1)} Floor</option>)}
+              </select>
+            </div>
+            <div style={{ gridColumn: 'span 2' }}>
+              <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>RTSP / HTTP URL</label>
+              <input className="input" value={addForm.rtsp_url} onChange={e => setAddForm(f => ({ ...f, rtsp_url: e.target.value }))} placeholder="rtsp://user:pass@192.168.1.x:554/Streaming/Channels/101" />
+            </div>
+            <div>
+              <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Zone Type (for idle limit)</label>
+              <input className="input" value={addForm.zone_type} onChange={e => setAddForm(f => ({ ...f, zone_type: e.target.value }))} placeholder="shop / default / cashbox…" />
+            </div>
+          </div>
+          <button className="btn btn-primary" style={{ marginTop: 14 }} onClick={addCamera} disabled={addingCamera}>
+            {addingCamera ? 'Adding…' : 'Add Camera'}
+          </button>
+        </div>
+      )}
+
+      {/* ── Camera list ── */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {cameras.length === 0 && <div style={{ color: 'var(--text-secondary)', textAlign: 'center', padding: 24 }}>No cameras configured yet.</div>}
+        {cameras.map(cam => (
+          <div key={cam.id} className="card card-p" style={{ cursor: 'pointer', border: selectedCamera?.id === cam.id ? '1px solid var(--accent)' : undefined }}>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center' }} onClick={() => setSelectedCamera(selectedCamera?.id === cam.id ? null : cam)}>
+              <div style={{ width: 12, height: 12, borderRadius: '50%', background: STATUS_COLOUR[cam.status] || '#9e9e9e', flexShrink: 0 }} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 700 }}>{cam.name}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                  {cam.floor} floor • {cam.zone_type || 'general'} • {cam.status}
+                  {cam.rtsp_url && <span> &bull; <code style={{ fontSize: 10 }}>{cam.rtsp_url.replace(/\/\/[^@]+@/, '//***@')}</code></span>}
+                </div>
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{selectedCamera?.id === cam.id ? '▲ Calibrate' : '▼ Calibrate'}</div>
+            </div>
+
+            {/* Zone calibration panel (inline) */}
+            {selectedCamera?.id === cam.id && (
+              <div style={{ marginTop: 20, paddingTop: 20, borderTop: '1px solid var(--border)' }}>
+                <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 14 }}>🗺 Zone Calibration — {cam.name}</div>
+                <ZonePainter cameraId={cam.id} onSaved={loadCameras} />
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
     </div>
   )
 }

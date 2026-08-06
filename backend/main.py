@@ -7,6 +7,7 @@ from database import create_tables
 from config import settings
 from services.yolo_service import load_model
 from routers import auth, users, alerts, detection, video, faces, cctv, cameras
+from routers.settings import router as settings_router, baseline_router
 
 app = FastAPI(
     title="Safety Monitor API",
@@ -34,6 +35,8 @@ app.include_router(video.router)
 app.include_router(faces.router)
 app.include_router(cctv.router)
 app.include_router(cameras.router)
+app.include_router(settings_router)   # GET/PUT /settings/*
+app.include_router(baseline_router)   # POST/DELETE /cameras/{id}/baseline
 
 # Serve uploaded files
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
@@ -92,7 +95,68 @@ def startup():
     except Exception as e:
         print(f"⚠️  Migration v2 block error: {e}")
 
+    # ── Auto-migrate v3: Alert.status column (confidence-tier routing) ────────
+    try:
+        from sqlalchemy import text
+        from database import engine
+        with engine.connect() as conn:
+            try:
+                conn.execute(text(
+                    "ALTER TABLE alerts ADD COLUMN status TEXT NOT NULL DEFAULT 'confirmed'"
+                ))
+                conn.commit()
+                print("✅ DB migration v3: alerts.status column added")
+            except Exception as col_err:
+                col_msg = str(col_err).lower()
+                if "duplicate column" in col_msg or "already exists" in col_msg:
+                    pass  # already migrated
+                else:
+                    print(f"⚠️  Migration v3 [alerts.status]: {col_err}")
+    except Exception as e:
+        print(f"⚠️  Migration v3 block error: {e}")
+
     load_model()
+
+    # ── Seed SystemSettings defaults ──────────────────────────────────────────
+    try:
+        from database import SessionLocal
+        from services import rule_engine
+        _sdb = SessionLocal()
+        try:
+            rule_engine.seed_defaults(_sdb)
+            print("✅ SystemSettings defaults seeded")
+        finally:
+            _sdb.close()
+    except Exception as e:
+        print(f"⚠️  SystemSettings seed warning: {e}")
+
+    # ── Auto-migrate new tables (safe if already exist) ───────────────────────
+    _v3_migrations = [
+        ("system_settings",
+         "CREATE TABLE IF NOT EXISTS system_settings "
+         "(id INTEGER PRIMARY KEY, key TEXT UNIQUE NOT NULL, "
+         "value TEXT NOT NULL, description TEXT, updated_at DATETIME)"),
+        ("dirty_floor_baselines",
+         "CREATE TABLE IF NOT EXISTS dirty_floor_baselines "
+         "(id INTEGER PRIMARY KEY, camera_id INTEGER REFERENCES cameras(id), "
+         "zone_name TEXT NOT NULL, image_path TEXT NOT NULL, uploaded_at DATETIME)"),
+    ]
+    try:
+        from sqlalchemy import text
+        from database import engine
+        with engine.connect() as conn:
+            for tname, sql in _v3_migrations:
+                try:
+                    conn.execute(text(sql))
+                    conn.commit()
+                    print(f"✅ DB migration v3: table '{tname}' ensured")
+                except Exception as te:
+                    if "already exists" in str(te).lower():
+                        pass
+                    else:
+                        print(f"⚠️  Migration v3 [{tname}]: {te}")
+    except Exception as e:
+        print(f"⚠️  Migration v3 block error: {e}")
 
     # ── Start server-managed camera streams ───────────────────────────────────
     # Reads all Camera rows with status != 'offline' from the DB and
