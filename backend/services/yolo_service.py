@@ -200,6 +200,118 @@ _phone_model            = None   # dedicated phone detection model (COCO class 6
 _use_simulation         = False
 _model_is_ppe           = False  # True when ppe.pt loaded (vs generic COCO)
 
+# ─────────────────────────────────────────────────────────────────
+# ByteTrack tracker registry  (one tracker instance per camera_id)
+# ─────────────────────────────────────────────────────────────────
+# Keyed by camera_id (int).  Use camera_id=-1 as a sentinel for callers
+# that don't have a camera_id (e.g. per-WebSocket legacy streams).
+# Each tracker is a supervision.ByteTrack instance.
+# Registry is protected by _tracker_lock for thread-safety.
+import threading as _threading
+_trackers:     Dict[int, object] = {}   # int → sv.ByteTrack
+_tracker_lock  = _threading.Lock()
+
+
+def _get_or_create_tracker(camera_id: int) -> object:
+    """
+    Return the supervision.ByteTrack instance for camera_id.
+    Creates a new one on first call.  Thread-safe.
+    """
+    with _tracker_lock:
+        if camera_id not in _trackers:
+            try:
+                import supervision as sv
+                _trackers[camera_id] = sv.ByteTrack(
+                    track_activation_threshold=0.25,
+                    lost_track_buffer=30,      # frames to keep lost tracks
+                    minimum_matching_threshold=0.8,
+                    frame_rate=15,
+                    minimum_consecutive_frames=1,
+                )
+                log.info(f"[Tracker] Created ByteTrack for camera_id={camera_id}")
+            except ImportError:
+                log.warning(
+                    "[Tracker] supervision not installed — "
+                    "track_id will be -1 for all persons. "
+                    "Run: pip install supervision>=0.21.0"
+                )
+                _trackers[camera_id] = None   # sentinel: supervision unavailable
+        return _trackers.get(camera_id)
+
+
+def reset_tracker(camera_id: int):
+    """
+    Discard the ByteTrack state for camera_id (call when camera stops/restarts
+    so track IDs don't bleed across sessions).
+    """
+    with _tracker_lock:
+        _trackers.pop(camera_id, None)
+    log.info(f"[Tracker] Reset tracker for camera_id={camera_id}")
+
+
+def _apply_tracking(camera_id: int, persons: List[Dict]) -> List[Dict]:
+    """
+    Run ByteTrack on the given person detections and attach a stable
+    'track_id' (int) to each person dict.
+
+    If supervision is unavailable or camera_id is None, every person gets
+    track_id=-1 and the rest of the pipeline is unaffected.
+
+    This function ONLY adds 'track_id' — it does not modify bbox, confidence,
+    or any PPE field.  Downstream code (_associate_to_persons, _draw_results)
+    is completely unchanged.
+    """
+    if not persons:
+        return persons
+
+    tracker = _get_or_create_tracker(camera_id)
+    if tracker is None:
+        # supervision unavailable — assign sentinel IDs
+        for p in persons:
+            p["track_id"] = -1
+        return persons
+
+    try:
+        import supervision as sv
+
+        bboxes  = np.array([p["bbox"] for p in persons], dtype=np.float32)
+        confs   = np.array([p["confidence"] for p in persons], dtype=np.float32)
+        cls_ids = np.zeros(len(persons), dtype=int)   # all "person" class
+
+        sv_dets = sv.Detections(
+            xyxy=bboxes,
+            confidence=confs,
+            class_id=cls_ids,
+        )
+        tracked = tracker.update_with_detections(sv_dets)
+
+        # tracked.xyxy and tracked.tracker_id are aligned arrays.
+        # Match back to original persons by bbox proximity.
+        track_ids = tracked.tracker_id   # np.ndarray[int] or None
+        if track_ids is None:
+            for p in persons:
+                p["track_id"] = -1
+            return persons
+
+        # Build lookup: rounded bbox tuple → track_id
+        bbox_to_tid: Dict[tuple, int] = {}
+        for i, bbox in enumerate(tracked.xyxy):
+            key = tuple(int(v) for v in bbox)
+            bbox_to_tid[key] = int(track_ids[i])
+
+        for p in persons:
+            key = tuple(int(v) for v in p["bbox"])
+            # Exact match first; fall back to -1 if tracker dropped the detection
+            p["track_id"] = bbox_to_tid.get(key, -1)
+
+    except Exception as exc:
+        log.error(f"[Tracker] ByteTrack update failed (cam={camera_id}): {exc}")
+        for p in persons:
+            p["track_id"] = -1
+
+    return persons
+
+
 # ── Keremberke hard-hat-detection model constants ─────────────────
 # https://huggingface.co/keremberke/yolov8m-hard-hat-detection
 _HELMET_MODEL_URL  = (
@@ -561,6 +673,7 @@ def _associate_to_persons(
         enriched.append({
             "bbox":                 p_box,
             "confidence":          person["confidence"],
+            "track_id":            person.get("track_id", -1),   # passthrough from _apply_tracking
             "ppe_found":           list(assigned_compliant),
             "ppe_missing":         ppe_missing,
             "assigned_violations": assigned_violations,
@@ -909,19 +1022,16 @@ def _run_pipeline(frame: np.ndarray, role: str,
                   detection_filters: Optional[List[str]] = None,
                   no_phone_zone: bool = False,
                   frame_index: int = -1,
-                  # ── OCR gate context (all optional — only needed for entrance cameras) ──
-                  # ocr_zone_config : dict mapping zone name → list of [x,y] polygon points
-                  #                   e.g. {"entrance": [[10,20],[200,20],[200,300],[10,300]]}
-                  #                   If None, OCR hook is skipped entirely.
-                  # ocr_direction   : "inward" | "outward" (defaults to "inward")
-                  # ocr_db_session  : active SQLAlchemy Session for DB writes
-                  # ocr_camera_id   : cameras.id FK value to stamp on InvoiceLog/OrderFormLog
-                  # ocr_user_id     : users.id for save_alert() user_id field
+                  # ── OCR gate context (all optional) ──
                   ocr_zone_config: Optional[Dict] = None,
                   ocr_direction: Optional[str] = None,
                   ocr_db_session=None,
                   ocr_camera_id: Optional[int] = None,
                   ocr_user_id: Optional[int] = None,
+                  # ── ByteTrack camera context (optional) ───────────────────
+                  # Pass camera_id to enable per-camera stable track_id.
+                  # None = skip tracking (track_id=-1 on all persons).
+                  camera_id: Optional[int] = None,
                   ) -> Dict:
     """
     Shared pipeline used by both process_frame and process_frame_numpy.
@@ -931,15 +1041,17 @@ def _run_pipeline(frame: np.ndarray, role: str,
     OCR gate kwargs (ocr_*) are all optional.  When ocr_zone_config is None
     the OCR block is skipped with zero overhead.  Supply them only from callers
     that are processing an entrance-zone camera feed.
+
+    camera_id: when provided, ByteTrack is applied to Person detections using a
+    per-camera tracker instance.  This assigns a stable track_id to each person
+    dict so downstream services (idle_service) can maintain per-track state.
     """
     # Expose OCR context to the block at the end of this function via local vars.
-    # (Python closures don't need these to be global — they're in the same scope.)
     _ocr_zone_config = ocr_zone_config
     _ocr_direction   = ocr_direction
     _ocr_db_session  = ocr_db_session
     _ocr_camera_id   = ocr_camera_id
     _ocr_user_id     = ocr_user_id
-
 
     print(f"[PIPELINE] role={role} | sim={_use_simulation} | ded_helmet={_helmet_model_dedicated} | filters={detection_filters}")
 
@@ -1045,6 +1157,10 @@ def _run_pipeline(frame: np.ndarray, role: str,
 
     persons  = [d for d in raw if d["det_type"] == "person"]
     ppe_dets = [d for d in raw if d["det_type"] in ("violation", "compliant")]
+
+    # ── ByteTrack: assign stable track_id to each person (no-op if camera_id is None) ──
+    if camera_id is not None:
+        persons = _apply_tracking(camera_id, persons)
 
     if not persons and ppe_dets:
         xs = [d["bbox"][0] for d in ppe_dets] + [d["bbox"][2] for d in ppe_dets]
@@ -1282,4 +1398,38 @@ def process_frame_numpy(frame: np.ndarray, role: str,
         return {"error": "Invalid frame"}
     return _run_pipeline(frame, role, detection_filters=detection_filters,
                          no_phone_zone=no_phone_zone, frame_index=frame_index)
+
+
+def process_frame_numpy_tracked(
+    frame: np.ndarray,
+    role: str,
+    camera_id: int,
+    detection_filters: Optional[List[str]] = None,
+    no_phone_zone: bool = False,
+) -> Dict:
+    """
+    Full violation pipeline with per-camera ByteTrack tracking.
+
+    Called by the camera_manager detection daemon for server-side inference
+    that runs independently of browser WebSocket connections.
+
+    Differences from process_frame_numpy:
+    • camera_id is required — each camera has its own ByteTrack instance so
+      track IDs are stable within a camera but never mixed across cameras.
+    • Each person dict in result["persons"] includes "track_id" (int).
+      track_id == -1 means supervision is not installed or tracking was skipped.
+    • All PPE logic (_associate_to_persons, _draw_results) is unchanged.
+
+    The caller (camera_manager) is responsible for passing result["persons"]
+    to idle_service.process_frame() after this returns.
+    """
+    if frame is None:
+        return {"error": "Invalid frame"}
+    return _run_pipeline(
+        frame,
+        role,
+        detection_filters=detection_filters,
+        no_phone_zone=no_phone_zone,
+        camera_id=camera_id,
+    )
  

@@ -34,6 +34,21 @@ class Settings(BaseSettings):
     # Process every Nth frame in video uploads (~5 fps at 25fps source).
     FRAME_SKIP: int = 3
 
+    # ── Idle tracking limits (seconds) ─────────────────────────────────────────
+    # zone_name from ZoneConfig maps to a limit here.
+    # Falls back to "default" if zone_name not found.
+    # Change these without restarting the server by editing .env or config.py.
+    IDLE_LIMITS: dict = {
+        "default":          300,   # 5 min — all floors / general zones
+        "shop":              60,   # 1 min — shop counter / absent from shop
+        "camera_standing":   60,   # 1 min — person blocking the camera
+        "cashbox":          120,   # 2 min — standing at cashbox
+    }
+
+    # Pixels a centroid must move between frames to reset the idle timer.
+    # Lower = more sensitive (resets on tiny shifts). 8px is robust to RTSP jitter.
+    IDLE_MOVEMENT_THRESHOLD_PX: int = 8
+
 settings = Settings()
 
 # Ensure directories exist

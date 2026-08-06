@@ -21,5 +21,9 @@ gdown>=5.1.0
 pytesseract>=0.3.10
 # Zone polygon containment check (optional — ocr_service falls back if missing)
 shapely>=2.0.0
+# ByteTrack object tracking via supervision wrapper
+# System requirement: pip install supervision
+# Provides sv.ByteTrack for stable per-camera person tracking across frames
+supervision>=0.21.0
 # face-recognition is optional — install separately if dlib is available
 # pip install face-recognition

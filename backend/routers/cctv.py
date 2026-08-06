@@ -34,6 +34,7 @@ from database import get_db, User, UserConfig
 from auth_utils import decode_token
 from services import yolo_service, face_service
 from services.alert_service import save_alert
+from services import camera_manager          # server-managed stream registry
 from config import settings
 from routers.users import _parse_custom_ppe
 
@@ -518,7 +519,10 @@ async def cctv_detection_websocket(websocket: WebSocket):
     """
     await websocket.accept()
     db: Session = next(get_db())
+    # `camera` is only set in legacy (camera_url) mode.
+    # In managed (camera_id) mode all frame reads go through camera_manager.
     camera: Optional[CameraReader] = None
+    managed_camera_id: Optional[int] = None   # set when using camera_manager
 
     try:
         # ── Handshake ────────────────────────────────────────────────────────
@@ -531,16 +535,40 @@ async def cctv_detection_websocket(websocket: WebSocket):
             await websocket.close()
             return
 
-        role       = user.role or "Home"
-        camera_url = auth_data.get("camera_url", "").strip()
+        role = user.role or "Home"
 
-        if not camera_url:
-            await websocket.send_json({"error": "camera_url is required"})
+        # ── Resolve camera source ─────────────────────────────────────────────
+        # Prefer camera_id (managed mode) over camera_url (legacy mode)
+        _cam_id_raw = auth_data.get("camera_id")
+        camera_url  = auth_data.get("camera_url", "").strip()
+
+        if _cam_id_raw is not None:
+            # ── MANAGED MODE: subscriber reads from camera_manager ───────────
+            managed_camera_id = int(_cam_id_raw)
+            if not camera_manager.is_running(managed_camera_id):
+                await websocket.send_json({
+                    "error": (
+                        f"Camera {managed_camera_id} is not currently streaming. "
+                        f"Start it via POST /cameras/{managed_camera_id}/restart or "
+                        f"check that the camera is registered and online."
+                    )
+                })
+                await websocket.close()
+                return
+            display_url = f"managed:{managed_camera_id}"
+            print(f"\n[CCTV-v3] ===== SUBSCRIBER SESSION =====")
+            print(f"[CCTV-v3] User: {user.name} | Role: {role} | CameraID: {managed_camera_id}")
+
+        elif camera_url:
+            # ── LEGACY MODE: open a dedicated CameraReader for this session ──
+            display_url = camera_url
+            print(f"\n[CCTV-v2] ===== LEGACY SESSION =====")
+            print(f"[CCTV-v2] User: {user.name} | Role: {role} | URL: {camera_url}")
+
+        else:
+            await websocket.send_json({"error": "camera_id or camera_url is required"})
             await websocket.close()
             return
-
-        print(f"\n[CCTV-v2] ===== NEW SESSION =====")
-        print(f"[CCTV-v2] User: {user.name} | Role: {role} | URL: {camera_url}")
 
         # PPE filters
         handshake_filters = list(auth_data.get("filters", []))
@@ -552,54 +580,57 @@ async def cctv_detection_websocket(websocket: WebSocket):
         state = {
             "filters":       handshake_filters,
             "no_phone_zone": bool(auth_data.get("no_phone_zone", True)),
-            "enable_face":   bool(auth_data.get("enable_face", True)),  # face recognition ON by default
+            "enable_face":   bool(auth_data.get("enable_face", True)),
             "frame_count":   0,
             "alive":         True,
             "cam_fps":       0.0,
         }
 
         await websocket.send_json({
-            "status":        "connected",
-            "role":          role,
-            "user":          user.name,
-            "camera_url":    camera_url,
-            "face_enabled":  state["enable_face"],
+            "status":         "connected",
+            "role":           role,
+            "user":           user.name,
+            "camera_source":  display_url,
+            "face_enabled":   state["enable_face"],
             "active_filters": state["filters"],
+            "mode":           "managed" if managed_camera_id else "legacy",
         })
 
-        # ── Start camera reader ──────────────────────────────────────────────
-        camera = CameraReader(camera_url)
-        camera.start()
+        # ── Start camera reader (legacy mode only) ───────────────────────────
+        if managed_camera_id is None:
+            # Legacy: open a private CameraReader for this WebSocket session
+            camera = CameraReader(camera_url)
+            camera.start()
 
-        # Ramp-up: wait up to 8 s for first frame (HTTP MJPEG needs time to handshake)
-        for _ in range(80):
-            if not state["alive"]:
-                return
-            if camera.latest_frame() is not None:
-                break
+            # Ramp-up: wait up to 8 s for first frame
+            for _ in range(80):
+                if not state["alive"]:
+                    return
+                if camera.latest_frame() is not None:
+                    break
+                if camera.last_error():
+                    break
+                await asyncio.sleep(0.1)
+
             if camera.last_error():
-                break
-            await asyncio.sleep(0.1)
+                await websocket.send_json({"error": camera.last_error()})
+                await websocket.close()
+                return
 
-        if camera.last_error():
-            err = camera.last_error()
-            print(f"[CCTV] Camera failed to connect: {err}")
-            await websocket.send_json({"error": err})
-            await websocket.close()
-            return
+            if camera.latest_frame() is None:
+                await websocket.send_json({
+                    "error": (
+                        f"No frames received from {camera_url}\n\n"
+                        f"Quick fix: open  {camera_url}  in your PC browser.\n"
+                        f"• If the video loads → reconnect in OccuSafe\n"
+                        f"• If it doesn't load → phone and PC are on different networks\n"
+                        f"• Make sure IP Webcam app shows 'Server started'"
+                    )
+                })
+                await websocket.close()
+                return
 
-        if camera.latest_frame() is None:
-            await websocket.send_json({
-                "error": (
-                    f"No frames received from {camera_url}\n\n"
-                    f"Quick fix: open  {camera_url}  in your PC browser.\n"
-                    f"• If the video loads → reconnect in OccuSafe\n"
-                    f"• If it doesn't load → phone and PC are on different networks\n"
-                    f"• Make sure IP Webcam app shows 'Server started'"
-                )
-            })
-            await websocket.close()
-            return
+        # In managed mode, the frame is already flowing — no ramp-up needed.
 
         loop = asyncio.get_event_loop()
 
@@ -625,22 +656,31 @@ async def cctv_detection_websocket(websocket: WebSocket):
 
         # ── Coroutine B: grab → infer → send at max speed ───────────────────
         async def process_frames():
-            # Run inference on EVERY available frame — no rate gate.
-            # The thread pool executor naturally limits throughput to hardware speed.
-            # This gives the absolute fastest detection latency.
             MIN_INTERVAL_MS = 50          # hard floor: don't send faster than 20 fps
             last_sent       = time.time()
 
             while state["alive"]:
                 now = time.time()
 
-                # Camera error check
-                if camera.last_error():
-                    await websocket.send_json({"error": camera.last_error()})
-                    state["alive"] = False
-                    return
+                # ── Get latest frame — managed or legacy ─────────────────────
+                if managed_camera_id is not None:
+                    # Subscriber mode: read from server-managed registry
+                    cam_error = camera_manager.get_reader_error(managed_camera_id)
+                    if cam_error:
+                        await websocket.send_json({"error": cam_error})
+                        state["alive"] = False
+                        return
+                    frame   = camera_manager.get_latest_frame(managed_camera_id)
+                    cam_fps = camera_manager.get_reader_fps(managed_camera_id)
+                else:
+                    # Legacy mode: read from private CameraReader
+                    if camera.last_error():
+                        await websocket.send_json({"error": camera.last_error()})
+                        state["alive"] = False
+                        return
+                    frame   = camera.latest_frame()
+                    cam_fps = camera.fps()
 
-                frame = camera.latest_frame()
                 if frame is None:
                     await asyncio.sleep(0.015)   # wait for first frame
                     continue
@@ -665,8 +705,6 @@ async def cctv_detection_websocket(websocket: WebSocket):
                             _run_combined_inference(fr, role, user.id, db, df, nz, fi, efa)
                         ),
                     )
-
-                    cam_fps = camera.fps()
 
                     response = {
                         "annotated_frame":  result.get("annotated_frame"),
@@ -771,15 +809,17 @@ async def cctv_detection_websocket(websocket: WebSocket):
             state["alive"] = False
 
     except WebSocketDisconnect:
-        print("[CCTV-v2] Disconnected during handshake")
+        print("[CCTV] Disconnected during handshake")
     except Exception as e:
-        print(f"[CCTV-v2] Fatal error: {type(e).__name__}: {e}")
+        print(f"[CCTV] Fatal error: {type(e).__name__}: {e}")
         try:
             await websocket.send_json({"error": str(e)})
         except Exception:
             pass
     finally:
-        if camera:
+        # Only stop the reader in legacy mode — managed readers stay alive.
+        if camera is not None:
             camera.stop()
         db.close()
-        print("[CCTV-v2] Session closed — resources freed")
+        mode = "managed" if managed_camera_id else "legacy"
+        print(f"[CCTV] Session closed ({mode}) — resources freed")

@@ -6,7 +6,7 @@ import os
 from database import create_tables
 from config import settings
 from services.yolo_service import load_model
-from routers import auth, users, alerts, detection, video, faces, cctv
+from routers import auth, users, alerts, detection, video, faces, cctv, cameras
 
 app = FastAPI(
     title="Safety Monitor API",
@@ -33,6 +33,7 @@ app.include_router(detection.router)
 app.include_router(video.router)
 app.include_router(faces.router)
 app.include_router(cctv.router)
+app.include_router(cameras.router)
 
 # Serve uploaded files
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
@@ -92,7 +93,24 @@ def startup():
         print(f"⚠️  Migration v2 block error: {e}")
 
     load_model()
+
+    # ── Start server-managed camera streams ───────────────────────────────────
+    # Reads all Camera rows with status != 'offline' from the DB and
+    # starts one background reader thread per camera.
+    # WebSocket endpoints subscribe to these shared streams via camera_manager.
+    from services import camera_manager
+    _started = camera_manager.start_all()
+    print(f"✅ Camera manager: {_started} camera(s) started")
+
     print("✅ Safety Monitor API v4.0 started (factory monitoring schema)")
+
+
+@app.on_event("shutdown")
+def shutdown():
+    """Gracefully stop all camera reader threads on server shutdown."""
+    from services import camera_manager
+    camera_manager.stop_all()
+    print("🛑 Safety Monitor: all camera readers stopped")
 
 
 @app.get("/")
