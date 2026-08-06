@@ -49,17 +49,6 @@ class Settings(BaseSettings):
     # Lower = more sensitive (resets on tiny shifts). 8px is robust to RTSP jitter.
     IDLE_MOVEMENT_THRESHOLD_PX: int = 8
 
-    # ── Telegram Notification Settings ─────────────────────────────────────────
-    # Setup guide (5 min, free):
-    #   1. Open Telegram → search @BotFather → send /newbot
-    #   2. Follow prompts → copy the API token
-    #   3. Add the bot to your group chat → send a message in the group
-    #   4. GET https://api.telegram.org/bot<token>/getUpdates → copy chat_id
-    #   5. Add to .env:
-    #        TELEGRAM_BOT_TOKEN=123456:ABCdef...
-    #        TELEGRAM_CHAT_ID=-100123456789
-    #
-    # If left empty, Telegram notifications are silently disabled (no error).
     # Only "confirmed" status alerts are sent; "pending_review" stays in-app only.
     TELEGRAM_BOT_TOKEN: str = ""   # set in .env — never commit this value
     TELEGRAM_CHAT_ID:   str = ""   # group chat id (negative number for group chats)

@@ -42,6 +42,30 @@ app.include_router(baseline_router)   # POST/DELETE /cameras/{id}/baseline
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads")
 
+# ── Serve built frontend in production ───────────────────────────────────────
+# After `npm run build` the Vite output lands in frontend/dist/.
+# FastAPI serves it at / so there is no need for a separate Nginx process on
+# the Windows server.  In development the Vite dev server handles this instead.
+_FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+if os.path.isdir(_FRONTEND_DIST):
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles as _SF
+
+    # Serve JS/CSS/assets
+    app.mount("/assets", _SF(os.path.join(_FRONTEND_DIST, "assets"), html=False), name="frontend-assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_frontend(full_path: str):
+        """
+        Catch-all: serve index.html for every non-API path so React Router
+        client-side navigation works after a page refresh.
+        Falls back to the file if it exists (e.g. favicon.ico, manifest).
+        """
+        file_path = os.path.join(_FRONTEND_DIST, full_path)
+        if os.path.isfile(file_path):
+            return FileResponse(file_path)
+        return FileResponse(os.path.join(_FRONTEND_DIST, "index.html"))
+
 
 @app.on_event("startup")
 def startup():
