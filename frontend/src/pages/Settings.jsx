@@ -17,11 +17,12 @@ const CAMERA_TYPES = [
 ]
 
 const ROLES = [
-  'Construction Worker', 'Doctor', 'Traffic Police', 'College', 'Home', 'None'
+  'Bakery Worker', 'Construction Worker', 'Doctor', 'Traffic Police', 'College', 'Home', 'None'
 ]
 
 // PPE requirements by role (for display)
 const ROLE_PPE = {
+  'Bakery Worker':       ['Head Cap', 'Face Mask', 'Gloves', 'No Bangles'],
   'Construction Worker': ['Hardhat', 'Safety Vest', 'Gloves', 'Safety Goggles'],
   'Doctor':              ['Face Mask', 'Gloves'],
   'Traffic Police':      ['Hardhat'],

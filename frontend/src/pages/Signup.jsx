@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext'
 import { Shield, Mail, Lock, User, MapPin, HardHat, Loader, CheckCircle } from 'lucide-react'
 
 const ROLES = [
+  { id: 'Bakery Worker',       icon: '🧁', label: 'Bakery Worker',       desc: 'Head cap, mask, gloves, no bangles — food safety' },
   { id: 'Construction Worker', icon: '🏗️', label: 'Construction Worker', desc: 'Hardhat, vest, gloves, mask, goggles, shoes' },
   { id: 'Doctor',              icon: '🩺', label: 'Doctor / Medical',     desc: 'Mask, gloves, lab coat detection'           },
   { id: 'Traffic Police',      icon: '🚓', label: 'Traffic Police',        desc: 'Helmet & safety compliance'                },

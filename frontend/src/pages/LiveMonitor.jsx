@@ -35,6 +35,7 @@ const FRAME_INTERVAL = 80 // ms -> ~12.5 fps
 
 // Role rule descriptions for the info panel
 const ROLE_PPE_RULES = {
+  'Bakery Worker':       ['Head Cap required', 'Face Mask required', 'Gloves required', 'No Bangles (food safety)'],
   'Doctor':              ['Mask required', 'Gloves required'],
   'Traffic Police':      ['Helmet required'],
   'Construction Worker': ['Hardhat required', 'Safety Vest required', 'Mask required', 'Gloves required', 'Goggles required', 'Safety Shoes required'],
@@ -42,17 +43,32 @@ const ROLE_PPE_RULES = {
   'Home':                ['Face recognition - unknown persons trigger alert'],
 }
 
-// All filterable PPE classes
+// All filterable PPE classes (used for manual toggle UI)
 const PPE_FILTERS = [
-  { id: 'NO-Hardhat',      label: 'Hardhat',      icon: '👷' },
-  { id: 'NO-Safety Vest',  label: 'Safety Vest',  icon: '🦺' },
-  { id: 'NO-Mask',         label: 'Mask',         icon: '😷' },
-  { id: 'NO-Gloves',       label: 'Gloves',       icon: '🧤' },
-  { id: 'NO-Goggles',      label: 'Goggles',      icon: '🥽' },
-  { id: 'NO-Safety Shoes', label: 'Safety Shoes', icon: '👟' },
-  { id: 'NO-ID Card',      label: 'ID Card',      icon: '🪪' },
-  { id: 'NO-Uniform',      label: 'Uniform',      icon: '👕' },
+  { id: 'NO-Bakery-Head-Cap', label: 'Head Cap',      icon: '🧢' },
+  { id: 'Bangles',            label: 'Bangles (ban)', icon: '🚨' },
+  { id: 'NO-Hardhat',         label: 'Hardhat',       icon: '👷' },
+  { id: 'NO-Safety Vest',     label: 'Safety Vest',   icon: '🦺' },
+  { id: 'NO-Mask',            label: 'Mask',          icon: '😷' },
+  { id: 'NO-Gloves',          label: 'Gloves',        icon: '🧤' },
+  { id: 'NO-Goggles',         label: 'Goggles',       icon: '🥽' },
+  { id: 'NO-Safety Shoes',    label: 'Safety Shoes',  icon: '👟' },
+  { id: 'NO-ID Card',         label: 'ID Card',       icon: '🪪' },
+  { id: 'NO-Uniform',         label: 'Uniform',       icon: '👕' },
 ]
+
+// Role → default filter set sent at WebSocket handshake.
+// MUST match the violation class names the backend model actually emits.
+const ROLE_FILTERS = {
+  'Bakery Worker':       ['NO-Bakery-Head-Cap', 'Bangles', 'NO-Mask'],
+  'Construction Worker': ['NO-Hardhat', 'NO-Safety Vest', 'NO-Mask', 'NO-Gloves', 'NO-Goggles', 'NO-Safety Shoes'],
+  'Doctor':              ['NO-Mask', 'NO-Gloves'],
+  'Traffic Police':      ['NO-Hardhat'],
+  'College':             ['NO-ID Card', 'NO-Uniform'],
+  'Home':                [],
+  'None':                [],   // seeded from saved custom PPE items
+  'Factory Worker':      ['NO-Bakery-Head-Cap', 'Bangles'],
+}
 
 // Severity badge colours
 const SEV_CLASS = {
@@ -84,11 +100,23 @@ export default function LiveMonitor() {
   // Phone detection state — default ON so detection works immediately
   const [noPhoneZone,    setNoPhoneZone]    = useState(savedNoPhoneZone !== undefined ? !!savedNoPhoneZone : true)
   const [phoneStatus,    setPhoneStatus]    = useState('safe')
-  // Detection filters — for None role: seed from saved custom PPE config
-  const defaultFilters = (user?.role === 'None' && customPpeItems?.length)
-    ? customPpeItems
-    : PPE_FILTERS.map(f => f.id)
-  const [activeFilters,  setActiveFilters]  = useState(defaultFilters)
+  // Detection filters — seeded by role. Two-stage initialization:
+  //   1. getFiltersForRole() gives the right initial value immediately if user is already loaded.
+  //   2. useEffect below re-syncs when auth context resolves (async login).
+  //
+  // IMPORTANT: Do NOT fall back to PPE_FILTERS.map(f=>f.id) for known roles —
+  // that was sending 8 construction filters to Bakery Worker users.
+  const getFiltersForRole = (role) => {
+    if (!role)                          return []           // wait for auth
+    if (role === 'None') {
+      if (customPpeItems?.length)       return customPpeItems
+      return []                                            // custom — user sets them
+    }
+    return ROLE_FILTERS[role] ?? []    // unknown role → empty (no false positives)
+  }
+
+  const [activeFilters,  setActiveFilters]  = useState(() => getFiltersForRole(user?.role))
+  const [filtersReady,   setFiltersReady]   = useState(!!user?.role)
   const [showFilters,    setShowFilters]    = useState(false)
   // keep enableFace in a ref so WS callbacks always read latest value
   const enableFaceRef = useRef(enableFace)
@@ -117,6 +145,21 @@ export default function LiveMonitor() {
 
   // Keep the ref in sync with state on every render
   useEffect(() => { activeFiltersRef.current = activeFilters }, [activeFilters])
+
+  // KEY FIX: Sync role → filters whenever auth context resolves.
+  // useState initializer fires BEFORE user is loaded from localStorage/API,
+  // so user?.role is undefined at first mount → wrong/empty filters.
+  // This effect fires once user.role is available and sets the correct filters,
+  // then immediately writes into activeFiltersRef so the next WS handshake is correct.
+  useEffect(() => {
+    if (!user?.role) return
+    const correct = getFiltersForRole(user.role)
+    setActiveFilters(correct)
+    activeFiltersRef.current = correct   // update ref NOW, don't wait for render cycle
+    setFiltersReady(true)
+    console.log(`[ROLE FILTERS] ✅ role=${user.role} →`, correct)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.role])
 
   // —————————————————————————————————————————————————————————————————————————————
   const connectWs = useCallback(() => {

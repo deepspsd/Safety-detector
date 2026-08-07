@@ -3,14 +3,15 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
 import { usersApi } from '../api/api'
-import { UserCircle, Stethoscope, Shield, HardHat, GraduationCap, Home, ChevronRight, CheckCircle, ChevronLeft } from 'lucide-react'
+import { UserCircle, Stethoscope, Shield, HardHat, GraduationCap, Home, ChevronRight, CheckCircle, ChevronLeft, UtensilsCrossed } from 'lucide-react'
 
 const ROLES = [
-  { id: 'Doctor', label: 'Doctor', desc: 'Detects gloves & lab coat compliance', icon: Stethoscope, color: '#06b6d4' },
-  { id: 'Traffic Police', label: 'Traffic Police', desc: 'Monitors helmet usage', icon: Shield, color: '#8b5cf6' },
-  { id: 'Construction Worker', label: 'Construction Worker', desc: 'Checks helmet & safety vest', icon: HardHat, color: '#f59e0b' },
-  { id: 'College', label: 'College', desc: 'Verifies ID card & uniform', icon: GraduationCap, color: '#10b981' },
-  { id: 'Home', label: 'Home User', desc: 'Face recognition security', icon: Home, color: '#3b82f6' },
+  { id: 'Bakery Worker',       label: 'Bakery Worker',       desc: 'Head cap, mask, gloves, no bangles (food safety)', icon: UtensilsCrossed, color: '#f97316' },
+  { id: 'Doctor',              label: 'Doctor',              desc: 'Detects gloves & lab coat compliance',              icon: Stethoscope,      color: '#06b6d4' },
+  { id: 'Traffic Police',      label: 'Traffic Police',      desc: 'Monitors helmet usage',                             icon: Shield,           color: '#8b5cf6' },
+  { id: 'Construction Worker', label: 'Construction Worker', desc: 'Checks helmet & safety vest',                       icon: HardHat,          color: '#f59e0b' },
+  { id: 'College',             label: 'College',             desc: 'Verifies ID card & uniform',                        icon: GraduationCap,    color: '#10b981' },
+  { id: 'Home',                label: 'Home User',           desc: 'Face recognition security',                         icon: Home,             color: '#3b82f6' },
 ]
 
 export default function Profile() {

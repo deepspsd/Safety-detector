@@ -43,7 +43,7 @@ def signup(data: SignupRequest, db: Session = Depends(get_db)):
         if len(data.password) < 6:
             raise HTTPException(status_code=422, detail="Password must be at least 6 characters")
 
-        valid_roles = {"Construction Worker", "Doctor", "Traffic Police", "College", "Home", "None"}
+        valid_roles = {"Construction Worker", "Doctor", "Traffic Police", "College", "Home", "None", "Bakery Worker"}
         role = data.role if data.role in valid_roles else "Construction Worker"
 
         user = User(

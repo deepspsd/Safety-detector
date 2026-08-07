@@ -8,7 +8,7 @@ import {
 } from 'lucide-react'
 
 const SEVERITIES = ['', 'critical', 'high', 'medium', 'low']
-const ROLES = ['', 'Doctor', 'Traffic Police', 'Construction Worker', 'College', 'Home']
+const ROLES = ['', 'Bakery Worker', 'Doctor', 'Traffic Police', 'Construction Worker', 'College', 'Home']
 
 const SEV_COLORS = {
   critical: { bg: 'rgba(220,38,38,0.12)', border: 'rgba(220,38,38,0.3)', text: '#f87171' },

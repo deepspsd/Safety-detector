@@ -14,7 +14,7 @@ function getBaseURL() {
 }
 
 const BASE_URL = getBaseURL()
-console.log("BASE_URL:", BASE_URL)
+console.log('BASE_URL:', BASE_URL)
 
 const api = axios.create({
   baseURL: BASE_URL,
@@ -47,7 +47,7 @@ export const authApi = {
   signup: (email, password, name, role = 'Construction Worker') =>
     api.post('/auth/signup', { email, password, name, role }),
   login: (email, password) => {
-    console.log("BASE_URL:", BASE_URL)
+    console.log('BASE_URL:', BASE_URL)
     const form = new URLSearchParams()
     form.append('username', email)
     form.append('password', password)
@@ -55,34 +55,40 @@ export const authApi = {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
     })
   },
-  me: () => api.get('/auth/me')
+  me: () => api.get('/auth/me'),
 }
 
 // ── Users ─────────────────────────────────────
 export const usersApi = {
-  updateProfile: (data) => api.put('/users/me', data),
-  getConfig:     ()     => api.get('/users/me/config'),
-  updateConfig:  (data) => api.put('/users/me/config', data),
+  updateProfile:   (data)  => api.put('/users/me', data),
+  getConfig:       ()      => api.get('/users/me/config'),
+  updateConfig:    (data)  => api.put('/users/me/config', data),
   // Custom PPE helpers (convenience wrappers)
-  getCustomPpe:    ()       => api.get('/users/me/config').then(r => r.data.custom_ppe_items || []),
-  updateCustomPpe: (items)  => api.put('/users/me/config', { custom_ppe_items: items }),
+  getCustomPpe:    ()      => api.get('/users/me/config').then(r => r.data.custom_ppe_items || []),
+  updateCustomPpe: (items) => api.put('/users/me/config', { custom_ppe_items: items }),
 }
 
 // ── Alerts ────────────────────────────────────
 export const alertsApi = {
-  list: (params) => api.get('/alerts/', { params }),
-  stats: () => api.get('/alerts/stats'),
-  get: (id) => api.get(`/alerts/${id}`),
-  delete: (id) => api.delete(`/alerts/${id}`),
-  clearAll: () => api.delete('/alerts/')
+  list:    (params) => api.get('/alerts/', { params }),
+  stats:   ()       => api.get('/alerts/stats'),
+  // Pending-review queue (admin review UI)
+  pending: ()       => api.get('/alerts/pending'),
+  get:     (id)     => api.get(`/alerts/${id}`),
+  // Promote pending → confirmed + fire Telegram
+  confirm: (id)     => api.patch(`/alerts/${id}/confirm`),
+  // Mark as dismissed (false positive)
+  dismiss: (id)     => api.patch(`/alerts/${id}/dismiss`),
+  delete:  (id)     => api.delete(`/alerts/${id}`),
+  clearAll:()       => api.delete('/alerts/'),
 }
 
-// ── Faces ─────────────────────────────────────
+// ── Faces / Employee roster ────────────────────
 export const facesApi = {
-  list:     ()               => api.get('/faces/'),
+  list:     ()                => api.get('/faces/'),
   register: (label, image_b64) => api.post('/faces/register', { label, image_b64 }),
-  rename:   (id, label)     => api.put(`/faces/${id}/label`, { label }),
-  delete:   (id)            => api.delete(`/faces/${id}`),
+  rename:   (id, label)      => api.put(`/faces/${id}/label`, { label }),
+  delete:   (id)             => api.delete(`/faces/${id}`),
 }
 
 // ── Video ─────────────────────────────────────
@@ -95,36 +101,36 @@ export const videoApi = {
       onUploadProgress: e => onProgress && onProgress(Math.round((e.loaded * 100) / e.total))
     })
   },
-  status: (jobId) => api.get(`/video/status/${jobId}`)
+  status: (jobId) => api.get(`/video/status/${jobId}`),
 }
 
 // ── Cameras ───────────────────────────────────────
 export const camerasApi = {
-  list:         ()                    => api.get('/cameras/'),
-  get:          (id)                  => api.get(`/cameras/${id}`),
-  create:       (data)                => api.post('/cameras/', data),
-  update:       (id, data)            => api.put(`/cameras/${id}`, data),
-  delete:       (id)                  => api.delete(`/cameras/${id}`),
-  restart:      (id)                  => api.post(`/cameras/${id}/restart`),
+  list:    ()         => api.get('/cameras/'),
+  get:     (id)       => api.get(`/cameras/${id}`),
+  create:  (data)     => api.post('/cameras/', data),
+  update:  (id, data) => api.put(`/cameras/${id}`, data),
+  delete:  (id)       => api.delete(`/cameras/${id}`),
+  restart: (id)       => api.post(`/cameras/${id}/restart`),
   // Zone calibration
-  getZones:     (id)                  => api.get(`/cameras/${id}/zones`),
-  createZone:   (id, zone_name, polygon_json, metadata = {}) =>
-                  api.post(`/cameras/${id}/zones`, { zone_name, polygon_json, ...metadata }),
-  deleteZone:   (id, zone_name)       => api.delete(`/cameras/${id}/zones/${encodeURIComponent(zone_name)}`),
-  calibrationHistory: (id)            => api.get(`/cameras/${id}/calibrations`),
-  versionCalibration: (id, note = '') => api.post(`/cameras/${id}/calibrations/snapshot`, null, { params: { note } }),
-  restoreCalibration: (id, version, note = '') =>
-                  api.post(`/cameras/${id}/calibrations/${version}/restore`, { note }),
-  // Latest frame for calibration canvas
-  snapshot:     (id)                  => api.get(`/cameras/${id}/snapshot`),
+  getZones:           (id)                   => api.get(`/cameras/${id}/zones`),
+  createZone:         (id, zone_name, polygon_json, metadata = {}) =>
+                        api.post(`/cameras/${id}/zones`, { zone_name, polygon_json, ...metadata }),
+  deleteZone:         (id, zone_name)        => api.delete(`/cameras/${id}/zones/${encodeURIComponent(zone_name)}`),
+  calibrationHistory: (id)                   => api.get(`/cameras/${id}/calibrations`),
+  versionCalibration: (id, note = '')        => api.post(`/cameras/${id}/calibrations/snapshot`, null, { params: { note } }),
+  restoreCalibration: (id, version, note='') => api.post(`/cameras/${id}/calibrations/${version}/restore`, { note }),
+  // Latest JPEG frame (used for floor grid tiles and zone-calibration canvas)
+  snapshot: (id) => api.get(`/cameras/${id}/snapshot`),
   // LAN discovery (Hikvision/Dahua/generic RTSP scan)
-  discover:     ()                    => api.post('/cameras/discover'),
+  discover: ()   => api.post('/cameras/discover'),
 }
 
+// ── Platform / Analytics ─────────────────────────
 export const platformApi = {
-  models: () => api.get('/platform/models'),
-  health: (params) => api.get('/platform/health', { params }),
-  analytics: (days = 7) => api.get('/platform/analytics/summary', { params: { days } }),
-  alertCases: () => api.get('/platform/alert-cases'),
+  models:          ()         => api.get('/platform/models'),
+  health:          (params)   => api.get('/platform/health', { params }),
+  analytics:       (days = 7) => api.get('/platform/analytics/summary', { params: { days } }),
+  alertCases:      ()         => api.get('/platform/alert-cases'),
   alertCaseAction: (id, action) => api.post(`/platform/alert-cases/${id}/${action}`),
 }

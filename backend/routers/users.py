@@ -49,7 +49,7 @@ def _parse_custom_ppe(config: UserConfig) -> List[str]:
 
 @router.put("/me")
 def update_profile(data: ProfileUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    valid_roles = {"Construction Worker", "Doctor", "Traffic Police", "College", "Home", "None"}
+    valid_roles = {"Construction Worker", "Doctor", "Traffic Police", "College", "Home", "None", "Bakery Worker"}
     if data.name is not None:
         current_user.name = data.name
     if data.role is not None:

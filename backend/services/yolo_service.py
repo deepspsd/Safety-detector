@@ -170,21 +170,37 @@ ROLE_RULES: Dict[str, Dict] = {
     },
 
     # ── Phase 1: Bakery / Food Factory Worker ─────────────────────────────
-    # Violations that ppe_factory_v1.pt detects natively for this role.
+    # Violations that ppe_factory_v0.pt detects natively for this role.
     # Bangles is ALWAYS a violation in food production regardless of other PPE.
-    "Factory Worker": {
+    "Bakery Worker": {
         "required_violations": [
             "NO-Bakery-Head-Cap",   # cap absent / incorrectly worn
-            "Bangles",              # jewellery — always flagged
+            "Bangles",              # jewellery — always flagged in food production
+            "NO-Mask",              # hygiene mask required
         ],
         "required_compliant": [
             "Bakery-Head-Cap",      # cloth cap worn correctly
+            "Mask",                 # face mask
+        ],
+        "required_sim": ["NO-Gloves"],
+        "severity": "critical",
+        "alert_prefix": "🧁 Bakery safety violation",
+    },
+    # Legacy alias — keep so existing DB rows with 'Factory Worker' still match
+    "Factory Worker": {
+        "required_violations": [
+            "NO-Bakery-Head-Cap",
+            "Bangles",
+        ],
+        "required_compliant": [
+            "Bakery-Head-Cap",
         ],
         "required_sim": [],
         "severity": "critical",
         "alert_prefix": "🏭 Factory safety violation",
     },
 }
+
 
 # ─────────────────────────────────────────────────────────────────
 # Visual colours  (BGR)
@@ -580,6 +596,10 @@ def _run_inference_with(frame: np.ndarray, model, is_ppe: bool) -> List[Dict]:
         iou=settings.NMS_IOU,
     )
     detections = []
+    _raw_box_count = sum(len(r.boxes) for r in results)
+    if _raw_box_count > 0:
+        _raw_labels = [model.names[int(box.cls[0])] for r in results for box in r.boxes]
+        print(f"[INFERENCE] raw_boxes={_raw_box_count} labels={_raw_labels}")
     for r in results:
         for box in r.boxes:
             if is_ppe:
@@ -652,11 +672,39 @@ def _associate_to_persons(
         violation_labels: List[str] = []
 
         # ── Native ppe.pt violations ───────────────────────────────
+        # Two detection modes:
+        #   1. ACTIVE violation: model detects "NO-Bakery-Head-Cap" → definitely missing
+        #   2. ABSENCE violation: model detects a Person but sees NEITHER
+        #      the compliant class (Bakery-Head-Cap) NOR the violation class
+        #      (NO-Bakery-Head-Cap) → assume missing (model just didn't see it)
+        #
+        # Mode 2 prevents false negatives on webcam where the PPE model's
+        # recall is low — if it can't see the cap at all, it's likely absent.
+        ABSENCE_COMPLIANT_MAP = {
+            'NO-Bakery-Head-Cap': 'Bakery-Head-Cap',
+            'NO-Hardhat':         'Hardhat',
+            'NO-Mask':            'Mask',
+            'NO-Safety Vest':     'Safety Vest',
+            'Bangles':            None,  # no compliant counterpart — only flagged when detected
+        }
+
         for req_v in req_violations:
             # For non-None roles: skip if this violation class not in active filter
             if role != "None" and detection_filters is not None and req_v not in detection_filters:
                 continue
+
+            # Mode 1: model explicitly detected the violation class
             if req_v in assigned_violations:
+                human_label = VIOLATION_LABEL_MAP.get(req_v, req_v)
+                ppe_missing.append(req_v)
+                violation_labels.append(human_label)
+                continue
+
+            # Mode 2: absence detection — if the compliant counterpart is NOT seen
+            # and the violation is NOT seen, the item is likely absent.
+            # Skip for classes that have no compliant counterpart (e.g. Bangles).
+            compliant_class = ABSENCE_COMPLIANT_MAP.get(req_v)
+            if compliant_class is not None and compliant_class not in assigned_compliant:
                 human_label = VIOLATION_LABEL_MAP.get(req_v, req_v)
                 ppe_missing.append(req_v)
                 violation_labels.append(human_label)
@@ -1127,11 +1175,13 @@ def _run_pipeline(frame: np.ndarray, role: str,
     print(f"[PIPELINE] role={role} | sim={_use_simulation} | filters={detection_filters}")
     active_model, active_is_ppe = _get_model_for_role(role)
 
-    # Mapping from violation class → its compliant counterpart (ppe.pt class names)
+    # Mapping from violation class → its compliant counterpart (model class names)
     VIOLATION_TO_COMPLIANT = {
-        'NO-Hardhat':      'Hardhat',
-        'NO-Mask':         'Mask',
-        'NO-Safety Vest':  'Safety Vest',
+        'NO-Hardhat':          'Hardhat',
+        'NO-Mask':             'Mask',
+        'NO-Safety Vest':      'Safety Vest',
+        'NO-Bakery-Head-Cap':  'Bakery-Head-Cap',  # bakery cap compliant class
+        # Bangles has no "compliant" counterpart — it is always a violation
         # simulated classes have no real compliant class in ppe.pt
     }
 
@@ -1177,6 +1227,29 @@ def _run_pipeline(frame: np.ndarray, role: str,
                      min(w-1, max(xs)+30), min(h-1, max(ys)+30)],
             "det_type": "person",
         }]
+
+    # ── COCO Person fallback ──────────────────────────────────────────────
+    # The PPE model (ppe_factory_v0.pt, 14 classes) often fails to detect
+    # Person on webcam/laptop cameras.  The phone model (yolov8x.pt, COCO)
+    # reliably detects them.  If PPE model found zero persons, run a quick
+    # Person-only pass with the COCO model to inject person bounding boxes
+    # so violations/compliance can still be evaluated.
+    if not persons and _phone_model is not None:
+        try:
+            _coco_results = _phone_model(frame, verbose=False, conf=0.35, iou=0.45, classes=[0])  # class 0 = person in COCO
+            for _cr in _coco_results:
+                for _cb in _cr.boxes:
+                    _cx1, _cy1, _cx2, _cy2 = [int(v) for v in _cb.xyxy[0]]
+                    persons.append({
+                        "label": "Person",
+                        "confidence": round(float(_cb.conf[0]), 3),
+                        "bbox": [_cx1, _cy1, _cx2, _cy2],
+                        "det_type": "person",
+                    })
+            if persons:
+                print(f"[COCO FALLBACK] Injected {len(persons)} person(s) from yolov8x.pt")
+        except Exception as _coco_err:
+            log.warning(f"[COCO FALLBACK] person detection failed: {_coco_err}")
 
     enriched = _associate_to_persons(persons, ppe_dets, role,
                                      detection_filters=detection_filters)
