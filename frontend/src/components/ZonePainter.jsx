@@ -32,7 +32,12 @@ function zoneColour(name) {
   return ZONE_COLOURS[name] || FALLBACK_COLOUR
 }
 
-const PRESET_ZONES = ['entrance', 'cashbox', 'window', 'dough_table', 'oven', 'packing', 'camera_standing']
+const PRESET_ZONES = [
+  'entrance', 'exit', 'packing', 'dough_table', 'machine', 'oven', 'cash_counter', 'cashbox',
+  'lift', 'window', 'dispatch', 'loading', 'raw_material', 'finished_goods', 'stock', 'employee_area',
+  'supervisor_area', 'cleaning_area', 'waiting_area', 'vehicle_area', 'document_scan_area',
+  'shop_counter', 'payment_desk', 'camera_standing',
+]
 
 export default function ZonePainter({ cameraId, onSaved }) {
   const { addToast } = useToast()
@@ -42,6 +47,9 @@ export default function ZonePainter({ cameraId, onSaved }) {
   const [frameLoaded, setFrameLoaded] = useState(false)
   const [savedZones,  setSavedZones]  = useState([])        // from GET /zones
   const [points,      setPoints]      = useState([])        // current WIP polygon
+  const [redoStack,   setRedoStack]   = useState([])
+  const [dragIndex,   setDragIndex]   = useState(null)
+  const [history,     setHistory]     = useState([])
   const [zoneName,    setZoneName]    = useState('entrance')
   const [customName,  setCustomName]  = useState('')
   const [saving,      setSaving]      = useState(false)
@@ -57,18 +65,20 @@ export default function ZonePainter({ cameraId, onSaved }) {
     if (!cameraId) return
     setLoading(true)
     try {
-      const [snapRes, zonesRes] = await Promise.all([
+      const [snapRes, zonesRes, historyRes] = await Promise.all([
         camerasApi.snapshot(cameraId),
         camerasApi.getZones(cameraId),
+        camerasApi.calibrationHistory(cameraId),
       ])
       setFrameSrc(snapRes.data.frame_b64 || null)
       setSavedZones(zonesRes.data || [])
+      setHistory(historyRes.data || [])
     } catch {
       addToast('Load failed', 'Could not load camera frame or zones', 'danger')
     } finally {
       setLoading(false)
     }
-  }, [cameraId])
+  }, [cameraId, addToast])
 
   useEffect(() => { loadAll() }, [loadAll])
 
@@ -144,19 +154,54 @@ export default function ZonePainter({ cameraId, onSaved }) {
   useEffect(() => { redraw() }, [redraw])
 
   // ── Canvas click handler ────────────────────────────────────────────────
-  const handleCanvasClick = useCallback((e) => {
+  const pointFromEvent = useCallback((e) => {
     const canvas = canvasRef.current
     const rect   = canvas.getBoundingClientRect()
-    const x = e.clientX - rect.left
-    const y = e.clientY - rect.top
-    setPoints(prev => [...prev, [x, y]])
+    return [e.clientX - rect.left, e.clientY - rect.top]
   }, [])
+
+  const handlePointerDown = useCallback((e) => {
+    const [x, y] = pointFromEvent(e)
+    const existing = points.findIndex(([px, py]) => Math.hypot(px - x, py - y) <= 10)
+    if (existing >= 0) {
+      setDragIndex(existing)
+      e.currentTarget.setPointerCapture?.(e.pointerId)
+      return
+    }
+    setPoints(prev => [...prev, [x, y]])
+    setRedoStack([])
+  }, [pointFromEvent, points])
+
+  const handlePointerMove = useCallback((e) => {
+    if (dragIndex === null) return
+    const point = pointFromEvent(e)
+    setPoints(prev => prev.map((item, index) => index === dragIndex ? point : item))
+  }, [dragIndex, pointFromEvent])
+
+  const handlePointerUp = useCallback(() => setDragIndex(null), [])
 
   // Right-click → undo last point
   const handleCanvasContextMenu = useCallback((e) => {
     e.preventDefault()
-    setPoints(prev => prev.slice(0, -1))
+    setPoints(prev => {
+      if (!prev.length) return prev
+      setRedoStack(stack => [...stack, prev[prev.length - 1]])
+      return prev.slice(0, -1)
+    })
   }, [])
+
+  const undo = () => setPoints(prev => {
+    if (!prev.length) return prev
+    setRedoStack(stack => [...stack, prev[prev.length - 1]])
+    return prev.slice(0, -1)
+  })
+
+  const redo = () => setRedoStack(prev => {
+    if (!prev.length) return prev
+    const point = prev[prev.length - 1]
+    setPoints(points => [...points, point])
+    return prev.slice(0, -1)
+  })
 
   // ── Save zone ───────────────────────────────────────────────────────────
   const saveZone = async () => {
@@ -171,9 +216,16 @@ export default function ZonePainter({ cameraId, onSaved }) {
 
     setSaving(true)
     try {
-      await camerasApi.createZone(cameraId, effectiveName, JSON.stringify(naturalPts))
+      await camerasApi.createZone(cameraId, effectiveName, JSON.stringify(naturalPts), {
+        preset_type: PRESET_ZONES.includes(effectiveName) ? effectiveName : null,
+        zone_type: PRESET_ZONES.includes(effectiveName) ? effectiveName : 'custom',
+        display_name: effectiveName,
+        color: zoneColour(effectiveName),
+      })
+      await camerasApi.versionCalibration(cameraId, `Updated ${effectiveName} polygon`)
       addToast('Zone saved', `"${effectiveName}" polygon saved`, 'success')
       setPoints([])
+      setRedoStack([])
       await loadAll()
       onSaved?.()
     } catch (err) {
@@ -187,10 +239,42 @@ export default function ZonePainter({ cameraId, onSaved }) {
   const deleteZone = async (name) => {
     try {
       await camerasApi.deleteZone(cameraId, name)
+      await camerasApi.versionCalibration(cameraId, `Deleted ${name} polygon`)
       addToast('Zone deleted', `"${name}" removed`, 'success')
       await loadAll()
     } catch {
       addToast('Delete failed', '', 'danger')
+    }
+  }
+
+  const editZone = (zone) => {
+    const img = imgRef.current
+    if (!img) return
+    try {
+      const natural = JSON.parse(zone.polygon_json)
+      setPoints(natural.map(([x, y]) => [x * img.clientWidth / img.naturalWidth, y * img.clientHeight / img.naturalHeight]))
+      setZoneName(PRESET_ZONES.includes(zone.zone_name) ? zone.zone_name : '__custom__')
+      setCustomName(PRESET_ZONES.includes(zone.zone_name) ? '' : zone.zone_name)
+      setRedoStack([])
+    } catch {
+      addToast('Edit failed', 'Saved polygon data is invalid', 'danger')
+    }
+  }
+
+  const copyZone = (zone) => {
+    editZone(zone)
+    setZoneName('__custom__')
+    setCustomName(`${zone.zone_name}_copy`)
+  }
+
+  const restoreVersion = async (version) => {
+    try {
+      await camerasApi.restoreCalibration(cameraId, version, `Restored version ${version}`)
+      addToast('Calibration restored', `Version ${version} is active`, 'success')
+      await loadAll()
+      onSaved?.()
+    } catch (err) {
+      addToast('Restore failed', err.response?.data?.detail || '', 'danger')
     }
   }
 
@@ -240,7 +324,9 @@ export default function ZonePainter({ cameraId, onSaved }) {
             />
             <canvas
               ref={canvasRef}
-              onClick={handleCanvasClick}
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
               onContextMenu={handleCanvasContextMenu}
               style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}
             />
@@ -266,9 +352,11 @@ export default function ZonePainter({ cameraId, onSaved }) {
       <div style={{ display: 'flex', gap: 10 }}>
         <button
           className="btn btn-ghost"
-          onClick={() => setPoints([])}
+          onClick={() => { setPoints([]); setRedoStack([]) }}
           disabled={points.length === 0}
         >Clear ({points.length} pts)</button>
+        <button className="btn btn-ghost" onClick={undo} disabled={!points.length}>Undo</button>
+        <button className="btn btn-ghost" onClick={redo} disabled={!redoStack.length}>Redo</button>
         <button
           className="btn btn-primary"
           onClick={saveZone}
@@ -295,6 +383,16 @@ export default function ZonePainter({ cameraId, onSaved }) {
                   <span style={{ width: 10, height: 10, borderRadius: '50%', background: colour, display: 'inline-block' }} />
                   <span style={{ color: colour, fontWeight: 600 }}>{z.zone_name}</span>
                   <button
+                    onClick={() => editZone(z)}
+                    style={{ background: 'none', border: 'none', color: colour, cursor: 'pointer', fontSize: 12, padding: 0 }}
+                    title={`Edit ${z.zone_name}`}
+                  >Edit</button>
+                  <button
+                    onClick={() => copyZone(z)}
+                    style={{ background: 'none', border: 'none', color: colour, cursor: 'pointer', fontSize: 12, padding: 0 }}
+                    title={`Copy ${z.zone_name}`}
+                  >Copy</button>
+                  <button
                     onClick={() => deleteZone(z.zone_name)}
                     style={{ background: 'none', border: 'none', color: colour, cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: 0 }}
                     title={`Delete ${z.zone_name}`}
@@ -302,6 +400,22 @@ export default function ZonePainter({ cameraId, onSaved }) {
                 </div>
               )
             })}
+          </div>
+        </div>
+      )}
+
+      {history.length > 0 && (
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8, color: 'var(--text-secondary)' }}>
+            Calibration history
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {history.slice(0, 8).map(item => (
+              <button key={item.id} className="btn btn-ghost" onClick={() => restoreVersion(item.version)}
+                title={item.change_note || `Restore version ${item.version}`}>
+                Restore v{item.version}
+              </button>
+            ))}
           </div>
         </div>
       )}

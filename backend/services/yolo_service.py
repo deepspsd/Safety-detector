@@ -1,30 +1,33 @@
 """
-YOLO Violation Detection Service — v3.0  (ppe.pt edition)
-===========================================================
-Uses the biswadeep-roy/Safety-Detection-YOLOv8 custom model (ppe.pt)
-which natively detects BOTH compliance and violation states:
+YOLO Violation Detection Service — v3.1  (ppe_factory_v0 edition)
+==================================================================
+Active model: ppe_factory_v0.pt  (upgraded factory model — 17 classes)
+Fallback chain: ppe_factory_v0.pt → ppe_factory_v1.pt → ppe.pt (10-class) → simulation
 
-  Classes:  ['Hardhat', 'Mask', 'NO-Hardhat', 'NO-Mask',
-             'NO-Safety Vest', 'Person', 'Safety Cone',
-             'Safety Vest', 'machinery', 'vehicle']
+  Base classes (ppe.pt, 0-9):
+    Hardhat, Mask, NO-Hardhat, NO-Mask, NO-Safety Vest,
+    Person, Safety Cone, Safety Vest, machinery, vehicle
 
-  Violation classes: NO-Hardhat, NO-Mask, NO-Safety Vest
-  Compliant classes: Hardhat, Mask, Safety Vest
-  Neutral:           Person, Safety Cone, machinery, vehicle
+  Factory-extended classes (10-16):
+    Bakery-Head-Cap, NO-Bakery-Head-Cap, Bangles,
+    Document-in-hand, Cylinder, Exposed-Item, Cashbox
+
+  Violation classes: NO-Hardhat, NO-Mask, NO-Safety Vest,
+                     NO-Bakery-Head-Cap, Bangles, Exposed-Item
+  Compliant classes: Hardhat, Mask, Safety Vest, Bakery-Head-Cap
+  Neutral:           Person, Safety Cone, machinery, vehicle,
+                     Document-in-hand, Cylinder, Cashbox
 
 Flow per frame:
-  1. Run ppe.pt inference (conf ≥ 0.50).
+  1. Run model inference (conf ≥ DETECTION_CONF).
   2. Separate detections into violations, compliant PPE, persons, neutral.
   3. Associate violations/PPE to nearest Person bbox via IoU + containment.
-  4. Draw RED box + "No Hardhat" etc. for violators.
+  4. Draw RED box + label for violators.
   5. Draw GREEN box for persons with ALL required PPE present.
   6. Build role-specific compliance summary.
   7. Return enriched result for the FastAPI router.
 
-Model Download:
-  https://drive.google.com/drive/folders/11tfTBkp4JdlJ8QXoAMZxgVMf8xpLBXi_
-
-Place ppe.pt in:  backend/ppe.pt
+Place model in:  backend/ppe_factory_v0.pt
 """
 
 import cv2
@@ -39,7 +42,8 @@ from config import settings
 log = logging.getLogger("yolo_service")
 
 # ─────────────────────────────────────────────────────────────────
-# ppe.pt class map  (index → name, as trained)
+# Class map shared across the model chain (index → name, as trained)
+# ppe_factory_v0.pt adds classes 10-16 on top of the base ppe.pt set
 # ─────────────────────────────────────────────────────────────────
 PPE_CLASS_NAMES = [
     'Hardhat',              # 0  ✅ compliant
@@ -364,8 +368,8 @@ def load_model():
             return _orig_load(*args, **kwargs)
         torch.load = _patched_load
 
-        # Priority: ppe_factory_v1.pt (17-class) → ppe.pt (10-class) → YOLO_MODEL → simulation
-        _factory_candidates = ["ppe_factory_v1.pt", "ppe_factory_v2.pt", "ppe.pt"]
+        # Priority: ppe_factory_v0.pt → ppe_factory_v1.pt (17-class) → ppe.pt (10-class) → YOLO_MODEL → simulation
+        _factory_candidates = ["ppe_factory_v0.pt", "ppe_factory_v1.pt", "ppe_factory_v2.pt", "ppe.pt"]
         _loaded = False
         for _candidate in _factory_candidates:
             try:

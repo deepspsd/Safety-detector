@@ -12,10 +12,11 @@ class Settings(BaseSettings):
     # ── Detection Model Settings ────────────────────────────────────────────
     # Model chain (do NOT delete older files — keep as rollback):
     #   ppe.pt              → original 10-class model (backup — never delete)
+    #   ppe_factory_v0.pt   → Phase 0: upgraded factory model (ACTIVE — current)
     #   ppe_factory_v1.pt   → Phase 1: 17 classes, public data (deploy after Phase 1)
     #   ppe_factory_v2.pt   → Phase 2: 17 classes, client footage (deploy after Phase 2)
-    # Set env var YOLO_MODEL=ppe_factory_v1.pt to override without changing code.
-    YOLO_MODEL: str = "ppe_factory_v1.pt"
+    # Set env var YOLO_MODEL=ppe_factory_v0.pt to override without changing code.
+    YOLO_MODEL: str = "ppe_factory_v0.pt"
 
     # Confidence threshold for YOLO inference (0–1).
     # 0.30 is safe for Phase 1 — new classes trained on public data may score

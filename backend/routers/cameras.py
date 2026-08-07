@@ -47,6 +47,23 @@ class CameraCreate(BaseModel):
     rtsp_url:  Optional[str]   = Field(None, max_length=500)
     # If status is omitted, defaults to "offline" (reader starts only when rtsp_url present)
     status:    str             = Field("offline", description="online | offline | error")
+    camera_code: Optional[str] = Field(None, max_length=100)
+    department: Optional[str] = Field(None, max_length=100)
+    purpose: Optional[str] = Field(None, max_length=200)
+    camera_type: Optional[str] = Field(None, max_length=50)
+    mount_height_m: Optional[float] = None
+    view_direction: Optional[str] = Field(None, max_length=100)
+    resolution: Optional[str] = Field(None, max_length=50)
+    configured_fps: Optional[float] = Field(None, ge=0)
+    rule_profile_id: Optional[int] = None
+    workflow_profile_id: Optional[int] = None
+    ai_enabled: bool = True
+    supports_multi_zone: bool = True
+    supports_ocr: bool = False
+    supports_pose: bool = False
+    supports_tracking: bool = True
+    supports_recording: bool = False
+    supports_snapshot: bool = True
 
 
 class CameraUpdate(BaseModel):
@@ -55,6 +72,23 @@ class CameraUpdate(BaseModel):
     zone_type: Optional[str]  = None
     rtsp_url:  Optional[str]  = None
     status:    Optional[str]  = None
+    camera_code: Optional[str] = Field(None, max_length=100)
+    department: Optional[str] = Field(None, max_length=100)
+    purpose: Optional[str] = Field(None, max_length=200)
+    camera_type: Optional[str] = Field(None, max_length=50)
+    mount_height_m: Optional[float] = None
+    view_direction: Optional[str] = Field(None, max_length=100)
+    resolution: Optional[str] = Field(None, max_length=50)
+    configured_fps: Optional[float] = Field(None, ge=0)
+    rule_profile_id: Optional[int] = None
+    workflow_profile_id: Optional[int] = None
+    ai_enabled: Optional[bool] = None
+    supports_multi_zone: Optional[bool] = None
+    supports_ocr: Optional[bool] = None
+    supports_pose: Optional[bool] = None
+    supports_tracking: Optional[bool] = None
+    supports_recording: Optional[bool] = None
+    supports_snapshot: Optional[bool] = None
 
 
 def _camera_to_dict(cam: CameraModel, live: Optional[dict] = None) -> dict:
@@ -71,6 +105,26 @@ def _camera_to_dict(cam: CameraModel, live: Optional[dict] = None) -> dict:
         "status":       cam.status,
         "last_seen_at": cam.last_seen_at.isoformat() if cam.last_seen_at else None,
         "created_at":   cam.created_at.isoformat()   if cam.created_at   else None,
+        "camera_code": cam.camera_code,
+        "department": cam.department,
+        "purpose": cam.purpose,
+        "camera_type": cam.camera_type,
+        "mount_height_m": cam.mount_height_m,
+        "view_direction": cam.view_direction,
+        "resolution": cam.resolution,
+        "configured_fps": cam.configured_fps,
+        "calibration_status": cam.calibration_status,
+        "calibration_version": cam.calibration_version,
+        "last_calibrated_at": cam.last_calibrated_at.isoformat() if cam.last_calibrated_at else None,
+        "rule_profile_id": cam.rule_profile_id,
+        "workflow_profile_id": cam.workflow_profile_id,
+        "ai_enabled": cam.ai_enabled,
+        "capabilities": {"multi_zone": cam.supports_multi_zone, "ocr": cam.supports_ocr,
+                         "pose": cam.supports_pose, "tracking": cam.supports_tracking,
+                         "recording": cam.supports_recording, "snapshot": cam.supports_snapshot},
+        "heartbeat": cam.heartbeat_at.isoformat() if cam.heartbeat_at else None,
+        "health_status": cam.health_status,
+        "drift_score": cam.drift_score,
         # Live state overlay (present only when reader is running)
         "live": None,
     }
@@ -114,6 +168,23 @@ def create_camera(
         zone_type  = payload.zone_type,
         rtsp_url   = payload.rtsp_url,
         status     = payload.status,
+        camera_code = payload.camera_code,
+        department = payload.department,
+        purpose = payload.purpose,
+        camera_type = payload.camera_type,
+        mount_height_m = payload.mount_height_m,
+        view_direction = payload.view_direction,
+        resolution = payload.resolution,
+        configured_fps = payload.configured_fps,
+        rule_profile_id = payload.rule_profile_id,
+        workflow_profile_id = payload.workflow_profile_id,
+        ai_enabled = payload.ai_enabled,
+        supports_multi_zone = payload.supports_multi_zone,
+        supports_ocr = payload.supports_ocr,
+        supports_pose = payload.supports_pose,
+        supports_tracking = payload.supports_tracking,
+        supports_recording = payload.supports_recording,
+        supports_snapshot = payload.supports_snapshot,
         created_at = datetime.datetime.utcnow(),
     )
     db.add(cam)
@@ -123,7 +194,7 @@ def create_camera(
     # Hot-start reader if URL present and not explicitly offline
     if cam.rtsp_url and cam.rtsp_url.strip() and cam.status != "offline":
         try:
-            camera_manager.start_camera(cam.id, cam.name, cam.rtsp_url)
+            camera_manager.start_camera(cam.id, cam.name, cam.rtsp_url, floor=cam.floor)
             log.info(f"[cameras] Reader started live for cam {cam.id}")
         except Exception as exc:
             log.error(f"[cameras] Failed to start reader for cam {cam.id}: {exc}")
@@ -174,6 +245,13 @@ def update_camera(
     if payload.zone_type is not None: cam.zone_type = payload.zone_type
     if payload.rtsp_url  is not None: cam.rtsp_url  = payload.rtsp_url
     if payload.status    is not None: cam.status    = payload.status
+    for field in ("camera_code", "department", "purpose", "camera_type", "mount_height_m", "view_direction",
+                  "resolution", "configured_fps", "rule_profile_id", "workflow_profile_id", "ai_enabled",
+                  "supports_multi_zone", "supports_ocr", "supports_pose", "supports_tracking", "supports_recording",
+                  "supports_snapshot"):
+        value = getattr(payload, field)
+        if value is not None:
+            setattr(cam, field, value)
 
     db.commit()
     db.refresh(cam)
@@ -181,7 +259,7 @@ def update_camera(
     # Restart reader if URL changed and camera should be running
     if url_changed and cam.rtsp_url and cam.status != "offline":
         try:
-            camera_manager.restart_camera(cam.id, cam.name, cam.rtsp_url)
+            camera_manager.restart_camera(cam.id, cam.name, cam.rtsp_url, floor=cam.floor)
             log.info(f"[cameras] Reader restarted for cam {cam.id} (URL changed)")
         except Exception as exc:
             log.error(f"[cameras] Restart failed for cam {cam.id}: {exc}")
@@ -241,7 +319,7 @@ def restart_camera(
         raise HTTPException(status_code=400, detail="Camera has no rtsp_url — set one first")
 
     try:
-        camera_manager.restart_camera(cam.id, cam.name, cam.rtsp_url)
+        camera_manager.restart_camera(cam.id, cam.name, cam.rtsp_url, floor=cam.floor)
         cam.status = "online"
         db.commit()
     except Exception as exc:
@@ -260,6 +338,14 @@ from database import ZoneConfig
 from services import zone_service as _zone_svc
 
 
+def _json_load(value: Optional[str], default):
+    import json
+    try:
+        return json.loads(value) if value else default
+    except (TypeError, ValueError):
+        return default
+
+
 class ZoneCreate(BaseModel):
     zone_name:    str = Field(..., min_length=1, max_length=200)
     polygon_json: str = Field(
@@ -268,6 +354,22 @@ class ZoneCreate(BaseModel):
             "JSON array of [x,y] pixel points, e.g. [[10,10],[200,10],[200,200],[10,200]]"
         ),
     )
+    zone_type: Optional[str] = Field(None, max_length=100)
+    preset_type: Optional[str] = Field(None, max_length=100)
+    display_name: Optional[str] = Field(None, max_length=200)
+    color: Optional[str] = Field(None, max_length=20)
+    priority: int = 0
+    workflow_stage: Optional[str] = Field(None, max_length=100)
+    rule_profile_id: Optional[int] = None
+    expected_objects: Optional[list[str]] = None
+    allowed_objects: Optional[list[str]] = None
+    forbidden_objects: Optional[list[str]] = None
+    time_constraints: Optional[dict] = None
+    alert_thresholds: Optional[dict] = None
+    movement_threshold: Optional[float] = None
+    idle_threshold: Optional[float] = None
+    confidence_threshold: Optional[float] = None
+    visibility_threshold: Optional[float] = None
 
 
 @router.get("/{camera_id}/zones")
@@ -291,6 +393,24 @@ def get_zones(
             "zone_name":    z.zone_name,
             "polygon_json": z.polygon_json,
             "created_at":   z.created_at.isoformat() if z.created_at else None,
+            "zone_type": z.zone_type,
+            "preset_type": z.preset_type,
+            "display_name": z.display_name,
+            "color": z.color,
+            "priority": z.priority,
+            "workflow_stage": z.workflow_stage,
+            "rule_profile_id": z.rule_profile_id,
+            "expected_objects": _json_load(z.expected_objects_json, []),
+            "allowed_objects": _json_load(z.allowed_objects_json, []),
+            "forbidden_objects": _json_load(z.forbidden_objects_json, []),
+            "time_constraints": _json_load(z.time_constraints_json, {}),
+            "alert_thresholds": _json_load(z.alert_thresholds_json, {}),
+            "movement_threshold": z.movement_threshold,
+            "idle_threshold": z.idle_threshold,
+            "confidence_threshold": z.confidence_threshold,
+            "visibility_threshold": z.visibility_threshold,
+            "is_active": z.is_active,
+            "calibration_version": z.calibration_version,
         }
         for z in zones
     ]
@@ -320,6 +440,7 @@ def create_or_replace_zone(
 
     # Validate polygon JSON
     import json as _json
+    from services.calibration_service import validate_polygon
     try:
         poly = _json.loads(payload.polygon_json)
         if not isinstance(poly, list) or len(poly) < 3:
@@ -327,6 +448,7 @@ def create_or_replace_zone(
         for pt in poly:
             if not (isinstance(pt, (list, tuple)) and len(pt) == 2):
                 raise ValueError(f"Each point must be [x, y], got: {pt}")
+        validate_polygon(poly)
     except (ValueError, _json.JSONDecodeError) as exc:
         raise HTTPException(status_code=422, detail=f"Invalid polygon_json: {exc}")
 
@@ -338,6 +460,21 @@ def create_or_replace_zone(
     )
     if existing:
         existing.polygon_json = payload.polygon_json
+        for field, value in {
+            "zone_type": payload.zone_type, "preset_type": payload.preset_type,
+            "display_name": payload.display_name, "color": payload.color,
+            "priority": payload.priority, "workflow_stage": payload.workflow_stage,
+            "rule_profile_id": payload.rule_profile_id,
+            "expected_objects_json": _json.dumps(payload.expected_objects) if payload.expected_objects is not None else None,
+            "allowed_objects_json": _json.dumps(payload.allowed_objects) if payload.allowed_objects is not None else None,
+            "forbidden_objects_json": _json.dumps(payload.forbidden_objects) if payload.forbidden_objects is not None else None,
+            "time_constraints_json": _json.dumps(payload.time_constraints) if payload.time_constraints is not None else None,
+            "alert_thresholds_json": _json.dumps(payload.alert_thresholds) if payload.alert_thresholds is not None else None,
+            "movement_threshold": payload.movement_threshold, "idle_threshold": payload.idle_threshold,
+            "confidence_threshold": payload.confidence_threshold, "visibility_threshold": payload.visibility_threshold,
+        }.items():
+            if value is not None:
+                setattr(existing, field, value)
         db.commit()
         db.refresh(existing)
         zone = existing
@@ -347,6 +484,22 @@ def create_or_replace_zone(
             camera_id    = camera_id,
             zone_name    = payload.zone_name,
             polygon_json = payload.polygon_json,
+            zone_type = payload.zone_type,
+            preset_type = payload.preset_type,
+            display_name = payload.display_name,
+            color = payload.color,
+            priority = payload.priority,
+            workflow_stage = payload.workflow_stage,
+            rule_profile_id = payload.rule_profile_id,
+            expected_objects_json = _json.dumps(payload.expected_objects) if payload.expected_objects is not None else None,
+            allowed_objects_json = _json.dumps(payload.allowed_objects) if payload.allowed_objects is not None else None,
+            forbidden_objects_json = _json.dumps(payload.forbidden_objects) if payload.forbidden_objects is not None else None,
+            time_constraints_json = _json.dumps(payload.time_constraints) if payload.time_constraints is not None else None,
+            alert_thresholds_json = _json.dumps(payload.alert_thresholds) if payload.alert_thresholds is not None else None,
+            movement_threshold = payload.movement_threshold,
+            idle_threshold = payload.idle_threshold,
+            confidence_threshold = payload.confidence_threshold,
+            visibility_threshold = payload.visibility_threshold,
         )
         db.add(zone)
         db.commit()
@@ -362,6 +515,23 @@ def create_or_replace_zone(
         "zone_name":    zone.zone_name,
         "polygon_json": zone.polygon_json,
         "created_at":   zone.created_at.isoformat() if zone.created_at else None,
+        "zone_type": zone.zone_type,
+        "preset_type": zone.preset_type,
+        "display_name": zone.display_name,
+        "color": zone.color,
+        "priority": zone.priority,
+        "workflow_stage": zone.workflow_stage,
+        "rule_profile_id": zone.rule_profile_id,
+        "expected_objects": _json_load(zone.expected_objects_json, []),
+        "allowed_objects": _json_load(zone.allowed_objects_json, []),
+        "forbidden_objects": _json_load(zone.forbidden_objects_json, []),
+        "time_constraints": _json_load(zone.time_constraints_json, {}),
+        "alert_thresholds": _json_load(zone.alert_thresholds_json, {}),
+        "movement_threshold": zone.movement_threshold,
+        "idle_threshold": zone.idle_threshold,
+        "confidence_threshold": zone.confidence_threshold,
+        "visibility_threshold": zone.visibility_threshold,
+        "calibration_version": zone.calibration_version,
     }
 
 

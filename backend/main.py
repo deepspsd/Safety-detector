@@ -3,11 +3,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import os
 
-from database import create_tables
+from database import create_tables, ensure_enterprise_schema
 from config import settings
 from services.yolo_service import load_model
 from routers import auth, users, alerts, detection, video, faces, cctv, cameras
 from routers.settings import router as settings_router, baseline_router
+from routers.enterprise import router as enterprise_router
 
 app = FastAPI(
     title="Safety Monitor API",
@@ -35,6 +36,7 @@ app.include_router(video.router)
 app.include_router(faces.router)
 app.include_router(cctv.router)
 app.include_router(cameras.router)
+app.include_router(enterprise_router)
 app.include_router(settings_router)   # GET/PUT /settings/*
 app.include_router(baseline_router)   # POST/DELETE /cameras/{id}/baseline
 
@@ -77,6 +79,7 @@ def startup():
     )
     os.makedirs(os.path.join(settings.UPLOAD_DIR, "snapshots"), exist_ok=True)
     create_tables()
+    ensure_enterprise_schema()
 
     # ── Auto-migrate: add thumbnail_b64 to face_encodings if missing ──────────
     try:
@@ -140,6 +143,21 @@ def startup():
         print(f"⚠️  Migration v3 block error: {e}")
 
     load_model()
+
+    # The registry is the stable contract for current and future vision models.
+    # Importing these modules binds the event -> rule -> alert pipeline once.
+    try:
+        from database import SessionLocal
+        from services import model_manager
+        _mdb = SessionLocal()
+        try:
+            model_manager.seed_registry(_mdb)
+        finally:
+            _mdb.close()
+        from services import rule_engine_v2, alert_engine_v2, notification_engine  # noqa: F401
+        print("Enterprise event, rule, alert and model services ready")
+    except Exception as e:
+        print(f"Enterprise platform startup warning: {e}")
 
     # ── Seed SystemSettings defaults ──────────────────────────────────────────
     try:

@@ -928,7 +928,7 @@ function CamerasTab({ addToast }) {
   const [selectedCamera,   setSelectedCamera]   = useState(null)
   const [discovering,      setDiscovering]      = useState(false)
   const [discoveryResults, setDiscoveryResults] = useState(null)
-  const [addForm,          setAddForm]          = useState({ name: '', floor: 'ground', rtsp_url: '', zone_type: '' })
+  const [addForm,          setAddForm]          = useState({ name: '', floor: 'ground', rtsp_url: '', zone_type: '', camera_code: '', department: '', purpose: '', camera_type: 'rtsp' })
   const [addingCamera,     setAddingCamera]     = useState(false)
   const [showAddForm,      setShowAddForm]      = useState(false)
 
@@ -963,7 +963,7 @@ function CamerasTab({ addToast }) {
       await camerasApi.create({ ...addForm, status: addForm.rtsp_url ? 'online' : 'offline' })
       addToast('Camera added', addForm.name, 'success')
       setShowAddForm(false)
-      setAddForm({ name: '', floor: 'ground', rtsp_url: '', zone_type: '' })
+      setAddForm({ name: '', floor: 'ground', rtsp_url: '', zone_type: '', camera_code: '', department: '', purpose: '', camera_type: 'rtsp' })
       await loadCameras()
     } catch (err) {
       addToast('Add failed', err.response?.data?.detail || '', 'danger')
@@ -1054,9 +1054,10 @@ function CamerasTab({ addToast }) {
             </div>
             <div>
               <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Floor</label>
-              <select className="input" value={addForm.floor} onChange={e => setAddForm(f => ({ ...f, floor: e.target.value }))}>
-                {['ground','first','second','shop'].map(f => <option key={f} value={f}>{f.charAt(0).toUpperCase() + f.slice(1)} Floor</option>)}
-              </select>
+              <input className="input" list="camera-floors" value={addForm.floor} onChange={e => setAddForm(f => ({ ...f, floor: e.target.value }))} placeholder="e.g. ground or third" />
+              <datalist id="camera-floors">
+                <option value="ground" /><option value="first" /><option value="second" /><option value="shop" /><option value="store" />
+              </datalist>
             </div>
             <div style={{ gridColumn: 'span 2' }}>
               <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>RTSP / HTTP URL</label>
@@ -1065,6 +1066,18 @@ function CamerasTab({ addToast }) {
             <div>
               <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Zone Type (for idle limit)</label>
               <input className="input" value={addForm.zone_type} onChange={e => setAddForm(f => ({ ...f, zone_type: e.target.value }))} placeholder="shop / default / cashbox…" />
+            </div>
+            <div>
+              <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Camera ID</label>
+              <input className="input" value={addForm.camera_code} onChange={e => setAddForm(f => ({ ...f, camera_code: e.target.value }))} placeholder="e.g. GF-PACK-01" />
+            </div>
+            <div>
+              <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Department</label>
+              <input className="input" value={addForm.department} onChange={e => setAddForm(f => ({ ...f, department: e.target.value }))} placeholder="e.g. Packing" />
+            </div>
+            <div>
+              <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Purpose</label>
+              <input className="input" value={addForm.purpose} onChange={e => setAddForm(f => ({ ...f, purpose: e.target.value }))} placeholder="e.g. Workflow and PPE" />
             </div>
           </div>
           <button className="btn btn-primary" style={{ marginTop: 14 }} onClick={addCamera} disabled={addingCamera}>

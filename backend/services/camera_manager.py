@@ -130,6 +130,12 @@ class _ManagedCamera:
         except Exception as e:
             log.error(f"[CamMgr] yolo_service tracker reset error: {e}")
 
+        try:
+            from services.enterprise_runtime import runtime
+            runtime.reset_camera(self.camera_id)
+        except Exception as e:
+            log.error(f"[CamMgr] enterprise runtime reset error: {e}")
+
         log.info(f"[CamMgr] Stopped camera {self.camera_id}")
 
     def latest_frame(self) -> Optional[np.ndarray]:
@@ -187,7 +193,19 @@ class _ManagedCamera:
                     cam.status = status
                     if status == "online":
                         cam.last_seen_at = datetime.datetime.utcnow()
+                        cam.heartbeat_at = cam.last_seen_at
+                    cam.health_status = status
                     db.commit()
+                    try:
+                        from services.health_monitor import collect_camera_health, record
+                        from services.platform_events import emit
+                        record("camera", str(self.camera_id), status,
+                               collect_camera_health(self.camera_id, self.fps(), error))
+                        if status in ("offline", "error"):
+                            emit("CAMERA_OFFLINE", camera_id=self.camera_id, source="health-monitor",
+                                 payload={"status": status, "error": error, "fps": self.fps()})
+                    except Exception:
+                        pass
                     log.debug(
                         f"[CamMgr] Heartbeat cam={self.camera_id} "
                         f"status={status} fps={self.fps():.1f}"
@@ -228,8 +246,9 @@ class _ManagedCamera:
         All rule-engine calls share one SQLAlchemy session opened per tick and
         closed in a finally block — no session is held between ticks.
         """
-        from services import yolo_service, idle_service
+        from services import idle_service
         from services import zone_service, rule_engine
+        from services.enterprise_runtime import runtime as enterprise_runtime
         from database import SessionLocal, Camera as CameraModel
 
         zone_name = "default"
@@ -267,14 +286,16 @@ class _ManagedCamera:
                     zones = zone_service.load_zones_for_camera(self.camera_id, db)
 
                 # ── YOLO inference + tracking ───────────────────────────────
-                res = yolo_service.process_frame_numpy_tracked(
-                    frame=frame,
-                    role="Factory Worker",
-                    camera_id=self.camera_id,
-                    ocr_zone_config=zones if zones else None,
-                )
-                persons     = res.get("persons", [])
-                raw_dets    = res.get("detections", [])
+                # Enterprise path: YOLO produces only raw detections; tracking,
+                # semantic context, events, workflows and rules are independent.
+                # The legacy idle/cylinder hooks below consume the neutral output
+                # during the migration period, preserving existing behaviour.
+                res = enterprise_runtime.process_frame(self.camera_id, frame, db)
+                persons = [
+                    {"bbox": track["bbox"], "confidence": track["confidence"], "track_id": int(track["track_id"])}
+                    for track in res.get("tracks", [])
+                ]
+                raw_dets = res.get("detections", [])
 
                 # ── Idle service ─────────────────────────────────────────────
                 idle_service.process_frame(

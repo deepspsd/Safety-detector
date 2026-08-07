@@ -108,11 +108,23 @@ export const camerasApi = {
   restart:      (id)                  => api.post(`/cameras/${id}/restart`),
   // Zone calibration
   getZones:     (id)                  => api.get(`/cameras/${id}/zones`),
-  createZone:   (id, zone_name, polygon_json) =>
-                  api.post(`/cameras/${id}/zones`, { zone_name, polygon_json }),
+  createZone:   (id, zone_name, polygon_json, metadata = {}) =>
+                  api.post(`/cameras/${id}/zones`, { zone_name, polygon_json, ...metadata }),
   deleteZone:   (id, zone_name)       => api.delete(`/cameras/${id}/zones/${encodeURIComponent(zone_name)}`),
+  calibrationHistory: (id)            => api.get(`/cameras/${id}/calibrations`),
+  versionCalibration: (id, note = '') => api.post(`/cameras/${id}/calibrations/snapshot`, null, { params: { note } }),
+  restoreCalibration: (id, version, note = '') =>
+                  api.post(`/cameras/${id}/calibrations/${version}/restore`, { note }),
   // Latest frame for calibration canvas
   snapshot:     (id)                  => api.get(`/cameras/${id}/snapshot`),
   // LAN discovery (Hikvision/Dahua/generic RTSP scan)
   discover:     ()                    => api.post('/cameras/discover'),
+}
+
+export const platformApi = {
+  models: () => api.get('/platform/models'),
+  health: (params) => api.get('/platform/health', { params }),
+  analytics: (days = 7) => api.get('/platform/analytics/summary', { params: { days } }),
+  alertCases: () => api.get('/platform/alert-cases'),
+  alertCaseAction: (id, action) => api.post(`/platform/alert-cases/${id}/${action}`),
 }

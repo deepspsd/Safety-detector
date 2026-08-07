@@ -19,7 +19,7 @@ Alert table is backward-compatible: three new nullable FK columns
 
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float,
-    DateTime, Text, Boolean, ForeignKey,
+    DateTime, Text, Boolean, ForeignKey, inspect, text,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
@@ -165,6 +165,34 @@ class Camera(Base):
     last_seen_at = Column(DateTime,    nullable=True)    # last heartbeat / frame received
     created_at   = Column(DateTime,    default=datetime.utcnow)
 
+    # Enterprise camera inventory.  Every field is nullable/defaulted so the
+    # original camera CRUD contract remains valid while existing installations
+    # are migrated in-place.
+    camera_code          = Column(String(100), unique=True, nullable=True, index=True)
+    department           = Column(String(100), nullable=True)
+    purpose              = Column(String(200), nullable=True)
+    camera_type          = Column(String(50), nullable=True)
+    mount_height_m       = Column(Float, nullable=True)
+    view_direction       = Column(String(100), nullable=True)
+    resolution           = Column(String(50), nullable=True)
+    configured_fps       = Column(Float, nullable=True)
+    calibration_status   = Column(String(40), nullable=False, default="not_calibrated")
+    calibration_version  = Column(Integer, nullable=False, default=0)
+    last_calibrated_at   = Column(DateTime, nullable=True)
+    rule_profile_id      = Column(Integer, nullable=True)
+    workflow_profile_id  = Column(Integer, nullable=True)
+    ai_enabled           = Column(Boolean, nullable=False, default=True)
+    supports_multi_zone  = Column(Boolean, nullable=False, default=True)
+    supports_ocr         = Column(Boolean, nullable=False, default=False)
+    supports_pose        = Column(Boolean, nullable=False, default=False)
+    supports_tracking    = Column(Boolean, nullable=False, default=True)
+    supports_recording   = Column(Boolean, nullable=False, default=False)
+    supports_snapshot    = Column(Boolean, nullable=False, default=True)
+    heartbeat_at         = Column(DateTime, nullable=True)
+    health_status        = Column(String(40), nullable=False, default="unknown")
+    reference_frame_path = Column(String(500), nullable=True)
+    drift_score          = Column(Float, nullable=True)
+
     # Children
     zones          = relationship("ZoneConfig",          back_populates="camera", cascade="all, delete-orphan")
     idle_sessions  = relationship("IdleSession",         back_populates="camera")
@@ -215,6 +243,28 @@ class ZoneConfig(Base):
     zone_name    = Column(String(200), nullable=False)
     polygon_json = Column(Text,        nullable=False)   # e.g. "[[120,80],[320,80],[320,300],[120,300]]"
     created_at   = Column(DateTime,    default=datetime.utcnow)
+
+    # Versioned, rule-ready zone metadata.  zone_name/polygon_json are kept as
+    # the legacy public contract; these columns add the requested semantics.
+    zone_type            = Column(String(100), nullable=True)
+    preset_type          = Column(String(100), nullable=True)
+    display_name         = Column(String(200), nullable=True)
+    color                = Column(String(20), nullable=True)
+    priority             = Column(Integer, nullable=False, default=0)
+    workflow_stage       = Column(String(100), nullable=True)
+    rule_profile_id      = Column(Integer, nullable=True)
+    expected_objects_json = Column(Text, nullable=True)
+    allowed_objects_json  = Column(Text, nullable=True)
+    forbidden_objects_json = Column(Text, nullable=True)
+    time_constraints_json = Column(Text, nullable=True)
+    alert_thresholds_json = Column(Text, nullable=True)
+    movement_threshold   = Column(Float, nullable=True)
+    idle_threshold       = Column(Float, nullable=True)
+    confidence_threshold = Column(Float, nullable=True)
+    visibility_threshold = Column(Float, nullable=True)
+    calibration_version  = Column(Integer, nullable=False, default=0)
+    is_active            = Column(Boolean, nullable=False, default=True)
+    updated_at           = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     camera = relationship("Camera", back_populates="zones")
 
@@ -380,6 +430,229 @@ class DirtyFloorBaseline(Base):
     camera = relationship("Camera", back_populates="dirty_baselines")
 
 
+# ---------------------------------------------------------------------------
+# Enterprise platform tables
+# ---------------------------------------------------------------------------
+# These are deliberately additive.  Existing User, Alert, Camera and
+# ZoneConfig records continue to operate exactly as before while new services
+# write durable domain state here.
+
+class CalibrationVersion(Base):
+    __tablename__ = "calibration_versions"
+
+    id                   = Column(Integer, primary_key=True)
+    camera_id            = Column(Integer, ForeignKey("cameras.id"), nullable=False, index=True)
+    version              = Column(Integer, nullable=False)
+    snapshot_path        = Column(String(500), nullable=True)
+    reference_frame_path = Column(String(500), nullable=True)
+    zones_json           = Column(Text, nullable=False, default="[]")
+    change_note          = Column(String(500), nullable=True)
+    created_by_user_id   = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at           = Column(DateTime, nullable=False, default=datetime.utcnow)
+    restored_from_id     = Column(Integer, ForeignKey("calibration_versions.id"), nullable=True)
+
+
+class WorkflowProfile(Base):
+    __tablename__ = "workflow_profiles"
+
+    id          = Column(Integer, primary_key=True)
+    name        = Column(String(200), nullable=False, unique=True)
+    description = Column(Text, nullable=True)
+    floor       = Column(String(100), nullable=True)
+    definition_json = Column(Text, nullable=False, default="{}")
+    enabled     = Column(Boolean, nullable=False, default=True)
+    version     = Column(Integer, nullable=False, default=1)
+    created_at  = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at  = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class RuleProfile(Base):
+    __tablename__ = "rule_profiles"
+
+    id          = Column(Integer, primary_key=True)
+    name        = Column(String(200), nullable=False, unique=True)
+    description = Column(Text, nullable=True)
+    enabled     = Column(Boolean, nullable=False, default=True)
+    definition_json = Column(Text, nullable=False, default="{}")
+    created_at  = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at  = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class RuleDefinition(Base):
+    __tablename__ = "rule_definitions"
+
+    id                   = Column(Integer, primary_key=True)
+    profile_id           = Column(Integer, ForeignKey("rule_profiles.id"), nullable=True, index=True)
+    name                 = Column(String(200), nullable=False)
+    description          = Column(Text, nullable=True)
+    priority             = Column(String(30), nullable=False, default="warning")
+    enabled              = Column(Boolean, nullable=False, default=True)
+    zone_id              = Column(Integer, ForeignKey("zone_configs.id"), nullable=True)
+    workflow_stage       = Column(String(100), nullable=True)
+    required_events_json = Column(Text, nullable=False, default="[]")
+    forbidden_events_json = Column(Text, nullable=False, default="[]")
+    conditions_json      = Column(Text, nullable=False, default="{}")
+    time_threshold_sec   = Column(Float, nullable=True)
+    confidence_threshold = Column(Float, nullable=True)
+    cooldown_sec         = Column(Float, nullable=False, default=30)
+    escalation_json      = Column(Text, nullable=False, default="{}")
+    notification_targets_json = Column(Text, nullable=False, default="[]")
+    created_at           = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at           = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SurveillanceEvent(Base):
+    __tablename__ = "surveillance_events"
+
+    id                = Column(Integer, primary_key=True)
+    event_id          = Column(String(64), nullable=False, unique=True, index=True)
+    event_type        = Column(String(100), nullable=False, index=True)
+    occurred_at       = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    camera_id         = Column(Integer, ForeignKey("cameras.id"), nullable=True, index=True)
+    zone_id           = Column(Integer, ForeignKey("zone_configs.id"), nullable=True, index=True)
+    track_id          = Column(String(100), nullable=True, index=True)
+    employee_id       = Column(Integer, ForeignKey("employees.id"), nullable=True)
+    workflow_profile_id = Column(Integer, ForeignKey("workflow_profiles.id"), nullable=True)
+    calibration_version = Column(Integer, nullable=True)
+    confidence        = Column(Float, nullable=True)
+    correlation_id    = Column(String(100), nullable=True, index=True)
+    source            = Column(String(100), nullable=False, default="platform")
+    payload_json      = Column(Text, nullable=False, default="{}")
+
+
+class ContextSnapshot(Base):
+    __tablename__ = "context_snapshots"
+
+    id                = Column(Integer, primary_key=True)
+    camera_id         = Column(Integer, ForeignKey("cameras.id"), nullable=False, index=True)
+    track_id          = Column(String(100), nullable=False, index=True)
+    occurred_at       = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    zone_id           = Column(Integer, ForeignKey("zone_configs.id"), nullable=True)
+    workflow_stage    = Column(String(100), nullable=True)
+    employee_id       = Column(Integer, ForeignKey("employees.id"), nullable=True)
+    context_json      = Column(Text, nullable=False, default="{}")
+
+
+class TrackSession(Base):
+    __tablename__ = "track_sessions"
+
+    id                = Column(Integer, primary_key=True)
+    camera_id         = Column(Integer, ForeignKey("cameras.id"), nullable=False, index=True)
+    track_id          = Column(String(100), nullable=False, index=True)
+    employee_id       = Column(Integer, ForeignKey("employees.id"), nullable=True)
+    started_at        = Column(DateTime, nullable=False, default=datetime.utcnow)
+    ended_at          = Column(DateTime, nullable=True)
+    first_position_json = Column(Text, nullable=True)
+    last_position_json  = Column(Text, nullable=True)
+    movement_state    = Column(String(50), nullable=True)
+    metadata_json     = Column(Text, nullable=False, default="{}")
+
+
+class TrackZoneHistory(Base):
+    __tablename__ = "track_zone_history"
+
+    id               = Column(Integer, primary_key=True)
+    track_session_id = Column(Integer, ForeignKey("track_sessions.id"), nullable=True, index=True)
+    camera_id        = Column(Integer, ForeignKey("cameras.id"), nullable=False, index=True)
+    track_id         = Column(String(100), nullable=False, index=True)
+    zone_id          = Column(Integer, ForeignKey("zone_configs.id"), nullable=True)
+    entered_at       = Column(DateTime, nullable=False, default=datetime.utcnow)
+    exited_at        = Column(DateTime, nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+
+
+class RuleEvaluation(Base):
+    __tablename__ = "rule_evaluations"
+
+    id               = Column(Integer, primary_key=True)
+    rule_id          = Column(Integer, ForeignKey("rule_definitions.id"), nullable=False, index=True)
+    event_id         = Column(String(64), nullable=True, index=True)
+    camera_id        = Column(Integer, ForeignKey("cameras.id"), nullable=True)
+    outcome          = Column(String(30), nullable=False)
+    reason           = Column(Text, nullable=True)
+    evaluated_at     = Column(DateTime, nullable=False, default=datetime.utcnow)
+    context_json     = Column(Text, nullable=False, default="{}")
+
+
+class AlertCase(Base):
+    __tablename__ = "alert_cases"
+
+    id                = Column(Integer, primary_key=True)
+    public_id         = Column(String(64), nullable=False, unique=True, index=True)
+    rule_id           = Column(Integer, ForeignKey("rule_definitions.id"), nullable=True)
+    alert_id          = Column(Integer, ForeignKey("alerts.id"), nullable=True)
+    camera_id         = Column(Integer, ForeignKey("cameras.id"), nullable=True, index=True)
+    event_id          = Column(String(64), nullable=True, index=True)
+    status            = Column(String(40), nullable=False, default="open")
+    severity          = Column(String(30), nullable=False, default="warning")
+    title             = Column(String(300), nullable=False)
+    details_json      = Column(Text, nullable=False, default="{}")
+    opened_at         = Column(DateTime, nullable=False, default=datetime.utcnow)
+    acknowledged_at   = Column(DateTime, nullable=True)
+    acknowledged_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    closed_at         = Column(DateTime, nullable=True)
+
+
+class NotificationDelivery(Base):
+    __tablename__ = "notification_deliveries"
+
+    id                = Column(Integer, primary_key=True)
+    alert_case_id     = Column(Integer, ForeignKey("alert_cases.id"), nullable=True, index=True)
+    channel           = Column(String(50), nullable=False)
+    target            = Column(String(300), nullable=True)
+    status            = Column(String(30), nullable=False, default="queued")
+    provider_message_id = Column(String(200), nullable=True)
+    attempted_at      = Column(DateTime, nullable=True)
+    delivered_at      = Column(DateTime, nullable=True)
+    error_message     = Column(Text, nullable=True)
+    payload_json      = Column(Text, nullable=False, default="{}")
+
+
+class ModelRegistry(Base):
+    __tablename__ = "model_registry"
+
+    id                = Column(Integer, primary_key=True)
+    model_key         = Column(String(150), nullable=False, unique=True, index=True)
+    display_name      = Column(String(200), nullable=False)
+    model_type        = Column(String(50), nullable=False, index=True)
+    provider          = Column(String(100), nullable=True)
+    version           = Column(String(100), nullable=False)
+    artifact_path     = Column(String(500), nullable=True)
+    class_map_json    = Column(Text, nullable=False, default="{}")
+    capabilities_json = Column(Text, nullable=False, default="[]")
+    config_json       = Column(Text, nullable=False, default="{}")
+    enabled           = Column(Boolean, nullable=False, default=True)
+    health_status     = Column(String(40), nullable=False, default="unknown")
+    created_at        = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at        = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class HealthLog(Base):
+    __tablename__ = "health_logs"
+
+    id              = Column(Integer, primary_key=True)
+    component_type  = Column(String(80), nullable=False, index=True)
+    component_id    = Column(String(100), nullable=False, index=True)
+    status          = Column(String(40), nullable=False)
+    measured_at     = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    metrics_json    = Column(Text, nullable=False, default="{}")
+    message         = Column(Text, nullable=True)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id              = Column(Integer, primary_key=True)
+    actor_user_id   = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    action          = Column(String(150), nullable=False, index=True)
+    entity_type     = Column(String(100), nullable=False)
+    entity_id       = Column(String(100), nullable=True)
+    occurred_at     = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    before_json     = Column(Text, nullable=True)
+    after_json      = Column(Text, nullable=True)
+    metadata_json   = Column(Text, nullable=False, default="{}")
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -391,3 +664,50 @@ def get_db():
 def create_tables():
     """Create all tables that don't already exist.  Safe to call on every startup."""
     Base.metadata.create_all(bind=engine)
+
+
+def ensure_enterprise_schema() -> None:
+    """Apply additive SQLite migrations for the enterprise camera and zone fields.
+
+    SQLAlchemy's ``create_all`` creates new tables but intentionally never adds
+    columns to an existing table.  This small, idempotent migrator keeps the
+    original SQLite deployment upgrade-safe without introducing a destructive
+    migration dependency.  Production PostgreSQL deployments should run the
+    equivalent Alembic revisions before application startup.
+    """
+    additions = {
+        "cameras": {
+            "camera_code": "VARCHAR(100)", "department": "VARCHAR(100)",
+            "purpose": "VARCHAR(200)", "camera_type": "VARCHAR(50)",
+            "mount_height_m": "FLOAT", "view_direction": "VARCHAR(100)",
+            "resolution": "VARCHAR(50)", "configured_fps": "FLOAT",
+            "calibration_status": "VARCHAR(40) NOT NULL DEFAULT 'not_calibrated'",
+            "calibration_version": "INTEGER NOT NULL DEFAULT 0",
+            "last_calibrated_at": "DATETIME", "rule_profile_id": "INTEGER",
+            "workflow_profile_id": "INTEGER", "ai_enabled": "BOOLEAN NOT NULL DEFAULT 1",
+            "supports_multi_zone": "BOOLEAN NOT NULL DEFAULT 1",
+            "supports_ocr": "BOOLEAN NOT NULL DEFAULT 0", "supports_pose": "BOOLEAN NOT NULL DEFAULT 0",
+            "supports_tracking": "BOOLEAN NOT NULL DEFAULT 1", "supports_recording": "BOOLEAN NOT NULL DEFAULT 0",
+            "supports_snapshot": "BOOLEAN NOT NULL DEFAULT 1", "heartbeat_at": "DATETIME",
+            "health_status": "VARCHAR(40) NOT NULL DEFAULT 'unknown'", "reference_frame_path": "VARCHAR(500)",
+            "drift_score": "FLOAT",
+        },
+        "zone_configs": {
+            "zone_type": "VARCHAR(100)", "preset_type": "VARCHAR(100)", "display_name": "VARCHAR(200)",
+            "color": "VARCHAR(20)", "priority": "INTEGER NOT NULL DEFAULT 0", "workflow_stage": "VARCHAR(100)",
+            "rule_profile_id": "INTEGER", "expected_objects_json": "TEXT", "allowed_objects_json": "TEXT",
+            "forbidden_objects_json": "TEXT", "time_constraints_json": "TEXT", "alert_thresholds_json": "TEXT",
+            "movement_threshold": "FLOAT", "idle_threshold": "FLOAT", "confidence_threshold": "FLOAT",
+            "visibility_threshold": "FLOAT", "calibration_version": "INTEGER NOT NULL DEFAULT 0",
+            "is_active": "BOOLEAN NOT NULL DEFAULT 1", "updated_at": "DATETIME",
+        },
+    }
+    inspector = inspect(engine)
+    with engine.begin() as conn:
+        for table_name, columns in additions.items():
+            if table_name not in inspector.get_table_names():
+                continue
+            existing = {column["name"] for column in inspector.get_columns(table_name)}
+            for column_name, column_sql in columns.items():
+                if column_name not in existing:
+                    conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}"))
