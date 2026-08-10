@@ -44,7 +44,14 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin && !url.hostname.includes('localhost')) return
 
   // API calls → Network-First (5s timeout, fallback to cache)
-  if (url.pathname.startsWith('/alerts') || url.pathname.startsWith('/auth') || url.pathname.startsWith('/users')) {
+  // Match both bare (/auth, /alerts, /users) and /api-prefixed paths
+  // (the /api prefix is used in production single-origin builds).
+  const apiLike =
+    url.pathname.startsWith('/alerts') ||
+    url.pathname.startsWith('/auth') ||
+    url.pathname.startsWith('/users') ||
+    url.pathname.startsWith('/api/')
+  if (apiLike) {
     event.respondWith(networkFirst(request))
     return
   }

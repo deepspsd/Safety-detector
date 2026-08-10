@@ -37,17 +37,20 @@ function CameraTile({ camera, onSelect }) {
     const fetchSnap = async () => {
       if (!camera.id || camera.status === 'offline') return
       try {
-        // snapshot returns a JPEG redirect — use direct img URL instead of axios
+        // snapshot returns JSON { frame_b64: "data:image/jpeg;base64,..." }
         const token = localStorage.getItem('token')
         const url = `${BASE}/api/cameras/${camera.id}/snapshot?t=${Date.now()}`
         const res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
         if (!res.ok) throw new Error(res.status)
-        const blob = await res.blob()
+        const data = await res.json()
         if (!isMounted.current) return
-        const objUrl = URL.createObjectURL(blob)
-        setImgSrc(prev => { if (prev) URL.revokeObjectURL(prev); return objUrl })
-        setLastUpdated(new Date())
-        setPollErr(false)
+        if (data.frame_b64) {
+          setImgSrc(prev => { if (prev && prev.startsWith('blob:')) URL.revokeObjectURL(prev); return data.frame_b64 })
+          setLastUpdated(new Date())
+          setPollErr(false)
+        } else {
+          setPollErr(true)
+        }
       } catch {
         if (isMounted.current) setPollErr(true)
       } finally {
@@ -56,7 +59,7 @@ function CameraTile({ camera, onSelect }) {
     }
 
     fetchSnap()
-    return () => { isMounted.current = false; clearTimeout(tid); if (imgSrc) URL.revokeObjectURL(imgSrc) }
+    return () => { isMounted.current = false; clearTimeout(tid); if (imgSrc && imgSrc.startsWith('blob:')) URL.revokeObjectURL(imgSrc) }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [camera.id, camera.status])
 

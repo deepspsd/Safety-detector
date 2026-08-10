@@ -40,6 +40,28 @@ app.include_router(enterprise_router)
 app.include_router(settings_router)   # GET/PUT /settings/*
 app.include_router(baseline_router)   # POST/DELETE /cameras/{id}/baseline
 
+# ── /api prefix aggregate router (production single-origin compatibility) ─────
+# The frontend (api.js) defaults baseURL to '/api' in development, which Vite
+# proxies to the backend (stripping /api).  In production single-origin mode
+# (FastAPI serves the built frontend), there is no Vite proxy, so API calls
+# with an '/api' prefix would 404.  This aggregate router makes the backend
+# respond to BOTH /api/... and /... so a single frontend build works for both
+# development and production single-origin deployments.
+from fastapi import APIRouter as _APIRouter
+_api_router = _APIRouter(prefix="/api")
+_api_router.include_router(auth.router)
+_api_router.include_router(users.router)
+_api_router.include_router(alerts.router)
+_api_router.include_router(video.router)
+_api_router.include_router(faces.router)
+_api_router.include_router(cameras.router)
+_api_router.include_router(enterprise_router)
+_api_router.include_router(settings_router)
+_api_router.include_router(baseline_router)
+# NOTE: WebSocket routes (/ws/*) are intentionally NOT included here —
+# the frontend connects to them directly (no /api prefix).
+app.include_router(_api_router)
+
 # Serve uploaded files
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads")

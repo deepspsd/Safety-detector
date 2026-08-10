@@ -17,7 +17,11 @@ const SEV_COLORS = {
   low:      { bg: 'rgba(16,185,129,0.12)', border: 'rgba(16,185,129,0.3)', text: '#34d399' },
 }
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+// Resolve snapshot image source from the SAME origin as the API.
+// In dev, the Vite proxy serves /uploads → localhost:8000, so a relative
+// URL works both on localhost AND when accessed via a LAN IP (phone/TV).
+// AlertsReview.jsx uses the identical pattern — keep them in sync.
+const BASE_URL = import.meta.env.VITE_API_BASE_URL?.replace(/\/api$/, '') || ''
 
 export default function Alerts() {
   const { addToast } = useToast()

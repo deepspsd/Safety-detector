@@ -34,10 +34,10 @@ function TVCameraTile({ camera }) {
         const url   = `${BASE}/api/cameras/${camera.id}/snapshot?t=${Date.now()}`
         const res   = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
         if (!res.ok) throw new Error()
-        const blob  = await res.blob()
+        const data  = await res.json()
         if (!mounted.current) return
-        setSrc(prev => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(blob) })
-        setErr(false)
+        if (data.frame_b64) { setSrc(data.frame_b64); setErr(false) }
+        else setErr(true)
       } catch { if (mounted.current) setErr(true) }
       finally  { if (mounted.current) tid = setTimeout(poll, SNAP_POLL_MS) }
     }
