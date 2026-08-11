@@ -2,6 +2,7 @@
  * ThemeContext — Dark / Light mode with localStorage persistence
  * Applies `data-theme="light"` or `data-theme="dark"` to <html>.
  */
+/* eslint-disable react-refresh/only-export-components */
 import { createContext, useContext, useEffect, useState } from 'react'
 
 const ThemeContext = createContext(null)

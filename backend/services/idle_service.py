@@ -271,7 +271,7 @@ def process_frame(
     # Build set of active track_ids in this frame
     active_track_ids = set()
     for p in persons:
-        tid = p.get("track_id", -1)
+        tid = int(p.get("track_id", -1))
         if tid == -1:
             continue   # untracked person — skip idle logic
         active_track_ids.add(tid)
@@ -280,7 +280,7 @@ def process_frame(
 
         # ── 1. Update existing tracks + detect new tracks ───────────────────
         for p in persons:
-            tid = p.get("track_id", -1)
+            tid = int(p.get("track_id", -1))
             if tid == -1:
                 continue
 

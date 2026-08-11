@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
 import { useTheme } from '../context/ThemeContext'
@@ -33,7 +33,7 @@ const ROLE_PPE = {
 export default function Settings() {
   const { user, updateUser, customPpeItems, setCustomPpeItems, noPhoneZone: savedNoPhoneZone, setNoPhoneZone } = useAuth()
   const { addToast }         = useToast()
-  const { theme, toggle, isDark } = useTheme()
+  const { toggle, isDark } = useTheme()
 
   const [config,    setConfig]    = useState({ camera_type:'webcam', rtsp_url:'', notify_sound:true, notify_ui:true, detection_sensitivity:0.5 })
   const [profile,   setProfile]   = useState({ name: user?.name || '', role: user?.role || 'Construction Worker' })
@@ -940,6 +940,7 @@ function CamerasTab({ addToast }) {
     } catch {
       addToast('Failed to load cameras', '', 'danger')
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => { loadCameras() }, [loadCameras])

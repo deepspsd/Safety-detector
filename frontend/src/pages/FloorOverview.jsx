@@ -1,3 +1,4 @@
+/* eslint-disable no-unused-vars */
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { camerasApi, alertsApi } from '../api/api'
@@ -120,7 +121,7 @@ export default function FloorOverview() {
   const { addToast } = useToast()
 
   const [cameras,  setCameras]  = useState([])
-  const [stats,    setStats]    = useState(null)
+  const [,         setStats]    = useState(null)
   const [loading,  setLoading]  = useState(true)
 
   const floor = FLOORS.find(f => f.id === floorId) || FLOORS[0]

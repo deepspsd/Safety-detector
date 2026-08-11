@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
 import { videoApi } from '../api/api'
@@ -90,7 +90,6 @@ export default function LiveMonitor() {
   const [detectionInfo,  setDetectionInfo]  = useState(null)
   const [frameCount,     setFrameCount]     = useState(0)
   const [uploadProgress, setUploadProgress] = useState(0)
-  const [jobId,          setJobId]          = useState(null)
   const [jobStatus,      setJobStatus]      = useState(null)
   const [modelMode,      setModelMode]      = useState('')
   // CCTV extras
@@ -116,7 +115,6 @@ export default function LiveMonitor() {
   }
 
   const [activeFilters,  setActiveFilters]  = useState(() => getFiltersForRole(user?.role))
-  const [filtersReady,   setFiltersReady]   = useState(!!user?.role)
   const [showFilters,    setShowFilters]    = useState(false)
   // keep enableFace in a ref so WS callbacks always read latest value
   const enableFaceRef = useRef(enableFace)
@@ -156,7 +154,8 @@ export default function LiveMonitor() {
     const correct = getFiltersForRole(user.role)
     setActiveFilters(correct)
     activeFiltersRef.current = correct   // update ref NOW, don't wait for render cycle
-    setFiltersReady(true)
+    // Remove unused setFiltersReady
+
     console.log(`[ROLE FILTERS] ✅ role=${user.role} →`, correct)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.role])
@@ -475,7 +474,7 @@ export default function LiveMonitor() {
     try {
       const res = await videoApi.upload(file, setUploadProgress)
       const id  = res.data.job_id
-      setJobId(id)
+      // Remove unused setJobId
       setJobStatus({ status: 'processing', progress: 0 })
       addToast('Video uploaded', 'Violation scanning started…', 'info')
 
@@ -874,7 +873,7 @@ export default function LiveMonitor() {
                         const h = new URL(rtspUrl).hostname
                         const suggested = h.replace(/(\d{3,})(?=\d)/g, '$1.')
                         if (suggested !== h) return ` — Did you mean ${suggested}?`
-                      } catch {}
+                      } catch { /* ignore */ }
                       return null
                     })()}
                   </div>
@@ -1130,7 +1129,6 @@ export default function LiveMonitor() {
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                   {activeFilters.map(f => {
                     const label = f.replace('NO-', '')
-                    const icons = {}
                     return (
                       <span key={f} style={{
                         padding: '3px 10px', borderRadius: 99, fontSize: '0.77rem',
@@ -1276,7 +1274,7 @@ function VideoJobPanel({ status }) {
   const ppeSummary   = status.ppe_summary || {}
   const ppeSummaryEntries = Object.entries(ppeSummary)
   const maxViolCount = ppeSummaryEntries.length ? Math.max(...ppeSummaryEntries.map(([,v]) => v)) : 1
-  const vts          = status.violation_timestamps || []
+  const vts          = useMemo(() => status.violation_timestamps || [], [status.violation_timestamps])
   const videoDur     = status.video_duration_sec   || duration || 1
   const videoUrl     = status.annotated_video_url  // e.g. /uploads/annotated_{id}.mp4
 
@@ -1458,15 +1456,14 @@ function VideoJobPanel({ status }) {
                   return (
                     <div
                       key={i}
-                      onMouseEnter={(e) => {
-                        const rect = e.currentTarget.parentElement.parentElement.getBoundingClientRect()
+                      onMouseEnter={() => {
                         setTooltip({ x: left, vt, idx: i })
                       }}
                       onMouseLeave={() => setTooltip(null)}
                       onClick={(e) => { e.stopPropagation(); seekTo(vt.ts) }}
                       style={{
                         position: 'absolute', top: -3, width: 14, height: 14,
-                        left: `${left}%`, transform: 'translateX(-50%)',
+                        left: `${left}%`,
                         borderRadius: '50%', border: '2px solid #0a0a0f',
                         background: sev.dot, cursor: 'pointer', zIndex: 3,
                         boxShadow: activeVtIdx === i ? `0 0 8px ${sev.dot}` : 'none',
@@ -1547,7 +1544,7 @@ function VideoJobPanel({ status }) {
                 { label: 'High',     dot: '#f97316' },
                 { label: 'Medium',   dot: '#eab308' },
                 { label: 'Safe',     color: 'var(--accent-cyan)', isLine: true },
-              ].map(({ label, dot, color, isLine }) => (
+              ].map(({ label, dot, isLine }) => (
                 <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                   {isLine
                     ? <div style={{ width: 18, height: 4, borderRadius: 2, background: 'var(--accent-cyan)' }} />

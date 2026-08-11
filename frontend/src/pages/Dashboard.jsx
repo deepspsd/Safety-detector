@@ -435,13 +435,6 @@ function LegendDot({ color, label }) {
   )
 }
 
-function getTimeGreeting() {
-  const h = new Date().getHours()
-  if (h < 12) return 'morning'
-  if (h < 17) return 'afternoon'
-  return 'evening'
-}
-
 function formatTime(iso) {
   return new Date(iso).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })
 }

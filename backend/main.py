@@ -177,6 +177,9 @@ def startup():
         finally:
             _mdb.close()
         from services import rule_engine_v2, alert_engine_v2, notification_engine  # noqa: F401
+        # Wire camera health events (offline / drift) → DB alerts + Telegram
+        from services import camera_alert_handler
+        camera_alert_handler.register()
         print("Enterprise event, rule, alert and model services ready")
     except Exception as e:
         print(f"Enterprise platform startup warning: {e}")

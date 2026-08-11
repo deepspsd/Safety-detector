@@ -26,7 +26,7 @@ Design notes
 
 Public API
 ──────────
-  start_all(db_url)              → call from FastAPI startup
+  start_all()                    → call from FastAPI startup
   stop_all()                     → call from FastAPI shutdown
   start_camera(camera_row)       → live-add camera (POST /cameras)
   stop_camera(camera_id)         → live-remove camera (DELETE /cameras)

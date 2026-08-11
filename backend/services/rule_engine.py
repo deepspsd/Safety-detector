@@ -60,6 +60,33 @@ log = logging.getLogger("rule_engine")
 # user_id=1 = first admin registered. Change via env RULE_ENGINE_USER_ID.
 RULE_ENGINE_USER_ID: int = int(os.environ.get("RULE_ENGINE_USER_ID", "1"))
 
+
+def _get_rule_engine_user_id(db) -> int:
+    """
+    Return a valid user_id for system-generated rule-engine alerts.
+
+    Tries RULE_ENGINE_USER_ID first (env-configured, default=1).
+    If that user doesn't exist (e.g. fresh DB with no registrations yet),
+    falls back to the lowest-id user to prevent FK constraint violations.
+    Returns RULE_ENGINE_USER_ID as-is if no users exist at all — the caller's
+    try/except will catch the FK error and log it without crashing the loop.
+    """
+    from database import User
+    try:
+        user = db.query(User).filter(User.id == RULE_ENGINE_USER_ID).first()
+        if user:
+            return user.id
+        any_user = db.query(User).order_by(User.id).first()
+        if any_user:
+            log.warning(
+                "[rule_engine] user_id=%d not found; falling back to user_id=%d",
+                RULE_ENGINE_USER_ID, any_user.id,
+            )
+            return any_user.id
+    except Exception as exc:
+        log.error("[rule_engine] user lookup failed: %s", exc)
+    return RULE_ENGINE_USER_ID
+
 # ═════════════════════════════════════════════════════════════════════════════
 # SECTION A — DB-backed settings loader
 # ═════════════════════════════════════════════════════════════════════════════
@@ -260,7 +287,7 @@ def check_shift_start(camera_id: int, floor: str, db) -> None:
             _db = db  # reuse caller's session if available
             save_alert(
                 db=_db,
-                user_id=RULE_ENGINE_USER_ID,
+                user_id=_get_rule_engine_user_id(_db),
                 message=(
                     f"⏰ Late shift start on {floor.capitalize()} Floor. "
                     f"Shift starts at {shift_start_str}. {late_str}."
@@ -557,7 +584,7 @@ def check_dirty_floor(
         try:
             save_alert(
                 db=db,
-                user_id=RULE_ENGINE_USER_ID,
+                user_id=_get_rule_engine_user_id(db),
                 message=(
                     f"🧹 Floor cleanliness alert on {floor.capitalize()} Floor — "
                     f"camera {camera_id}. {fraction*100:.1f}% of frame differs "
@@ -688,7 +715,7 @@ class GasIdleMonitor:
         try:
             save_alert(
                 db=db,
-                user_id=RULE_ENGINE_USER_ID,
+                user_id=_get_rule_engine_user_id(db),
                 message=(
                     f"🔥 Stove/oven zone appears idle for {mins:.1f} minutes "
                     f"with no person supervising — camera {self.camera_id}. "
@@ -805,7 +832,7 @@ def _fire_shop_absence_alert(camera_id: int, empty_for: float, db) -> None:
     try:
         save_alert(
             db=db,
-            user_id=RULE_ENGINE_USER_ID,
+            user_id=_get_rule_engine_user_id(db),
             message=(
                 f"🏪 Shop unattended for {mins:.1f} minutes — "
                 f"no employee visible on camera {camera_id}. "
