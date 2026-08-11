@@ -8,7 +8,7 @@ import {
   Video, Bell, LayoutDashboard, Settings, Shield,
   LogOut, UserCircle, HardHat, Sun, Moon, Menu, X,
   Camera, Users, Layers, ChevronDown, ChevronRight,
-  ShieldAlert, Tv2
+  ShieldAlert, Tv2, ClipboardList, FileText, Briefcase
 } from 'lucide-react'
 
 const FLOORS = [
@@ -195,6 +195,21 @@ export default function Sidebar() {
         <NavLink to="/dashboard" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
           <LayoutDashboard size={17} />
           Dashboard
+        </NavLink>
+
+        <NavLink to="/attendance" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+          <ClipboardList size={17} />
+          Attendance
+        </NavLink>
+
+        <NavLink to="/documents" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+          <FileText size={17} />
+          Documents
+        </NavLink>
+
+        <NavLink to="/workflow" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+          <Briefcase size={17} />
+          Workflow
         </NavLink>
 
         {/* ── SETTINGS ───────────────────────────── */}

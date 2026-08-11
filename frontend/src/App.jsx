@@ -17,6 +17,9 @@ import FloorOverview from './pages/FloorOverview'
 import Cameras from './pages/Cameras'
 import Employees from './pages/Employees'
 import TVDisplay from './pages/TVDisplay'
+import Attendance from './pages/Attendance'
+import Documents from './pages/Documents'
+import WorkflowMonitor from './pages/WorkflowMonitor'
 import { Layers, Bell, LayoutDashboard } from 'lucide-react'
 
 function ProtectedRoute({ children }) {
@@ -82,6 +85,9 @@ function AppRoutes() {
       <Route path="/alerts"           element={<ProtectedRoute><AppLayout><Alerts        /></AppLayout></ProtectedRoute>} />
       <Route path="/alerts/review"    element={<ProtectedRoute><AppLayout><AlertsReview  /></AppLayout></ProtectedRoute>} />
       <Route path="/dashboard"        element={<ProtectedRoute><AppLayout><Dashboard     /></AppLayout></ProtectedRoute>} />
+      <Route path="/attendance"       element={<ProtectedRoute><AppLayout><Attendance    /></AppLayout></ProtectedRoute>} />
+      <Route path="/documents"        element={<ProtectedRoute><AppLayout><Documents     /></AppLayout></ProtectedRoute>} />
+      <Route path="/workflow"         element={<ProtectedRoute><AppLayout><WorkflowMonitor /></AppLayout></ProtectedRoute>} />
 
       {/* Settings */}
       <Route path="/settings/cameras"   element={<ProtectedRoute><AppLayout><Cameras   /></AppLayout></ProtectedRoute>} />
