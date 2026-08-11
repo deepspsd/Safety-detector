@@ -377,6 +377,61 @@ class OrderFormLog(Base):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# ATTENDANCE & WORKFLOW TABLES
+# ──────────────────────────────────────────────────────────────────────────────
+
+class AttendanceRecord(Base):
+    """
+    Employee clock-in / clock-out record.
+
+    method : 'face'   — automatically fired by face-recognition pipeline
+             'manual' — desk/admin entry
+             'qr'     — QR-code scanner (future)
+
+    employee_id=NULL means an unrecognised visitor or an entry made before
+    face-match completes; the admin can link it to an Employee later.
+    """
+    __tablename__ = "attendance_records"
+
+    id               = Column(Integer, primary_key=True, index=True)
+    employee_id      = Column(Integer, ForeignKey("employees.id"), nullable=True)
+    user_id          = Column(Integer, ForeignKey("users.id"),     nullable=True)   # who created it (manual)
+    camera_id        = Column(Integer, ForeignKey("cameras.id"),   nullable=True)
+    clock_in         = Column(DateTime, nullable=False, default=datetime.utcnow)
+    clock_out        = Column(DateTime, nullable=True)
+    duration_seconds = Column(Float,    nullable=True)   # computed on clock-out
+    method           = Column(String(20), default="manual")   # face | manual | qr
+    notes            = Column(String(500), nullable=True)
+
+    employee = relationship("Employee", foreign_keys=[employee_id])
+    camera   = relationship("Camera",   foreign_keys=[camera_id])
+
+
+class LiftEvent(Base):
+    """
+    Records one lift zone entry or exit event.
+
+    event_type : 'entry' — person entered the lift zone
+                 'exit'  — person exited (duration_sec is filled)
+                 'idle'  — person still in lift after idle_limit_sec (alert fired)
+    """
+    __tablename__ = "lift_events"
+
+    id           = Column(Integer, primary_key=True, index=True)
+    camera_id    = Column(Integer, ForeignKey("cameras.id"),   nullable=False)
+    track_id     = Column(Integer, nullable=False)
+    employee_id  = Column(Integer, ForeignKey("employees.id"), nullable=True)
+    event_type   = Column(String(30), nullable=False)   # entry | exit | idle
+    floor_from   = Column(String(20), nullable=True)    # ground | first | second | shop
+    floor_to     = Column(String(20), nullable=True)
+    duration_sec = Column(Float, nullable=True)
+    timestamp    = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    camera   = relationship("Camera",   foreign_keys=[camera_id])
+    employee = relationship("Employee", foreign_keys=[employee_id])
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # DB helpers
 # ──────────────────────────────────────────────────────────────────────────────
 

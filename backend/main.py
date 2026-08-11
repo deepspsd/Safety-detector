@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import os
 
@@ -9,6 +10,9 @@ from services.yolo_service import load_model
 from routers import auth, users, alerts, detection, video, faces, cctv, cameras
 from routers.settings import router as settings_router, baseline_router
 from routers.enterprise import router as enterprise_router
+from routers.attendance import router as attendance_router
+from routers.documents import router as documents_router
+from routers.workflow import router as workflow_router
 
 app = FastAPI(
     title="Safety Monitor API",
@@ -39,14 +43,11 @@ app.include_router(cameras.router)
 app.include_router(enterprise_router)
 app.include_router(settings_router)   # GET/PUT /settings/*
 app.include_router(baseline_router)   # POST/DELETE /cameras/{id}/baseline
+app.include_router(attendance_router)  # GET/POST /attendance/*
+app.include_router(documents_router)   # GET/POST /documents/*
+app.include_router(workflow_router)    # GET /workflow/*
 
-# ── /api prefix aggregate router (production single-origin compatibility) ─────
-# The frontend (api.js) defaults baseURL to '/api' in development, which Vite
-# proxies to the backend (stripping /api).  In production single-origin mode
-# (FastAPI serves the built frontend), there is no Vite proxy, so API calls
-# with an '/api' prefix would 404.  This aggregate router makes the backend
-# respond to BOTH /api/... and /... so a single frontend build works for both
-# development and production single-origin deployments.
+# ── /api prefix aggregate router (production single-origin compatibility) ──────
 from fastapi import APIRouter as _APIRouter
 _api_router = _APIRouter(prefix="/api")
 _api_router.include_router(auth.router)
@@ -58,11 +59,11 @@ _api_router.include_router(cameras.router)
 _api_router.include_router(enterprise_router)
 _api_router.include_router(settings_router)
 _api_router.include_router(baseline_router)
-# NOTE: WebSocket routes (/ws/*) are intentionally NOT included here —
-# the frontend connects to them directly (no /api prefix).
+_api_router.include_router(attendance_router)
+_api_router.include_router(documents_router)
+_api_router.include_router(workflow_router)
 app.include_router(_api_router)
 
-# Serve uploaded files
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads")
 
@@ -224,6 +225,50 @@ def startup():
                         print(f"⚠️  Migration v3 [{tname}]: {te}")
     except Exception as e:
         print(f"⚠️  Migration v3 block error: {e}")
+
+    # ── Auto-migrate v4: new tables (attendance, lift events, ocr logs) ─────────
+    _v4_migrations = [
+        ("attendance_records",
+         "CREATE TABLE IF NOT EXISTS attendance_records "
+         "(id INTEGER PRIMARY KEY, employee_id INTEGER REFERENCES employees(id), "
+         "user_id INTEGER REFERENCES users(id), camera_id INTEGER REFERENCES cameras(id), "
+         "clock_in DATETIME NOT NULL, clock_out DATETIME, duration_seconds FLOAT, "
+         "method VARCHAR(20) DEFAULT 'manual', notes VARCHAR(500))"),
+        ("lift_events",
+         "CREATE TABLE IF NOT EXISTS lift_events "
+         "(id INTEGER PRIMARY KEY, camera_id INTEGER NOT NULL REFERENCES cameras(id), "
+         "track_id INTEGER NOT NULL, employee_id INTEGER REFERENCES employees(id), "
+         "event_type VARCHAR(30) NOT NULL, floor_from VARCHAR(20), floor_to VARCHAR(20), "
+         "duration_sec FLOAT, timestamp DATETIME)"),
+        ("invoice_logs",
+         "CREATE TABLE IF NOT EXISTS invoice_logs "
+         "(id INTEGER PRIMARY KEY, camera_id INTEGER REFERENCES cameras(id), "
+         "employee_id INTEGER REFERENCES employees(id), direction VARCHAR(10) DEFAULT 'inward', "
+         "raw_ocr_text TEXT, approved BOOLEAN NOT NULL DEFAULT 0, "
+         "snapshot_b64 TEXT, ocr_available BOOLEAN NOT NULL DEFAULT 1, timestamp DATETIME NOT NULL)"),
+        ("order_form_logs",
+         "CREATE TABLE IF NOT EXISTS order_form_logs "
+         "(id INTEGER PRIMARY KEY, camera_id INTEGER REFERENCES cameras(id), "
+         "employee_id INTEGER REFERENCES employees(id), direction VARCHAR(10) DEFAULT 'outward', "
+         "raw_ocr_text TEXT, approved BOOLEAN NOT NULL DEFAULT 0, "
+         "snapshot_b64 TEXT, ocr_available BOOLEAN NOT NULL DEFAULT 1, timestamp DATETIME NOT NULL)"),
+    ]
+    try:
+        from sqlalchemy import text
+        from database import engine
+        with engine.connect() as conn:
+            for tname, sql in _v4_migrations:
+                try:
+                    conn.execute(text(sql))
+                    conn.commit()
+                    print(f"✅ DB migration v4: table '{tname}' ensured")
+                except Exception as te:
+                    if "already exists" in str(te).lower():
+                        pass
+                    else:
+                        print(f"⚠️  Migration v4 [{tname}]: {te}")
+    except Exception as e:
+        print(f"⚠️  Migration v4 block error: {e}")
 
     # ── Start server-managed camera streams ───────────────────────────────────
     # Reads all Camera rows with status != 'offline' from the DB and

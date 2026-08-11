@@ -45,6 +45,34 @@ log = logging.getLogger("ocr_service")
 # ──────────────────────────────────────────────────────────────────────────────
 try:
     import pytesseract
+    import os
+
+    # ── Windows: set tesseract_cmd to the default UB-Mannheim install path ──────
+    # winget / installer puts the binary here; PATH may not be refreshed yet
+    # in the current process without a restart.
+    _WIN_DEFAULT = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    _WIN_DEFAULT_X86 = r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"
+    if os.name == "nt":
+        if os.path.isfile(_WIN_DEFAULT):
+            pytesseract.pytesseract.tesseract_cmd = _WIN_DEFAULT
+            log.info(f"✅ pytesseract: using Tesseract at {_WIN_DEFAULT}")
+        elif os.path.isfile(_WIN_DEFAULT_X86):
+            pytesseract.pytesseract.tesseract_cmd = _WIN_DEFAULT_X86
+            log.info(f"✅ pytesseract: using Tesseract at {_WIN_DEFAULT_X86}")
+        else:
+            # Try to find via PATH anyway
+            import shutil
+            tess = shutil.which("tesseract")
+            if tess:
+                pytesseract.pytesseract.tesseract_cmd = tess
+                log.info(f"✅ pytesseract: found Tesseract in PATH at {tess}")
+            else:
+                log.warning(
+                    "⚠️  Tesseract binary not found at default Windows paths. "
+                    "Install via: winget install UB-Mannheim.TesseractOCR\n"
+                    "  Expected: C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+                )
+
     _TESSERACT_OK = True
     log.info("✅ pytesseract available — Tesseract OCR will be used")
 except ImportError:
