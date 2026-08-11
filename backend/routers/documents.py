@@ -194,3 +194,20 @@ def reject_document(
     row.approved = False
     db.commit()
     return {"id": doc_id, "approved": False}
+
+
+@router.delete("/{doc_id}")
+def delete_document(
+    doc_id:       int,
+    table:        str     = Query("invoice", description="invoice | order_form"),
+    db:           Session = Depends(get_db),
+    current_user           = Depends(get_current_user),
+):
+    """Permanently delete a document scan record."""
+    Model = InvoiceLog if table == "invoice" else OrderFormLog
+    row = db.query(Model).filter(Model.id == doc_id).first()
+    if not row:
+        raise HTTPException(404, f"Document #{doc_id} not found in {table}")
+    db.delete(row)
+    db.commit()
+    return {"id": doc_id, "deleted": True}

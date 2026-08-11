@@ -119,29 +119,70 @@ def _text_looks_like_document(text: str, direction: str) -> bool:
 # Image pre-processing
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _looks_like_camera_photo(img: np.ndarray) -> bool:
+    """
+    Heuristic: camera photos have non-uniform variance across regions
+    (shadows, background, glare). Compute local variance in 4 quadrants;
+    if the ratio of max/min variance is large, it's a camera photo.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+    h, w = gray.shape[:2]
+    mid_h, mid_w = h // 2, w // 2
+    quads = [
+        gray[:mid_h, :mid_w], gray[:mid_h, mid_w:],
+        gray[mid_h:, :mid_w], gray[mid_h:, mid_w:],
+    ]
+    variances = [float(np.var(q)) for q in quads if q.size > 0]
+    if not variances or min(variances) < 1:
+        return True   # near-zero variance in a quadrant = probably uneven photo
+    return (max(variances) / min(variances)) > 4.0
+
+
+def _preprocess_for_scan(gray: np.ndarray) -> np.ndarray:
+    """For clean uploaded scans/PDFs: Otsu global thresholding (no sharpening)."""
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return binary
+
+
+def _preprocess_for_camera(gray: np.ndarray) -> np.ndarray:
+    """
+    For camera photos: denoise → CLAHE contrast enhancement →
+    adaptive thresholding (handles shadows & uneven lighting).
+    """
+    # Denoise
+    denoised = cv2.fastNlMeansDenoising(gray, h=10)
+    # CLAHE — boosts local contrast so text stands out against background
+    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    enhanced = clahe.apply(denoised)
+    # Adaptive threshold — each 31×31 block gets its own threshold value
+    binary = cv2.adaptiveThreshold(
+        enhanced, 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        blockSize=31, C=10,
+    )
+    return binary
+
+
 def _preprocess_for_ocr(crop: np.ndarray) -> np.ndarray:
     """
-    Grayscale + Otsu binarise + mild sharpening.
-    Works well on printed/typed text under typical factory lighting.
-    For handwritten forms results degrade significantly — flagged to client
-    as a Phase 2 improvement requiring form-specific fine-tuning.
+    Route to the correct preprocessor based on image characteristics.
+    Also upscales tiny images so Tesseract can see the text.
     """
-    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-
-    # Upscale small crops — Tesseract accuracy drops below ~100px height
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if len(crop.shape) == 3 else crop
     h, w = gray.shape[:2]
-    if h < 120:
-        scale = max(2.0, 120 / h)
+
+    # Upscale only if genuinely small
+    if h < 150 or w < 150:
+        scale = max(2.0, 150 / min(h, w))
         gray = cv2.resize(gray, (int(w * scale), int(h * scale)),
                           interpolation=cv2.INTER_CUBIC)
 
-    # Mild sharpening kernel
-    kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
-    gray = cv2.filter2D(gray, -1, kernel)
-
-    # Otsu binarisation — handles variable lighting automatically
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return binary
+    if _looks_like_camera_photo(gray if len(gray.shape) == 2 else crop):
+        return _preprocess_for_camera(gray if len(gray.shape) == 2 else
+                                       cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY))
+    return _preprocess_for_scan(gray if len(gray.shape) == 2 else
+                                 cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY))
 
 
 def _crop_with_padding(frame: np.ndarray, bbox: list, pad_frac: float = 0.10) -> np.ndarray:
@@ -222,16 +263,27 @@ def scan_document_in_frame(
         }
 
     # Step 3 — pre-process + run Tesseract
+    # Try multiple PSM modes; pick the one that extracts the most text.
+    # PSM 3  = full auto layout (best for clean multi-column documents/invoices)
+    # PSM 11 = sparse text — ideal for camera photos where doc is inside a scene
+    # PSM 6  = single uniform block — good for simple single-column receipts
+    _PSM_MODES = ["--psm 3 --oem 3", "--psm 11 --oem 3", "--psm 6 --oem 3"]
+    raw_text = ""
     try:
         processed = _preprocess_for_ocr(crop)
-        # PSM 6 = assume a single uniform block of text (good for documents)
-        # OEM 3 = default (LSTM + legacy; best accuracy on printed text)
-        raw_text = pytesseract.image_to_string(
-            processed,
-            config="--psm 6 --oem 3",
-            lang="eng",
-        )
-        raw_text = raw_text.strip()
+        best_text = ""
+        for psm_config in _PSM_MODES:
+            try:
+                candidate = pytesseract.image_to_string(
+                    processed, config=psm_config, lang="eng"
+                ).strip()
+                if len(candidate) > len(best_text):
+                    best_text = candidate
+                    if len(best_text) > 80:
+                        break   # good enough — stop trying other modes
+            except Exception:
+                continue
+        raw_text = best_text
         log.info(
             f"[OCR] direction={direction} | text_len={len(raw_text)} | "
             f"preview={raw_text[:80]!r}"
