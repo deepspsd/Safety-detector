@@ -274,6 +274,37 @@ def startup():
     # Reads all Camera rows with status != 'offline' from the DB and
     # starts one background reader thread per camera.
     # WebSocket endpoints subscribe to these shared streams via camera_manager.
+    # v5 camera registration schema. The tables are additive and camera fields
+    # are migrated one-by-one to keep existing SQLite deployments intact.
+    _v5_tables = [
+        "CREATE TABLE IF NOT EXISTS camera_credentials (camera_id INTEGER PRIMARY KEY REFERENCES cameras(id), encrypted_username TEXT NOT NULL, encrypted_password TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS camera_streams (id INTEGER PRIMARY KEY, camera_id INTEGER NOT NULL REFERENCES cameras(id), profile_token VARCHAR(200), stream_type VARCHAR(20) NOT NULL, codec VARCHAR(40), width INTEGER, height INTEGER, fps FLOAT, encrypted_rtsp_uri TEXT NOT NULL, active BOOLEAN NOT NULL DEFAULT 1, created_at DATETIME NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS camera_health (id INTEGER PRIMARY KEY, camera_id INTEGER NOT NULL REFERENCES cameras(id), status VARCHAR(40) NOT NULL, fps FLOAT, bitrate_kbps FLOAT, latency_ms FLOAT, packet_loss FLOAT, last_frame_at DATETIME, reconnect_count INTEGER NOT NULL DEFAULT 0, last_error TEXT, created_at DATETIME NOT NULL)",
+    ]
+    _v5_columns = [
+        "ALTER TABLE cameras ADD COLUMN manufacturer VARCHAR(120)",
+        "ALTER TABLE cameras ADD COLUMN model VARCHAR(160)",
+        "ALTER TABLE cameras ADD COLUMN ip_address VARCHAR(64)",
+        "ALTER TABLE cameras ADD COLUMN onvif_endpoint VARCHAR(500)",
+        "ALTER TABLE cameras ADD COLUMN discovery_id VARCHAR(100)",
+        "ALTER TABLE cameras ADD COLUMN preferred_stream VARCHAR(20) NOT NULL DEFAULT 'sub'",
+        "ALTER TABLE cameras ADD COLUMN ai_stream VARCHAR(20) NOT NULL DEFAULT 'sub'",
+    ]
+    try:
+        from sqlalchemy import text
+        from database import engine
+        with engine.connect() as conn:
+            for sql in _v5_tables:
+                conn.execute(text(sql)); conn.commit()
+            for sql in _v5_columns:
+                try:
+                    conn.execute(text(sql)); conn.commit()
+                except Exception as migration_error:
+                    if "duplicate column" not in str(migration_error).lower() and "already exists" not in str(migration_error).lower():
+                        print(f"Camera v5 migration warning: {migration_error}")
+    except Exception as migration_error:
+        print(f"Camera v5 migration block warning: {migration_error}")
+
     from services import camera_manager
     _started = camera_manager.start_all()
     print(f"✅ Camera manager: {_started} camera(s) started")

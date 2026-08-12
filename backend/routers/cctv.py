@@ -83,6 +83,8 @@ class CameraReader:
         self._error: Optional[str] = None
         self._fps          = 0.0
         self._frame_count  = 0
+        self._last_frame_ts = 0.0
+        self._reconnect_count = 0
         u = url.lower()
         self._is_shot    = any(k in u for k in ("shot.jpg", "photo.jpg", "snap", "capture"))
         self._is_http    = u.startswith("http://") or u.startswith("https://")
@@ -92,7 +94,7 @@ class CameraReader:
 
     def start(self):
         self._running = True
-        self._thread  = threading.Thread(target=self._read_loop, daemon=True)
+        self._thread  = threading.Thread(target=self._run_with_reconnect, daemon=True)
         self._thread.start()
 
     def stop(self):
@@ -108,6 +110,14 @@ class CameraReader:
     def fps(self) -> float:
         return round(self._fps, 1)
 
+    def metrics(self) -> dict:
+        return {
+            "fps": self.fps(),
+            "last_frame_at": datetime.datetime.utcfromtimestamp(self._last_frame_ts).isoformat() + "Z" if self._last_frame_ts else None,
+            "reconnect_count": self._reconnect_count,
+            "last_error": self._error,
+        }
+
     # ── Internal read loop ────────────────────────────────────────────────────
 
     def _read_loop(self):
@@ -117,6 +127,17 @@ class CameraReader:
             self._rtsp_loop()          # OpenCV/FFmpeg handles RTSP well
         else:
             self._mjpeg_http_loop()    # urllib handles HTTP MJPEG reliably
+
+    def _run_with_reconnect(self):
+        """One reader lifecycle with no concurrent reconnect workers."""
+        delay = 1.0
+        while self._running:
+            self._read_loop()
+            if not self._running:
+                break
+            self._reconnect_count += 1
+            time.sleep(delay)
+            delay = min(30.0, delay * 2)
 
     # ── HTTP MJPEG reader (urllib — no FFmpeg) ────────────────────────────────
 

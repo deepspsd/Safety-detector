@@ -25,17 +25,45 @@ import datetime
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from database import get_db, Camera as CameraModel
+from database import (get_db, Camera as CameraModel, CameraCredential,
+                      CameraHealth, CameraStreamProfile)
 from routers.auth import get_current_user
 from database import User
 from services import camera_manager
+from services.camera_credentials import (CredentialConfigurationError, decrypt,
+                                         encrypt, encrypt_credentials)
+from services.onvif_client import OnvifConnectionError, OnvifUnavailable, inspect_camera
+from services.camera_discovery import discover_onvif, probe_onvif_endpoints
 
 log = logging.getLogger("cameras_router")
 router = APIRouter(prefix="/cameras", tags=["cameras"])
+
+
+# ── WebRTC Endpoint ────────────────────────────────────────────────────────
+class WebRTCOffer(BaseModel):
+    sdp: str
+    type: str
+
+@router.post("/{camera_id}/webrtc/offer")
+async def webrtc_offer(
+    camera_id: int,
+    offer: WebRTCOffer,
+    db: Session = Depends(get_db),
+):
+    from services.webrtc_streamer import webrtc_manager
+    cam = db.query(CameraModel).filter(CameraModel.id == camera_id).first()
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    
+    # We don't strictly require the reader to be online, 
+    # but if it's offline webrtc_streamer will just send black frames.
+    
+    answer = await webrtc_manager.handle_offer(camera_id, offer.sdp, offer.type)
+    return answer
 
 
 # ── Pydantic schemas ─────────────────────────────────────────────────────────
@@ -91,6 +119,24 @@ class CameraUpdate(BaseModel):
     supports_snapshot: Optional[bool] = None
 
 
+class CameraRegistration(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    floor: str = Field(..., pattern="^(ground|first|second|shop)$")
+    zone_type: Optional[str] = Field(None, max_length=100)
+    onvif_endpoint: str = Field(..., max_length=500)
+    username: str = Field(..., min_length=1, max_length=120)
+    password: str = Field(..., min_length=1, max_length=500)
+    preferred_stream: str = Field("sub", pattern="^(main|sub)$")
+    ai_stream: str = Field("sub", pattern="^(main|sub)$")
+
+
+class DiscoveryRequest(BaseModel):
+    timeout_seconds: float = Field(5.0, ge=1.0, le=20.0)
+    interface: Optional[str] = None
+    retries: int = Field(1, ge=1, le=3)
+    fallback_subnet: Optional[str] = None
+
+
 def _camera_to_dict(cam: CameraModel, live: Optional[dict] = None) -> dict:
     """
     Serialize a Camera ORM row to a dict.
@@ -101,7 +147,7 @@ def _camera_to_dict(cam: CameraModel, live: Optional[dict] = None) -> dict:
         "name":         cam.name,
         "floor":        cam.floor,
         "zone_type":    cam.zone_type,
-        "rtsp_url":     cam.rtsp_url,
+        "rtsp_configured": bool(cam.rtsp_url or cam.streams),
         "status":       cam.status,
         "last_seen_at": cam.last_seen_at.isoformat() if cam.last_seen_at else None,
         "created_at":   cam.created_at.isoformat()   if cam.created_at   else None,
@@ -125,6 +171,12 @@ def _camera_to_dict(cam: CameraModel, live: Optional[dict] = None) -> dict:
         "heartbeat": cam.heartbeat_at.isoformat() if cam.heartbeat_at else None,
         "health_status": cam.health_status,
         "drift_score": cam.drift_score,
+        "manufacturer": cam.manufacturer,
+        "model": cam.model,
+        "ip_address": cam.ip_address,
+        "onvif_endpoint": cam.onvif_endpoint,
+        "preferred_stream": cam.preferred_stream,
+        "ai_stream": cam.ai_stream,
         # Live state overlay (present only when reader is running)
         "live": None,
     }
@@ -209,6 +261,137 @@ def live_status(current_user: User = Depends(get_current_user)):
     Useful for a dashboard status widget.
     """
     return camera_manager.list_status()
+
+
+@router.post("/register", status_code=201)
+def register_onvif_camera(
+    payload: CameraRegistration,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Register a real ONVIF camera without placing credentials in the camera row.
+
+    The endpoint authenticates against the device, resolves its own media
+    profiles/RTSP URIs, encrypts credentials and stream URIs, then starts the
+    selected stream. Passwords are never serialized or logged.
+    """
+    try:
+        inspected = inspect_camera(payload.onvif_endpoint, payload.username, payload.password)
+        encrypted_username, encrypted_password = encrypt_credentials(payload.username, payload.password)
+    except CredentialConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except OnvifUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except OnvifConnectionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    cam = CameraModel(
+        name=payload.name, floor=payload.floor, zone_type=payload.zone_type,
+        status="offline", manufacturer=inspected.get("manufacturer"),
+        model=inspected.get("model"), ip_address=inspected["ip_address"],
+        onvif_endpoint=payload.onvif_endpoint, preferred_stream=payload.preferred_stream,
+        ai_stream=payload.ai_stream, created_at=datetime.datetime.utcnow(),
+    )
+    db.add(cam)
+    db.flush()
+    db.add(CameraCredential(camera_id=cam.id, encrypted_username=encrypted_username, encrypted_password=encrypted_password))
+    for stream in inspected["streams"]:
+        db.add(CameraStreamProfile(
+            camera_id=cam.id, profile_token=stream.get("profile_token"), stream_type=stream["stream_type"],
+            codec=stream.get("codec"), width=stream.get("width"), height=stream.get("height"), fps=stream.get("fps"),
+            encrypted_rtsp_uri=encrypt(stream["rtsp_uri"]),
+        ))
+    db.commit()
+    db.refresh(cam)
+    _start_selected_stream(cam, db)
+    return _camera_to_dict(cam)
+
+
+def _selected_stream(cam: CameraModel, db: Session, stream_type: str | None = None) -> CameraStreamProfile | None:
+    desired = stream_type or cam.preferred_stream or "sub"
+    return (db.query(CameraStreamProfile)
+            .filter(CameraStreamProfile.camera_id == cam.id, CameraStreamProfile.active.is_(True), CameraStreamProfile.stream_type == desired)
+            .order_by(CameraStreamProfile.id)
+            .first()) or (db.query(CameraStreamProfile)
+                         .filter(CameraStreamProfile.camera_id == cam.id, CameraStreamProfile.active.is_(True))
+                         .order_by(CameraStreamProfile.id).first())
+
+
+def _stream_url(cam: CameraModel, db: Session, stream_type: str | None = None) -> str:
+    profile = _selected_stream(cam, db, stream_type)
+    if profile:
+        return decrypt(profile.encrypted_rtsp_uri)
+    if cam.rtsp_url:
+        # Legacy cameras created before encrypted registration continue to work.
+        return cam.rtsp_url
+    raise HTTPException(status_code=409, detail="Camera has no configured stream")
+
+
+def _start_selected_stream(cam: CameraModel, db: Session) -> None:
+    try:
+        camera_manager.start_camera(cam.id, cam.name, _stream_url(cam, db), floor=cam.floor)
+        cam.status = "online"
+        db.commit()
+    except CredentialConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        cam.status = "error"
+        db.commit()
+        log.warning("Camera %s could not start: %s", cam.id, type(exc).__name__)
+
+
+@router.get("/{camera_id}/health")
+def camera_health(camera_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    cam = db.query(CameraModel).filter(CameraModel.id == camera_id).first()
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    metrics = camera_manager.get_metrics(camera_id)
+    return {"camera_id": camera_id, "status": cam.health_status or cam.status, **metrics}
+
+
+@router.get("/{camera_id}/streams")
+def camera_streams(camera_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    cam = db.query(CameraModel).filter(CameraModel.id == camera_id).first()
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    profiles = db.query(CameraStreamProfile).filter(CameraStreamProfile.camera_id == camera_id, CameraStreamProfile.active.is_(True)).all()
+    return [{"id": p.id, "profile_token": p.profile_token, "stream_type": p.stream_type, "codec": p.codec,
+             "width": p.width, "height": p.height, "fps": p.fps} for p in profiles]
+
+
+@router.post("/{camera_id}/streams/select")
+def select_camera_stream(camera_id: int, stream_type: str = Query(..., pattern="^(main|sub)$"), db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    cam = db.query(CameraModel).filter(CameraModel.id == camera_id).first()
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    profile = _selected_stream(cam, db, stream_type)
+    if not profile:
+        raise HTTPException(status_code=409, detail="Requested stream is unavailable")
+    cam.preferred_stream = profile.stream_type
+    camera_manager.restart_camera(cam.id, cam.name, _stream_url(cam, db, profile.stream_type), floor=cam.floor)
+    cam.status = "online"
+    db.commit()
+    return {"camera_id": cam.id, "stream_type": profile.stream_type, "status": "streaming"}
+
+
+@router.post("/{camera_id}/connect")
+def connect_camera(camera_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    cam = db.query(CameraModel).filter(CameraModel.id == camera_id).first()
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    _start_selected_stream(cam, db)
+    return {"camera_id": cam.id, "status": cam.status}
+
+
+@router.post("/{camera_id}/disconnect")
+def disconnect_camera(camera_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    cam = db.query(CameraModel).filter(CameraModel.id == camera_id).first()
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    camera_manager.stop_camera(camera_id)
+    cam.status = "offline"
+    db.commit()
+    return {"camera_id": camera_id, "status": "offline"}
 
 
 @router.get("/{camera_id}")
@@ -642,6 +825,32 @@ def _probe_host(ip: str, ports: list[int], timeout: float = 0.4) -> Optional[dic
 
 
 @router.post("/discover")
+def discover_onvif_cameras(
+    payload: DiscoveryRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Discover ONVIF devices first; optionally run a constrained private-LAN fallback.
+
+    Fallback candidates are deliberately *not* registered or labelled as
+    cameras until the operator supplies credentials and ONVIF registration
+    validates them.
+    """
+    devices = discover_onvif(payload.timeout_seconds, payload.interface, payload.retries)
+    fallback: list[dict] = []
+    if payload.fallback_subnet:
+        try:
+            fallback = probe_onvif_endpoints(payload.fallback_subnet)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+    deduped = {device["onvif_endpoint"]: device for device in devices}
+    for device in fallback:
+        deduped.setdefault(device["onvif_endpoint"], device)
+    values = list(deduped.values())
+    log.info("ONVIF discovery returned %s validated device(s), %s candidate(s)", len(devices), len(fallback))
+    return {"devices": values, "onvif_devices": len(devices), "fallback_candidates": len(fallback)}
+
+
+@router.post("/discover/legacy-probe")
 def discover_cameras(
     current_user: User = Depends(get_current_user),
 ):

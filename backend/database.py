@@ -193,6 +193,16 @@ class Camera(Base):
     reference_frame_path = Column(String(500), nullable=True)
     drift_score          = Column(Float, nullable=True)
 
+    # Vendor-neutral IP-camera inventory.  RTSP credentials are deliberately
+    # not stored on this row; CameraCredential holds encrypted values instead.
+    manufacturer         = Column(String(120), nullable=True)
+    model                = Column(String(160), nullable=True)
+    ip_address           = Column(String(64), nullable=True, index=True)
+    onvif_endpoint       = Column(String(500), nullable=True)
+    discovery_id         = Column(String(100), nullable=True, unique=True, index=True)
+    preferred_stream     = Column(String(20), nullable=False, default="sub")
+    ai_stream            = Column(String(20), nullable=False, default="sub")
+
     # Children
     zones          = relationship("ZoneConfig",          back_populates="camera", cascade="all, delete-orphan")
     idle_sessions  = relationship("IdleSession",         back_populates="camera")
@@ -201,6 +211,60 @@ class Camera(Base):
     order_logs     = relationship("OrderFormLog",        back_populates="camera")
     alerts         = relationship("Alert",               back_populates="camera", foreign_keys="Alert.camera_id")
     dirty_baselines = relationship("DirtyFloorBaseline", back_populates="camera", cascade="all, delete-orphan")
+    credentials     = relationship("CameraCredential", back_populates="camera", uselist=False, cascade="all, delete-orphan")
+    streams         = relationship("CameraStreamProfile", back_populates="camera", cascade="all, delete-orphan")
+    health_records  = relationship("CameraHealth", back_populates="camera", cascade="all, delete-orphan")
+
+
+class CameraCredential(Base):
+    """Encrypted camera credentials. Never serialize this model into an API response."""
+    __tablename__ = "camera_credentials"
+
+    camera_id          = Column(Integer, ForeignKey("cameras.id"), primary_key=True)
+    encrypted_username = Column(Text, nullable=False)
+    encrypted_password = Column(Text, nullable=False)
+    created_at         = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at         = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    camera = relationship("Camera", back_populates="credentials")
+
+
+class CameraStreamProfile(Base):
+    """One authenticated ONVIF media profile and its encrypted RTSP URI."""
+    __tablename__ = "camera_streams"
+
+    id                 = Column(Integer, primary_key=True, index=True)
+    camera_id          = Column(Integer, ForeignKey("cameras.id"), nullable=False, index=True)
+    profile_token      = Column(String(200), nullable=True)
+    stream_type        = Column(String(20), nullable=False, default="sub")
+    codec              = Column(String(40), nullable=True)
+    width              = Column(Integer, nullable=True)
+    height             = Column(Integer, nullable=True)
+    fps                = Column(Float, nullable=True)
+    encrypted_rtsp_uri = Column(Text, nullable=False)
+    active             = Column(Boolean, nullable=False, default=True)
+    created_at         = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    camera = relationship("Camera", back_populates="streams")
+
+
+class CameraHealth(Base):
+    """Append-only camera health measurements for diagnostics and trends."""
+    __tablename__ = "camera_health"
+
+    id              = Column(Integer, primary_key=True, index=True)
+    camera_id       = Column(Integer, ForeignKey("cameras.id"), nullable=False, index=True)
+    status          = Column(String(40), nullable=False)
+    fps             = Column(Float, nullable=True)
+    bitrate_kbps    = Column(Float, nullable=True)
+    latency_ms      = Column(Float, nullable=True)
+    packet_loss     = Column(Float, nullable=True)
+    last_frame_at   = Column(DateTime, nullable=True)
+    reconnect_count = Column(Integer, nullable=False, default=0)
+    last_error      = Column(Text, nullable=True)
+    created_at      = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    camera = relationship("Camera", back_populates="health_records")
 
 
 class Employee(Base):

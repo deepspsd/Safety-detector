@@ -150,6 +150,9 @@ class _ManagedCamera:
     def last_error(self) -> Optional[str]:
         return self.reader.last_error()
 
+    def metrics(self) -> dict:
+        return self.reader.metrics()
+
     # ── Heartbeat ─────────────────────────────────────────────────────────────
 
     def _heartbeat_loop(self):
@@ -468,6 +471,16 @@ def get_reader_error(camera_id: int) -> Optional[str]:
     return mc.last_error() if mc else None
 
 
+def get_metrics(camera_id: int) -> dict:
+    """Browser-safe operational metrics. Never returns stream URLs."""
+    with _lock:
+        mc = _registry.get(camera_id)
+    if not mc:
+        return {"fps": 0.0, "last_frame_at": None, "reconnect_count": 0,
+                "last_error": "Camera is not streaming"}
+    return mc.metrics()
+
+
 def is_running(camera_id: int) -> bool:
     with _lock:
         return camera_id in _registry
@@ -486,10 +499,10 @@ def list_status() -> List[dict]:
         result.append({
             "camera_id":   cid,
             "name":        mc.name,
-            "url":         mc.url,
             "fps":         mc.fps(),
             "error":       mc.last_error(),
             "has_frame":   mc.reader.latest_frame() is not None,
+            **mc.metrics(),
         })
     return result
 
