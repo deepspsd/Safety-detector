@@ -43,8 +43,24 @@ function CameraDrawer({ camera, onClose, onSaved }) {
         await camerasApi.update(camera.id, form)
         addToast('Camera updated', form.name, 'success')
       } else {
-        await camerasApi.create(form)
-        addToast('Camera added', form.name, 'success')
+        const res = await camerasApi.create(form)
+        if (form.rtsp_url?.trim()) {
+          try {
+            const connectRes = await camerasApi.connect(res.data.id)
+            if (connectRes.data?.status !== 'online') {
+              throw new Error('Backend could not start the camera stream')
+            }
+            addToast('Camera added and connected', form.name, 'success')
+          } catch (connectError) {
+            addToast(
+              'Camera added, connection failed',
+              connectError.response?.data?.detail || connectError.message || 'Check the RTSP URL and camera availability',
+              'warning'
+            )
+          }
+        } else {
+          addToast('Camera added', form.name, 'success')
+        }
       }
       onSaved()
       onClose()
@@ -155,6 +171,7 @@ export default function Cameras() {
   const [drawer,     setDrawer]     = useState(null)  // null | 'new' | camera-obj
   const [deleting,   setDeleting]   = useState(null)
   const [discovering,setDiscovering]= useState(false)
+  const [discoveredDevices, setDiscoveredDevices] = useState([])
 
   const loadCameras = useCallback(async () => {
     try {
@@ -181,10 +198,14 @@ export default function Cameras() {
   const handleDiscover = async () => {
     setDiscovering(true)
     try {
-      const res = await camerasApi.discover()
-      const found = res.data?.found || 0
-      addToast('Discovery complete', `${found} camera(s) found on LAN`, found > 0 ? 'success' : 'info')
-      if (found > 0) loadCameras()
+      const res = await camerasApi.discover({ timeout_seconds: 5, retries: 1 })
+      const devices = Array.isArray(res.data?.devices) ? res.data.devices : []
+      setDiscoveredDevices(devices)
+      addToast(
+        'Discovery complete',
+        `${devices.length} ONVIF device(s) found on LAN`,
+        devices.length > 0 ? 'success' : 'info'
+      )
     } catch { addToast('Discovery failed', 'Scan requires network access', 'danger') }
     finally { setDiscovering(false) }
   }
@@ -220,6 +241,33 @@ export default function Cameras() {
           </button>
         </div>
       </div>
+
+      {discoveredDevices.length > 0 && (
+        <div className="card" style={{ padding: 16, marginBottom: 20 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            <ScanLine size={16} color="var(--accent-blue)" />
+            <strong>Discovered ONVIF Devices</strong>
+            <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>
+              {discoveredDevices.length} found — registration requires camera credentials
+            </span>
+            <button className="btn btn-ghost btn-icon btn-sm" style={{ marginLeft: 'auto' }} onClick={() => setDiscoveredDevices([])} title="Dismiss">
+              <X size={13} />
+            </button>
+          </div>
+          <div style={{ display: 'grid', gap: 8 }}>
+            {discoveredDevices.map((device, index) => (
+              <div key={device.onvif_endpoint || index} style={{ padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 8 }}>
+                <div style={{ fontWeight: 600, fontSize: '0.85rem' }}>
+                  {device.name || device.model || device.manufacturer || `ONVIF Device ${index + 1}`}
+                </div>
+                <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: 3, wordBreak: 'break-all' }}>
+                  {device.onvif_endpoint || device.ip_address || 'Endpoint unavailable'}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Filters */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>

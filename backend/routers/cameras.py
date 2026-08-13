@@ -53,6 +53,7 @@ async def webrtc_offer(
     camera_id: int,
     offer: WebRTCOffer,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     from services.webrtc_streamer import webrtc_manager
     cam = db.query(CameraModel).filter(CameraModel.id == camera_id).first()
@@ -493,18 +494,21 @@ def restart_camera(
 ):
     """
     Stop then restart the reader thread for a camera (e.g. to recover a stuck stream).
-    The camera must have a valid rtsp_url in the DB.
+    Supports both legacy plaintext URLs and encrypted ONVIF stream profiles.
     """
     cam = db.query(CameraModel).filter(CameraModel.id == camera_id).first()
     if not cam:
         raise HTTPException(status_code=404, detail="Camera not found")
-    if not cam.rtsp_url or not cam.rtsp_url.strip():
-        raise HTTPException(status_code=400, detail="Camera has no rtsp_url — set one first")
 
     try:
-        camera_manager.restart_camera(cam.id, cam.name, cam.rtsp_url, floor=cam.floor)
+        stream_url = _stream_url(cam, db)
+        camera_manager.restart_camera(cam.id, cam.name, stream_url, floor=cam.floor)
         cam.status = "online"
         db.commit()
+    except CredentialConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Restart failed: {exc}")
 

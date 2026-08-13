@@ -1,13 +1,16 @@
 """
-routers/workflow.py — Cash, Stock, Lift, and Packing workflow events API
+routers/workflow.py — Cash, Stock, Lift, Packing, Idle, Dress-code, Oven workflow events API
 ========================================================================
 Endpoints
 ---------
-  GET /workflow/cash-events     Recent unauthorized cash zone access alerts
-  GET /workflow/stock-events    Recent exposed-stock alerts
-  GET /workflow/lift-events     Recent lift entry/exit events
-  GET /workflow/packing-events  Recent packing zone idle alerts
-  GET /workflow/summary         Combined summary for the workflow dashboard
+  GET /workflow/cash-events         Recent unauthorized cash zone access alerts
+  GET /workflow/stock-events        Recent exposed-stock alerts
+  GET /workflow/lift-events         Recent lift entry/exit events
+  GET /workflow/packing-events      Recent packing zone idle alerts
+  GET /workflow/idle-events         Recent idle alerts (all floors / by floor)
+  GET /workflow/dress-code-events   Head-cap / uniform / dress-code violations
+  GET /workflow/oven-events         Floor-2 oven/fire/gas-waste alerts
+  GET /workflow/summary             Combined summary for the workflow dashboard
 """
 
 import datetime
@@ -31,6 +34,7 @@ def _alert_to_dict(a: Alert) -> dict:
         "severity":      a.severity,
         "detected_issue": a.detected_issue,
         "camera_id":     getattr(a, "camera_id", None),
+        "floor":         getattr(a, "floor", None),
         "timestamp":     a.timestamp.isoformat(),
         "status":        getattr(a, "status", "confirmed"),
     }
@@ -101,6 +105,153 @@ def get_packing_events(
     return get_packing_summary(db, camera_id=camera_id)
 
 
+# ── Idle events (all floors) ───────────────────────────────────────────────────
+
+@router.get("/idle-events")
+def get_idle_events(
+    floor:        Optional[str] = Query(None, description="ground | first | second | shop"),
+    limit:        int           = Query(50, le=200),
+    db:           Session       = Depends(get_db),
+    current_user                 = Depends(get_current_user),
+):
+    """
+    Recent idle alerts across all floors (or filtered by floor).
+    Covers: 5-min idle rule, packing section idle, dough section idle,
+    shop absent >1 min, standing in front of camera >1 min.
+    """
+    # Idle alerts come from multiple detected_issue strings
+    _IDLE_ISSUES = [
+        "Idle too long",
+        "Employee idle",
+        "Worker idle",
+        "Packing zone idle",
+        "Standing in front of camera",
+        "Absent from shop",
+        "Dough section idle",
+    ]
+    query = db.query(Alert).filter(
+        Alert.detected_issue.in_(_IDLE_ISSUES)
+    )
+    if floor:
+        query = query.filter(Alert.floor == floor)
+    rows = query.order_by(Alert.timestamp.desc()).limit(limit).all()
+
+    # Also catch partial matches (e.g. "Employee idle for 7 min")
+    if len(rows) < 5:
+        fuzzy_rows = (
+            db.query(Alert)
+            .filter(Alert.message.ilike("%idle%"))
+            .order_by(Alert.timestamp.desc())
+            .limit(limit)
+            .all()
+        )
+        seen_ids = {r.id for r in rows}
+        for r in fuzzy_rows:
+            if r.id not in seen_ids:
+                rows.append(r)
+        rows = sorted(rows, key=lambda x: x.timestamp, reverse=True)[:limit]
+
+    return [_alert_to_dict(r) for r in rows]
+
+
+# ── Dress code events ──────────────────────────────────────────────────────────
+
+@router.get("/dress-code-events")
+def get_dress_code_events(
+    floor:        Optional[str] = Query(None),
+    limit:        int           = Query(50, le=200),
+    db:           Session       = Depends(get_db),
+    current_user                 = Depends(get_current_user),
+):
+    """
+    Dress-code violation alerts: no head cap, no uniform, bangles detected,
+    no mask, chewing/eating, hair issue.
+    """
+    _DRESS_ISSUES = [
+        "No Head Cap",
+        "No Hardhat",
+        "No Mask",
+        "Bangle detected",
+        "Bangles not allowed",
+        "Uniform violation",
+        "No Uniform",
+        "Dress code violation",
+        "Chewing detected",
+        "Eating at workstation",
+    ]
+    query = db.query(Alert).filter(
+        Alert.detected_issue.in_(_DRESS_ISSUES)
+    )
+    if floor:
+        query = query.filter(Alert.floor == floor)
+    rows = query.order_by(Alert.timestamp.desc()).limit(limit).all()
+
+    # Fuzzy fallback for partial matches ("No Hardhat detected")
+    if len(rows) < 5:
+        for keyword in ["head cap", "hardhat", "uniform", "bangle", "dress code"]:
+            fuzzy = (
+                db.query(Alert)
+                .filter(Alert.detected_issue.ilike(f"%{keyword}%"))
+                .order_by(Alert.timestamp.desc())
+                .limit(limit)
+                .all()
+            )
+            seen_ids = {r.id for r in rows}
+            for r in fuzzy:
+                if r.id not in seen_ids:
+                    rows.append(r)
+        rows = sorted(rows, key=lambda x: x.timestamp, reverse=True)[:limit]
+
+    return [_alert_to_dict(r) for r in rows]
+
+
+# ── Oven / fire / gas-waste events (Floor 2) ───────────────────────────────────
+
+@router.get("/oven-events")
+def get_oven_events(
+    limit:        int     = Query(50, le=200),
+    db:           Session = Depends(get_db),
+    current_user           = Depends(get_current_user),
+):
+    """
+    Floor-2 oven / fire / gas monitoring alerts:
+    - No one present when fire is on
+    - Water boiling >10 min unattended
+    - Oil heated idle >10 min
+    - Gas waste detected
+    """
+    _OVEN_ISSUES = [
+        "Oven unattended",
+        "Gas waste",
+        "Fire unattended",
+        "Oil idle",
+        "Water boiling unattended",
+        "No attendant at oven",
+    ]
+    query = db.query(Alert).filter(
+        Alert.detected_issue.in_(_OVEN_ISSUES)
+    )
+    rows = query.order_by(Alert.timestamp.desc()).limit(limit).all()
+
+    # Fuzzy fallback
+    if len(rows) < 5:
+        for keyword in ["oven", "gas", "fire", "boiling", "oil idle"]:
+            fuzzy = (
+                db.query(Alert)
+                .filter(Alert.detected_issue.ilike(f"%{keyword}%"))
+                .order_by(Alert.timestamp.desc())
+                .limit(limit)
+                .all()
+            )
+            seen_ids = {r.id for r in rows}
+            for r in fuzzy:
+                if r.id not in seen_ids:
+                    rows.append(r)
+        rows = sorted(rows, key=lambda x: x.timestamp, reverse=True)[:limit]
+
+    return [_alert_to_dict(r) for r in rows]
+
+
 # ── Summary ────────────────────────────────────────────────────────────────────
 
 @router.get("/summary")
@@ -131,10 +282,38 @@ def get_workflow_summary(
         Alert.timestamp >= today,
     ).count()
 
+    idle_count = db.query(Alert).filter(
+        Alert.message.ilike("%idle%"),
+        Alert.timestamp >= today,
+    ).count()
+
+    dress_code_count = db.query(Alert).filter(
+        Alert.detected_issue.in_(["No Head Cap", "No Hardhat", "Bangle detected", "Dress code violation", "No Uniform"]),
+        Alert.timestamp >= today,
+    ).count()
+
+    oven_count = db.query(Alert).filter(
+        Alert.detected_issue.in_(["Oven unattended", "Gas waste", "Fire unattended"]),
+        Alert.timestamp >= today,
+    ).count()
+
+    # Per-floor alert counts today
+    floor_counts = {}
+    for floor_name in ["ground", "first", "second", "shop"]:
+        floor_counts[floor_name] = db.query(Alert).filter(
+            Alert.floor == floor_name,
+            Alert.timestamp >= today,
+        ).count()
+
     return {
-        "cash_events_today":    cash_count,
-        "stock_events_today":   stock_count,
-        "lift_events_today":    lift_count,
-        "packing_events_today": packing_count,
-        "total_today":          cash_count + stock_count + lift_count + packing_count,
+        "cash_events_today":       cash_count,
+        "stock_events_today":      stock_count,
+        "lift_events_today":       lift_count,
+        "packing_events_today":    packing_count,
+        "idle_events_today":       idle_count,
+        "dress_code_events_today": dress_code_count,
+        "oven_events_today":       oven_count,
+        "total_today":             cash_count + stock_count + lift_count + packing_count + idle_count + dress_code_count + oven_count,
+        "floor_counts":            floor_counts,
     }
+

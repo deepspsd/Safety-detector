@@ -19,17 +19,35 @@ Alert table is backward-compatible: three new nullable FK columns
 
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float,
-    DateTime, Text, Boolean, ForeignKey, inspect, text,
+    DateTime, Text, Boolean, ForeignKey, event, inspect, text,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 from config import settings
 
-engine = create_engine(
-    settings.DATABASE_URL,
-    connect_args={"check_same_thread": False}
-)
+_engine_kwargs = {}
+if settings.DATABASE_URL.startswith("sqlite"):
+    _engine_kwargs["connect_args"] = {
+        "check_same_thread": False,
+        "timeout": 30,
+    }
+
+engine = create_engine(settings.DATABASE_URL, **_engine_kwargs)
+
+
+if engine.dialect.name == "sqlite":
+    @event.listens_for(engine, "connect")
+    def _configure_sqlite(dbapi_connection, _connection_record):
+        """Enable safe SQLite concurrency and referential integrity per connection."""
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA busy_timeout=30000")
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA foreign_keys=ON")
+        finally:
+            cursor.close()
+
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()

@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { camerasApi, alertsApi } from '../api/api'
+import api from '../api/api'
 import { useToast } from '../context/ToastContext'
 import {
   Camera, AlertTriangle, CheckCircle, WifiOff, RefreshCw,
@@ -9,10 +10,10 @@ import {
 } from 'lucide-react'
 
 const FLOORS = [
-  { id: 'ground', label: 'Ground Floor', icon: '🏭', color: '#3b82f6' },
-  { id: 'first',  label: 'First Floor',  icon: '🏗️', color: '#8b5cf6' },
-  { id: 'second', label: 'Second Floor', icon: '🏢', color: '#06b6d4' },
-  { id: 'shop',   label: 'Shop Floor',   icon: '🛒', color: '#f59e0b' },
+  { id: 'ground', label: 'Ground Floor', icon: '🏭', color: '#3b82f6', workStart: '8:00 AM', zones: 'Entrance · Dough · Oven · Packing' },
+  { id: 'first',  label: 'First Floor',  icon: '🏗️', color: '#8b5cf6', workStart: '6:00 AM', zones: 'Work Tables · Dough · Lift' },
+  { id: 'second', label: 'Second Floor', icon: '🏢', color: '#06b6d4', workStart: '5:00 AM', zones: 'Cooking · Ovens · Stock' },
+  { id: 'shop',   label: 'Shop',         icon: '🛒', color: '#f59e0b', workStart: '9:00 AM', zones: 'Counter · Cashbox · Entrance' },
 ]
 
 const STATUS_COLORS = {
@@ -103,7 +104,14 @@ function CameraTile({ camera, onSelect }) {
       {/* footer */}
       <div className="camera-tile-footer">
         <Camera size={13} color="var(--text-muted)" />
-        <span className="camera-tile-name">{camera.name}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="camera-tile-name">{camera.name}</div>
+          {camera.zone_type && (
+            <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginTop: 2, textTransform: 'capitalize', letterSpacing: '0.03em' }}>
+              {camera.zone_type.replace(/_/g, ' ')}
+            </div>
+          )}
+        </div>
         {lastUpdated && (
           <span className="camera-tile-time">
             <Clock size={10} />
@@ -120,21 +128,24 @@ export default function FloorOverview() {
   const navigate    = useNavigate()
   const { addToast } = useToast()
 
-  const [cameras,  setCameras]  = useState([])
-  const [,         setStats]    = useState(null)
-  const [loading,  setLoading]  = useState(true)
+  const [cameras,       setCameras]      = useState([])
+  const [,              setStats]        = useState(null)
+  const [loading,       setLoading]      = useState(true)
+  const [floorAlerts,   setFloorAlerts]  = useState({})
 
   const floor = FLOORS.find(f => f.id === floorId) || FLOORS[0]
 
   const load = useCallback(async () => {
     try {
-      const [camRes, statRes] = await Promise.all([
+      const [camRes, statRes, sumRes] = await Promise.all([
         camerasApi.list(),
         alertsApi.stats().catch(() => null),
+        api.get('/workflow/summary').catch(() => null),
       ])
       const all = Array.isArray(camRes.data) ? camRes.data : (camRes.data.cameras || [])
       setCameras(all.filter(c => c.floor === floorId))
       setStats(statRes?.data || null)
+      if (sumRes?.data?.floor_counts) setFloorAlerts(sumRes.data.floor_counts)
     } catch { addToast('Failed to load cameras', '', 'danger') }
     finally { setLoading(false) }
   }, [floorId, addToast])
@@ -162,33 +173,44 @@ export default function FloorOverview() {
         </span>
       </div>
 
-      {/* Floor tabs */}
+      {/* Floor tabs — with alert count badges */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 24, flexWrap: 'wrap' }}>
-        {FLOORS.map(f => (
-          <Link
-            key={f.id}
-            to={`/floors/${f.id}`}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              padding: '7px 16px', borderRadius: 'var(--radius-md)',
-              border: `1px solid ${f.id === floorId ? f.color : 'var(--border)'}`,
-              background: f.id === floorId ? `${f.color}18` : 'var(--bg-card)',
-              color: f.id === floorId ? f.color : 'var(--text-secondary)',
-              textDecoration: 'none', fontWeight: 600, fontSize: '0.82rem',
-              transition: 'all var(--transition)',
-            }}
-          >
-            <span>{f.icon}</span>{f.label}
-          </Link>
-        ))}
+        {FLOORS.map(f => {
+          const ac = floorAlerts[f.id] ?? 0
+          return (
+            <Link
+              key={f.id}
+              to={`/floors/${f.id}`}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: '7px 16px', borderRadius: 'var(--radius-md)',
+                border: `1px solid ${f.id === floorId ? f.color : 'var(--border)'}`,
+                background: f.id === floorId ? `${f.color}18` : 'var(--bg-card)',
+                color: f.id === floorId ? f.color : 'var(--text-secondary)',
+                textDecoration: 'none', fontWeight: 600, fontSize: '0.82rem',
+                transition: 'all var(--transition)',
+              }}
+            >
+              <span>{f.icon}</span>{f.label}
+              {ac > 0 && (
+                <span style={{
+                  marginLeft: 2, fontSize: '0.65rem', fontWeight: 800,
+                  background: f.color, color: '#fff',
+                  padding: '1px 6px', borderRadius: 99,
+                }}>{ac}</span>
+              )}
+            </Link>
+          )
+        })}
       </div>
 
-      {/* Stats bar */}
-      <div style={{ display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
+      {/* Stats bar — cameras + work-start time + today's alerts */}
+      <div style={{ display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap', alignItems: 'center' }}>
         {[
-          { label: 'Total Cameras', value: totalCams, icon: Camera, color: 'var(--accent-blue)' },
-          { label: 'Online',        value: onlineCams, icon: Activity, color: 'var(--accent-green)' },
-          { label: 'Offline',       value: totalCams - onlineCams, icon: WifiOff, color: 'var(--text-muted)' },
+          { label: 'Total Cameras', value: totalCams,              icon: Camera,    color: 'var(--accent-blue)' },
+          { label: 'Online',        value: onlineCams,             icon: Activity,  color: 'var(--accent-green)' },
+          { label: 'Offline',       value: totalCams - onlineCams, icon: WifiOff,   color: 'var(--text-muted)' },
+          { label: 'Alerts Today',  value: floorAlerts[floorId] ?? 0, icon: AlertTriangle, color: (floorAlerts[floorId] ?? 0) > 0 ? '#ef4444' : 'var(--text-muted)' },
         ].map(({ label, value, icon: Icon, color }) => (
           <div key={label} style={{
             display: 'flex', alignItems: 'center', gap: 10,
@@ -202,6 +224,18 @@ export default function FloorOverview() {
             </div>
           </div>
         ))}
+        {/* Work-start time badge */}
+        <div style={{
+          marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6,
+          padding: '8px 14px', borderRadius: 'var(--radius-md)',
+          background: `${floor.color}12`, border: `1px solid ${floor.color}40`,
+        }}>
+          <Clock size={14} color={floor.color} />
+          <div>
+            <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Work Starts</div>
+            <div style={{ fontSize: '0.9rem', fontWeight: 700, color: floor.color }}>{floor.workStart}</div>
+          </div>
+        </div>
       </div>
 
       {/* Camera grid */}

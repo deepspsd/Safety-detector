@@ -1251,3 +1251,119 @@ a:hover { color: var(--accent-cyan); }
   .tv-header    { padding: 8px 12px; }
   .tv-main      { padding: 6px; }
 }
+
+/* ── Dashboard layout helpers ────────────────────────────── */
+.grid-4 {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+}
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+@media (max-width: 1100px) { .grid-4 { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 700px)  { .grid-4 { grid-template-columns: 1fr; } }
+@media (max-width: 800px)  { .grid-2 { grid-template-columns: 1fr; } }
+
+.card-p {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+}
+
+/* ── Stat cards ──────────────────────────────────────────── */
+.stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px 22px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  transition: border-color var(--transition);
+}
+.stat-card:hover { border-color: var(--border-active); }
+
+.stat-icon {
+  width: 48px; height: 48px;
+  border-radius: 14px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.stat-icon-red          { background: rgba(239,68,68,0.12);  color: #ef4444; }
+.stat-icon-orange       { background: rgba(249,115,22,0.12); color: #f97316; }
+.stat-icon-green        { background: rgba(16,185,129,0.12); color: #10b981; }
+.stat-icon-blue         { background: rgba(59,130,246,0.12); color: #3b82f6; }
+.stat-icon-construction { background: rgba(249,115,22,0.12); color: var(--accent-construction); }
+
+.stat-value { font-size: 1.8rem; font-weight: 800; color: var(--text-primary); line-height: 1; }
+.stat-label { font-size: 0.72rem; color: var(--text-muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.05em; }
+.stat-delta { font-size: 0.7rem; margin-top: 4px; }
+.stat-delta-up   { color: #ef4444; }
+.stat-delta-down { color: #10b981; }
+
+/* ── PPE / Bakery checklist grid ─────────────────────────── */
+.ppe-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+}
+.ppe-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  text-align: center;
+  padding: 16px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  transition: all var(--transition);
+}
+.ppe-item.ok   { border-color: rgba(16,185,129,0.3);  background: rgba(16,185,129,0.05); }
+.ppe-item.miss { border-color: rgba(239,68,68,0.3);   background: rgba(239,68,68,0.05);  }
+
+/* ── Alert table (dashboard) ─────────────────────────────── */
+.alerts-table { width: 100%; border-collapse: collapse; }
+.alerts-table th {
+  padding: 9px 14px;
+  text-align: left;
+  font-size: 0.7rem; font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--border);
+}
+.alerts-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+.alerts-table tr:last-child td { border-bottom: none; }
+.alerts-table tr:hover td { background: var(--bg-secondary); }
+
+/* ── Severity badge ─────────────────────────────────────── */
+.badge { padding: 2px 8px; border-radius: 99px; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; }
+.badge-critical { background: rgba(239,68,68,0.12);  color: #ef4444; }
+.badge-high     { background: rgba(239,68,68,0.12);  color: #ef4444; }
+.badge-medium   { background: rgba(249,115,22,0.12); color: #f97316; }
+.badge-low      { background: rgba(16,185,129,0.12); color: #10b981; }
+
+/* ── Spin animation (refresh button) ────────────────────── */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* ── Pulse animation (live status dot) ─────────────────── */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+

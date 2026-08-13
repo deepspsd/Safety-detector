@@ -138,51 +138,86 @@ def _looks_like_camera_photo(img: np.ndarray) -> bool:
     return (max(variances) / min(variances)) > 4.0
 
 
+def _sharpen(gray: np.ndarray) -> np.ndarray:
+    """Unsharp-mask sharpening — makes thin strokes crisper for Tesseract."""
+    blurred = cv2.GaussianBlur(gray, (0, 0), 3)
+    return cv2.addWeighted(gray, 1.5, blurred, -0.5, 0)
+
+
+def _remove_noise_dots(binary: np.ndarray) -> np.ndarray:
+    """
+    Morphological open (erode→dilate) removes isolated 1–2px speckles that
+    Tesseract misreads as random letters ('l', 'i', '.', etc.).
+    Uses a small 2×2 kernel so actual text strokes are preserved.
+    """
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+    return cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+
+
 def _preprocess_for_scan(gray: np.ndarray) -> np.ndarray:
-    """For clean uploaded scans/PDFs: Otsu global thresholding (no sharpening)."""
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return binary
+    """For clean uploaded scans/PDFs: sharpen → Otsu global thresholding."""
+    sharpened = _sharpen(gray)
+    _, binary = cv2.threshold(sharpened, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return _remove_noise_dots(binary)
 
 
 def _preprocess_for_camera(gray: np.ndarray) -> np.ndarray:
     """
-    For camera photos: denoise → CLAHE contrast enhancement →
-    adaptive thresholding (handles shadows & uneven lighting).
+    For camera photos: denoise → sharpen → CLAHE → adaptive threshold → denoise dots.
+    Handles shadows, glare, and uneven lighting from handheld documents.
     """
-    # Denoise
-    denoised = cv2.fastNlMeansDenoising(gray, h=10)
-    # CLAHE — boosts local contrast so text stands out against background
-    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-    enhanced = clahe.apply(denoised)
-    # Adaptive threshold — each 31×31 block gets its own threshold value
+    denoised = cv2.fastNlMeansDenoising(gray, h=12)
+    sharpened = _sharpen(denoised)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(sharpened)
     binary = cv2.adaptiveThreshold(
         enhanced, 255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY,
-        blockSize=31, C=10,
+        blockSize=25, C=12,
     )
-    return binary
+    return _remove_noise_dots(binary)
 
 
 def _preprocess_for_ocr(crop: np.ndarray) -> np.ndarray:
     """
     Route to the correct preprocessor based on image characteristics.
-    Also upscales tiny images so Tesseract can see the text.
+    Upscales to ~300 DPI equivalent for Tesseract — below 150px wide is unusable.
     """
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if len(crop.shape) == 3 else crop
     h, w = gray.shape[:2]
 
-    # Upscale only if genuinely small
-    if h < 150 or w < 150:
-        scale = max(2.0, 150 / min(h, w))
-        gray = cv2.resize(gray, (int(w * scale), int(h * scale)),
-                          interpolation=cv2.INTER_CUBIC)
+    # Target ~300 DPI minimum — Tesseract accuracy degrades sharply below this
+    target_width = 1200
+    if w < target_width:
+        scale = target_width / max(w, 1)
+        new_w, new_h = int(w * scale), int(h * scale)
+        gray = cv2.resize(gray, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
 
-    if _looks_like_camera_photo(gray if len(gray.shape) == 2 else crop):
-        return _preprocess_for_camera(gray if len(gray.shape) == 2 else
-                                       cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY))
-    return _preprocess_for_scan(gray if len(gray.shape) == 2 else
-                                 cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY))
+    if _looks_like_camera_photo(gray):
+        return _preprocess_for_camera(gray)
+    return _preprocess_for_scan(gray)
+
+
+def _clean_ocr_text(text: str) -> str:
+    """
+    Post-process raw Tesseract output to remove common noise artifacts:
+    - Isolated single characters on their own line (common Tesseract artefact)
+    - Lines that are pure punctuation / whitespace
+    - Duplicate whitespace
+    This preserves all real invoice content (numbers, words, dates).
+    """
+    lines = text.splitlines()
+    cleaned = []
+    for line in lines:
+        stripped = line.strip()
+        # Drop lines that are only 1 char OR pure punctuation/symbols
+        if len(stripped) <= 1:
+            continue
+        if re.match(r'^[^a-zA-Z0-9₹\$\.,%/\-]+$', stripped):
+            continue
+        cleaned.append(stripped)
+    return ' | '.join(cleaned) if cleaned else text.strip()
 
 
 def _crop_with_padding(frame: np.ndarray, bbox: list, pad_frac: float = 0.10) -> np.ndarray:
@@ -264,10 +299,15 @@ def scan_document_in_frame(
 
     # Step 3 — pre-process + run Tesseract
     # Try multiple PSM modes; pick the one that extracts the most text.
-    # PSM 3  = full auto layout (best for clean multi-column documents/invoices)
-    # PSM 11 = sparse text — ideal for camera photos where doc is inside a scene
-    # PSM 6  = single uniform block — good for simple single-column receipts
-    _PSM_MODES = ["--psm 3 --oem 3", "--psm 11 --oem 3", "--psm 6 --oem 3"]
+    # PSM 6  = single uniform block — best for printed invoices / receipts
+    # PSM 11 = sparse text — best for camera shots where doc is in a scene
+    # PSM 3  = full auto layout — fallback for complex layouts
+    # OEM 3  = LSTM (most accurate Tesseract engine)
+    _PSM_MODES = [
+        "--psm 6 --oem 3",
+        "--psm 11 --oem 3",
+        "--psm 3 --oem 3",
+    ]
     raw_text = ""
     try:
         processed = _preprocess_for_ocr(crop)
@@ -277,9 +317,11 @@ def scan_document_in_frame(
                 candidate = pytesseract.image_to_string(
                     processed, config=psm_config, lang="eng"
                 ).strip()
+                # Clean noise immediately after each attempt
+                candidate = _clean_ocr_text(candidate)
                 if len(candidate) > len(best_text):
                     best_text = candidate
-                    if len(best_text) > 80:
+                    if len(best_text) > 60:
                         break   # good enough — stop trying other modes
             except Exception:
                 continue

@@ -37,6 +37,29 @@ class ClockInRequest(BaseModel):
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+@router.get("/employees")
+def list_employees(
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user),
+):
+    """Return active employee roster using Employee IDs required by attendance."""
+    rows = (
+        db.query(Employee)
+        .filter(Employee.active.is_(True))
+        .order_by(Employee.name, Employee.id)
+        .all()
+    )
+    return [
+        {
+            "id": employee.id,
+            "name": employee.name,
+            "role": employee.role,
+            "department": employee.department,
+        }
+        for employee in rows
+    ]
+
+
 @router.get("/stats")
 def get_stats(
     db:           Session = Depends(get_db),

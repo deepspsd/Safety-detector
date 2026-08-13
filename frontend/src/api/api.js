@@ -112,6 +112,7 @@ export const camerasApi = {
   update:  (id, data) => api.put(`/cameras/${id}`, data),
   delete:  (id)       => api.delete(`/cameras/${id}`),
   restart: (id)       => api.post(`/cameras/${id}/restart`),
+  connect: (id)       => api.post(`/cameras/${id}/connect`),
   // Zone calibration
   getZones:           (id)                   => api.get(`/cameras/${id}/zones`),
   createZone:         (id, zone_name, polygon_json, metadata = {}) =>
@@ -122,8 +123,12 @@ export const camerasApi = {
   restoreCalibration: (id, version, note='') => api.post(`/cameras/${id}/calibrations/${version}/restore`, { note }),
   // Latest JPEG frame (used for floor grid tiles and zone-calibration canvas)
   snapshot: (id) => api.get(`/cameras/${id}/snapshot`),
-  // LAN discovery (Hikvision/Dahua/generic RTSP scan)
-  discover: ()   => api.post('/cameras/discover'),
+  // ONVIF discovery; the backend requires a DiscoveryRequest body.
+  discover: (options = {}) => api.post('/cameras/discover', {
+    timeout_seconds: 5,
+    retries: 1,
+    ...options,
+  }),
 }
 
 // ── Platform / Analytics ─────────────────────────

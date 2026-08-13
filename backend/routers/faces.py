@@ -8,7 +8,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from database import get_db, User, FaceEncoding
+from database import get_db, User, FaceEncoding, Employee
 from routers.auth import get_current_user
 from services.face_service import encode_face_from_image
 
@@ -63,9 +63,19 @@ def register_face(
         db.commit()
         db.refresh(face_record)
 
+    employee = Employee(
+        name=face_record.label,
+        face_encoding_id=face_record.id,
+        active=True,
+    )
+    db.add(employee)
+    db.commit()
+    db.refresh(employee)
+
     return {
         "message":       f"Face '{face_record.label}' registered successfully",
         "id":            face_record.id,
+        "employee_id":   employee.id,
         "label":         face_record.label,
         "thumbnail_b64": getattr(face_record, "thumbnail_b64", None),
         "created_at":    face_record.created_at.isoformat(),
@@ -108,6 +118,8 @@ def rename_face(
     if not data.label.strip():
         raise HTTPException(status_code=400, detail="Label cannot be empty")
     face.label = data.label.strip()
+    for employee in face.employees:
+        employee.name = face.label
     db.commit()
     return {"message": "Label updated", "id": face.id, "label": face.label}
 
@@ -124,6 +136,9 @@ def delete_face(
     ).first()
     if not face:
         raise HTTPException(status_code=404, detail="Face not found")
+    for employee in face.employees:
+        employee.active = False
+        employee.face_encoding_id = None
     db.delete(face)
     db.commit()
     return {"message": "Face deleted"}

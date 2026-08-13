@@ -370,29 +370,63 @@ def start_all() -> int:
     Returns the number of cameras started.
     """
     from database import SessionLocal
-    from database import Camera as CameraModel
+    from database import Camera as CameraModel, CameraStreamProfile
+    from services.camera_credentials import decrypt
 
     db = SessionLocal()
+    camera_configs = []
     try:
         rows = (
             db.query(CameraModel)
             .filter(CameraModel.status != "offline")
-            .filter(CameraModel.rtsp_url.isnot(None))
+            .filter(CameraModel.status != "deleted")
             .all()
         )
+        for row in rows:
+            stream_url = row.rtsp_url.strip() if row.rtsp_url and row.rtsp_url.strip() else None
+            if stream_url is None:
+                desired = row.preferred_stream or "sub"
+                profile = (
+                    db.query(CameraStreamProfile)
+                    .filter(
+                        CameraStreamProfile.camera_id == row.id,
+                        CameraStreamProfile.active.is_(True),
+                        CameraStreamProfile.stream_type == desired,
+                    )
+                    .order_by(CameraStreamProfile.id)
+                    .first()
+                ) or (
+                    db.query(CameraStreamProfile)
+                    .filter(
+                        CameraStreamProfile.camera_id == row.id,
+                        CameraStreamProfile.active.is_(True),
+                    )
+                    .order_by(CameraStreamProfile.id)
+                    .first()
+                )
+                if profile:
+                    try:
+                        stream_url = decrypt(profile.encrypted_rtsp_uri)
+                    except Exception as exc:
+                        log.error(
+                            f"[CamMgr] Cannot decrypt stream for camera {row.id} "
+                            f"'{row.name}': {exc}"
+                        )
+
+            if stream_url:
+                camera_configs.append((row.id, row.name, stream_url, row.floor or "ground"))
+            else:
+                log.warning(f"[CamMgr] Skipping camera {row.id} '{row.name}' — no configured stream")
     finally:
         db.close()
 
     started = 0
-    for row in rows:
-        if not row.rtsp_url or not row.rtsp_url.strip():
-            log.warning(f"[CamMgr] Skipping camera {row.id} '{row.name}' — no rtsp_url")
-            continue
+    for camera_id, name, stream_url, floor in camera_configs:
         try:
-            _launch(row.id, row.name, row.rtsp_url, floor=row.floor or "ground")
+            _launch(camera_id, name, stream_url, floor=floor)
             started += 1
         except Exception as exc:
-            log.error(f"[CamMgr] Failed to start camera {row.id}: {exc}")
+            log.error(f"[CamMgr] Failed to start camera {camera_id}: {exc}")
 
     log.info(f"[CamMgr] start_all(): {started}/{len(rows)} cameras launched")
     return started

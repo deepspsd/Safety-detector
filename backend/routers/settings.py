@@ -80,6 +80,37 @@ def list_settings(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# GET /settings/cylinder-logs
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/cylinder-logs", response_model=list[CylinderLogOut])
+def list_cylinder_logs(
+    camera_id:    int | None = None,
+    event_type:   str | None = None,
+    limit:        int         = 100,
+    db:           Session     = Depends(get_db),
+    _current_user             = Depends(get_current_user),
+):
+    """Paginated cylinder usage history with optional filters."""
+    q = db.query(CylinderLog)
+    if camera_id:
+        q = q.filter(CylinderLog.camera_id == camera_id)
+    if event_type:
+        q = q.filter(CylinderLog.event_type == event_type)
+    rows = q.order_by(CylinderLog.timestamp.desc()).limit(limit).all()
+    return [
+        CylinderLogOut(
+            id=r.id,
+            camera_id=r.camera_id,
+            event_type=r.event_type,
+            usage_day_count=r.usage_day_count,
+            timestamp=r.timestamp.isoformat(),
+        )
+        for r in rows
+    ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # GET /settings/{key}
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -135,37 +166,6 @@ def update_setting(
     rule_engine.invalidate_settings_cache(key)
     log.info(f"[settings] Updated {key!r} = {body.value!r}")
     return row
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# GET /settings/cylinder-logs
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.get("/cylinder-logs", response_model=list[CylinderLogOut])
-def list_cylinder_logs(
-    camera_id:    int | None = None,
-    event_type:   str | None = None,
-    limit:        int         = 100,
-    db:           Session     = Depends(get_db),
-    _current_user             = Depends(get_current_user),
-):
-    """Paginated cylinder usage history with optional filters."""
-    q = db.query(CylinderLog)
-    if camera_id:
-        q = q.filter(CylinderLog.camera_id == camera_id)
-    if event_type:
-        q = q.filter(CylinderLog.event_type == event_type)
-    rows = q.order_by(CylinderLog.timestamp.desc()).limit(limit).all()
-    return [
-        CylinderLogOut(
-            id=r.id,
-            camera_id=r.camera_id,
-            event_type=r.event_type,
-            usage_day_count=r.usage_day_count,
-            timestamp=r.timestamp.isoformat(),
-        )
-        for r in rows
-    ]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

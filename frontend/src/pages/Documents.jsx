@@ -56,17 +56,61 @@ function StatusBadge({ approved, ocr_available }) {
 // ── Result banner ─────────────────────────────────────────────────────────────
 function ResultBanner({ result }) {
   if (!result) return null
+  const isOutward = result.direction === 'outward'
   return (
     <div style={{
-      padding: '12px 16px', borderRadius: 8, marginTop: 14,
+      padding: '16px', borderRadius: 10, marginTop: 14,
       background: result.approved ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.08)',
       border: `1px solid ${result.approved ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)'}`,
     }}>
-      <div style={{ fontWeight: 800, fontSize: '1rem', color: result.approved ? 'var(--accent-green)' : '#ef4444', marginBottom: 4 }}>
-        {result.approved ? '✅ Invoice Accepted' : '❌ Invoice Rejected'}
+      <div style={{ fontWeight: 800, fontSize: '1rem', color: result.approved ? 'var(--accent-green)' : '#ef4444', marginBottom: 10 }}>
+        {result.approved
+          ? (isOutward ? '✅ Order Form Accepted — outward cleared' : '✅ Invoice Accepted — entry approved')
+          : (isOutward ? '❌ Order Form Rejected — review required' : '❌ Invoice Rejected — review required')}
       </div>
-      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'monospace', maxHeight: 70, overflowY: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-        {result.raw_text || '(No text extracted)'}
+      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        {/* Person/doc photo — especially important for outward scans */}
+        {result.snapshot_b64 && (
+          <div>
+            <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              {isOutward ? 'Person / Document Photo' : 'Document Crop'}
+            </div>
+            <img
+              src={result.snapshot_b64}
+              alt={isOutward ? 'person with document' : 'document scan'}
+              style={{
+                width: isOutward ? 160 : 120, height: isOutward ? 120 : 90,
+                objectFit: 'cover', borderRadius: 8,
+                border: `2px solid ${result.approved ? 'rgba(16,185,129,0.5)' : 'rgba(239,68,68,0.5)'}`,
+              }}
+            />
+          </div>
+        )}
+        {/* OCR text */}
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>OCR Text Extracted</div>
+          {result.ocr_available ? (
+            <div style={{
+              fontSize: '0.76rem', color: 'var(--text-secondary)', fontFamily: 'monospace',
+              maxHeight: 90, overflowY: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+              background: 'var(--bg-secondary)', borderRadius: 6, padding: '8px 10px',
+              border: '1px solid var(--border)',
+            }}>
+              {result.raw_text || '(No text extracted — check document quality or lighting)'}
+            </div>
+          ) : (
+            <div style={{ fontSize: '0.76rem', color: '#f97316', fontStyle: 'italic' }}>
+              OCR unavailable — install Tesseract to enable document scanning
+            </div>
+          )}
+          {result.raw_text && (
+            <div style={{ marginTop: 6, fontSize: '0.68rem', color: result.approved ? 'var(--accent-green)' : '#ef4444' }}>
+              {result.approved
+                ? '✓ Document pattern matched — invoice/order-form recognised'
+                : '⚠ Pattern not matched — admin review recommended'}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -453,8 +497,13 @@ export default function Documents() {
                   </button>
                 </div>
                 {expandedId === r.id && (
-                  <div style={{ marginTop: 10, padding: '10px 14px', background: 'var(--bg-secondary)', borderRadius: 8, fontSize: '0.78rem', fontFamily: 'monospace', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 160, overflowY: 'auto' }}>
-                    {r.raw_ocr_text || '(No OCR text)'}
+                  <div style={{ marginTop: 10, padding: '10px 14px', background: 'var(--bg-secondary)', borderRadius: 8, fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                    {r.snapshot_b64 && (
+                      <img src={r.snapshot_b64} alt="scan" style={{ maxWidth: 180, maxHeight: 130, objectFit: 'cover', borderRadius: 6, marginBottom: 10, border: '1px solid var(--border)', display: 'block' }} />
+                    )}
+                    <div style={{ fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 120, overflowY: 'auto' }}>
+                      {r.raw_ocr_text || '(No OCR text)'}
+                    </div>
                   </div>
                 )}
               </div>

@@ -67,6 +67,17 @@ app.include_router(_api_router)
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads")
 
+
+@app.get("/")
+def root():
+    return {"message": "Safety Monitor API", "version": "1.0.0", "status": "running"}
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
 # ── Serve built frontend in production ───────────────────────────────────────
 # After `npm run build` the Vite output lands in frontend/dist/.
 # FastAPI serves it at / so there is no need for a separate Nginx process on
@@ -318,13 +329,3 @@ def shutdown():
     from services import camera_manager
     camera_manager.stop_all()
     print("🛑 Safety Monitor: all camera readers stopped")
-
-
-@app.get("/")
-def root():
-    return {"message": "Safety Monitor API", "version": "1.0.0", "status": "running"}
-
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}

@@ -80,7 +80,9 @@ function ClockInModal({ onClose, onSuccess }) {
   const [saving, setSaving]         = useState(false)
 
   useEffect(() => {
-    api.get('/faces/').then(r => setEmployees(Array.isArray(r.data) ? r.data : [])).catch(() => {})
+    api.get('/attendance/employees')
+      .then(r => setEmployees(Array.isArray(r.data) ? r.data : []))
+      .catch(() => setEmployees([]))
   }, [])
 
   const handleSubmit = async () => {
@@ -120,7 +122,7 @@ function ClockInModal({ onClose, onSuccess }) {
               >
                 <option value="">— Unidentified / Visitor —</option>
                 {employees.map(e => (
-                  <option key={e.id} value={e.id}>{e.label}</option>
+                  <option key={e.id} value={e.id}>{e.name}</option>
                 ))}
               </select>
               <ChevronDown size={14} style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: 'var(--text-muted)' }} />

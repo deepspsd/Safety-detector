@@ -8,7 +8,8 @@ import {
 } from 'lucide-react'
 
 const SEVERITIES = ['', 'critical', 'high', 'medium', 'low']
-const ROLES = ['', 'Bakery Worker', 'Doctor', 'Traffic Police', 'Construction Worker', 'College', 'Home']
+const FLOORS_LIST = ['', 'ground', 'first', 'second', 'shop']
+const FLOOR_LABELS = { ground: '🏭 Ground', first: '🏗️ First', second: '🏢 Second', shop: '🛒 Shop' }
 
 const SEV_COLORS = {
   critical: { bg: 'rgba(220,38,38,0.12)', border: 'rgba(220,38,38,0.3)', text: '#f87171' },
@@ -31,7 +32,7 @@ export default function Alerts() {
   const [loading,       setLoading]       = useState(false)
   const [selectedAlert, setSelectedAlert] = useState(null)
   const [viewMode,      setViewMode]      = useState('cards')   // 'cards' | 'table'
-  const [filters,       setFilters]       = useState({ role: '', severity: '', date_from: '', date_to: '' })
+  const [filters,       setFilters]       = useState({ severity: '', floor: '', date_from: '', date_to: '' })
 
   const fetchAlerts = useCallback(async () => {
     setLoading(true)
@@ -51,6 +52,12 @@ export default function Alerts() {
   }, [page, filters, addToast])
 
   useEffect(() => { fetchAlerts() }, [fetchAlerts])
+
+  // Auto-refresh every 20s
+  useEffect(() => {
+    const t = setInterval(fetchAlerts, 20000)
+    return () => clearInterval(t)
+  }, [fetchAlerts])
 
   const openDetail = async (a) => {
     try {
@@ -120,9 +127,9 @@ export default function Alerts() {
       {/* ── Filters ─────────────────────────────────────────── */}
       <div className="filters-bar">
         <Filter size={14} style={{ color: 'var(--text-muted)' }} />
-        <select className="filter-select" value={filters.role} onChange={e => setFilter('role', e.target.value)}>
-          <option value="">All Roles</option>
-          {ROLES.filter(Boolean).map(r => <option key={r} value={r}>{r}</option>)}
+        <select className="filter-select" value={filters.floor} onChange={e => setFilter('floor', e.target.value)}>
+          <option value="">All Floors</option>
+          {FLOORS_LIST.filter(Boolean).map(f => <option key={f} value={f}>{FLOOR_LABELS[f]}</option>)}
         </select>
         <select className="filter-select" value={filters.severity} onChange={e => setFilter('severity', e.target.value)}>
           <option value="">All Severities</option>
@@ -136,7 +143,7 @@ export default function Alerts() {
           onChange={e => setFilter('date_to', e.target.value)} title="To date" />
         {Object.values(filters).some(Boolean) && (
           <button className="btn btn-ghost btn-sm"
-            onClick={() => { setFilters({ role:'',severity:'',date_from:'',date_to:'' }); setPage(1) }}>
+            onClick={() => { setFilters({ severity:'', floor:'', date_from:'', date_to:'' }); setPage(1) }}>
             <X size={13} /> Reset
           </button>
         )}

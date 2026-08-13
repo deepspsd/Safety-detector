@@ -1,33 +1,38 @@
-import { useState, useEffect } from 'react'
-import { useAuth } from '../context/AuthContext'
+import { useState, useEffect, useCallback } from 'react'
 import { alertsApi } from '../api/api'
+import api from '../api/api'
 import { Link } from 'react-router-dom'
 import {
   Bell, ShieldCheck, ShieldAlert, Activity,
   Video, ArrowRight, Clock, AlertTriangle,
-  HardHat, Eye, TrendingUp, Zap
+  HardHat, TrendingUp, Zap, Users, Layers,
+  ChefHat, Flame, Package, RefreshCw
 } from 'lucide-react'
 import {
-  PieChart, Pie, Cell, ResponsiveContainer,
-  AreaChart, Area, XAxis, Tooltip, BarChart, Bar, YAxis
+  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  BarChart, Bar, Cell
 } from 'recharts'
 
-// ── PPE icons for Construction role
-const PPE_ITEMS = [
-  { key: 'No Hardhat',       icon: '⛑️',  label: 'Hardhat'       },
-  { key: 'No Safety Vest',   icon: '🦺',  label: 'Safety Vest'   },
-  { key: 'No Mask',          icon: '😷',  label: 'Mask'          },
-  { key: 'No Gloves',        icon: '🧤',  label: 'Gloves'        },
-  { key: 'No Goggles',       icon: '🥽',  label: 'Goggles'       },
-  { key: 'No Safety Shoes',  icon: '👟',  label: 'Safety Shoes'  },
+const FLOORS = [
+  { id: 'ground', label: 'Ground Floor', icon: '🏭', color: '#3b82f6', workStart: '8:00 AM', zones: 'Entrance · Dough Mixing · Cutting · Oven · Packing' },
+  { id: 'first',  label: 'First Floor',  icon: '🏗️', color: '#8b5cf6', workStart: '6:00 AM', zones: 'Work Tables · Dough Mixing · Lift · Cylinders' },
+  { id: 'second', label: 'Second Floor', icon: '🏢', color: '#06b6d4', workStart: '5:00 AM', zones: 'Cooking · Ovens · Stock · Windows' },
+  { id: 'shop',   label: 'Shop',         icon: '🛒', color: '#f59e0b', workStart: '9:00 AM', zones: 'Counter · Cashbox · Entrance' },
 ]
 
-// Build real hourly alert trend from timestamp list
+const BAKERY_CHECKS = [
+  { key: 'No Head Cap',   icon: '👷', label: 'Head Cap',   desc: 'Mandatory on all floors' },
+  { key: 'No Hardhat',    icon: '⛑️',  label: 'Hardhat',   desc: 'Detected by AI model' },
+  { key: 'No Mask',       icon: '😷', label: 'Mask',       desc: 'Required near food' },
+  { key: 'Bangle',        icon: '🚫', label: 'No Bangles', desc: 'Not allowed near machines' },
+  { key: 'Idle',          icon: '⏰', label: 'Idle >5min', desc: 'General idle rule' },
+  { key: 'Dress code',    icon: '👔', label: 'Uniform',    desc: 'Mandatory all floors' },
+]
+
 function buildTrend(recentAlerts) {
   const counts = {}
   for (let h = 0; h < 24; h += 2) counts[`${h}:00`] = 0
-  if (!recentAlerts?.length)
-    return Object.entries(counts).map(([hour, alerts]) => ({ hour, alerts }))
+  if (!recentAlerts?.length) return Object.entries(counts).map(([hour, alerts]) => ({ hour, alerts }))
   recentAlerts.forEach(a => {
     const d = new Date(a.timestamp)
     const h = Math.floor(d.getHours() / 2) * 2
@@ -37,113 +42,112 @@ function buildTrend(recentAlerts) {
   return Object.entries(counts).map(([hour, alerts]) => ({ hour, alerts }))
 }
 
-// Extract top missing items from detected_issue field
-function buildViolationSummary(alerts) {
+function buildTypeBreakdown(alerts) {
   const freq = {}
   alerts?.forEach(a => {
     if (!a.detected_issue) return
-    a.detected_issue.split(',').forEach(item => {
-      const k = item.trim()
-      if (k) freq[k] = (freq[k] || 0) + 1
-    })
+    const k = a.detected_issue.split(',')[0].trim()
+    if (k) freq[k] = (freq[k] || 0) + 1
   })
   return Object.entries(freq)
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-    .map(([item, count]) => ({ item, count }))
+    .slice(0, 6)
+    .map(([name, value]) => ({ name, value }))
 }
 
-// Count how many times each PPE item appears as missing
-function buildPpeBreakdown(alerts) {
-  const freq = {}
-  PPE_ITEMS.forEach(p => { freq[p.label] = 0 })
-  alerts?.forEach(a => {
-    if (!a.detected_issue) return
-    a.detected_issue.split(',').forEach(raw => {
-      const item = raw.trim()
-      PPE_ITEMS.forEach(p => {
-        if (item.toLowerCase().includes(p.label.toLowerCase()) ||
-            item.toLowerCase().includes(p.key.toLowerCase())) {
-          freq[p.label]++
-        }
-      })
-    })
-  })
-  return PPE_ITEMS.map(p => ({ name: p.icon + ' ' + p.label, value: freq[p.label] }))
-    .filter(d => d.value > 0)
+const FLOOR_COLORS = { ground: '#3b82f6', first: '#8b5cf6', second: '#06b6d4', shop: '#f59e0b' }
+
+function liveTime() {
+  return new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })
 }
 
 export default function Dashboard() {
-  const { user } = useAuth()
-  const [stats,   setStats]   = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [stats,      setStats]      = useState(null)
+  const [summary,    setSummary]    = useState(null)
+  const [loading,    setLoading]    = useState(true)
+  const [now,        setNow]        = useState(liveTime())
+  const [refreshing, setRefreshing] = useState(false)
 
-  useEffect(() => {
-    alertsApi.stats()
-      .then(r => setStats(r.data))
-      .catch(() => {})
-      .finally(() => setLoading(false))
+  const load = useCallback(async () => {
+    try {
+      const [alertRes, sumRes] = await Promise.all([
+        alertsApi.stats(),
+        api.get('/workflow/summary').catch(() => ({ data: null })),
+      ])
+      setStats(alertRes.data)
+      setSummary(sumRes.data)
+    } catch { /* silent */ }
+    finally { setLoading(false); setRefreshing(false) }
   }, [])
 
-  const compliancePct    = stats?.compliance_percentage ?? 0
-  const isConstruction   = !user?.role || user?.role === 'Construction Worker'
-  const roleColor        = isConstruction ? 'var(--accent-construction)' : 'var(--accent-blue)'
-  const pieData = [
-    { name: 'Compliant',  value: compliancePct },
-    { name: 'Violations', value: 100 - compliancePct },
-  ]
 
-  const trendData      = buildTrend(stats?.recent_alerts)
-  const violationSummary = buildViolationSummary(stats?.recent_alerts)
-  const ppeBreakdown   = buildPpeBreakdown(stats?.recent_alerts)
-  const complianceColor = compliancePct >= 80 ? '#10b981' : compliancePct >= 60 ? '#f59e0b' : '#ef4444'
+  // Auto-refresh every 30s
+  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    const t = setInterval(load, 30000)
+    return () => clearInterval(t)
+  }, [load])
+
+  // Live clock
+  useEffect(() => {
+    const t = setInterval(() => setNow(liveTime()), 30000)
+    return () => clearInterval(t)
+  }, [])
+
+  const handleRefresh = () => { setRefreshing(true); load() }
+
+  const compliancePct   = stats?.compliance_percentage ?? 0
+  const trendData       = buildTrend(stats?.recent_alerts)
+  const typeBreakdown   = buildTypeBreakdown(stats?.recent_alerts)
+  const floorCounts     = summary?.floor_counts || {}
 
   if (loading) return (
     <div className="loading-container">
       <span className="spinner" />
-      <span>Loading dashboard…</span>
+      <span>Loading Bakery Safety Dashboard…</span>
     </div>
   )
 
   return (
     <div className="page-container">
 
-      {/* ── Page Header ── */}
-      <div className="page-header">
+      {/* ── Header ── */}
+      <div className="page-header" style={{ marginBottom: 24 }}>
         <div>
           <h1 className="page-title" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            {isConstruction && <HardHat size={24} color={roleColor} />}
-            Occupational Safety Dashboard
+            <ChefHat size={24} color="#f97316" />
+            Bakery Safety Monitor
           </h1>
-          <p className="page-subtitle" style={{ marginTop: 4 }}>
+          <p className="page-subtitle" style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{
               display: 'inline-flex', alignItems: 'center', gap: 6,
               padding: '2px 10px', borderRadius: 99,
-              background: isConstruction ? 'rgba(249,115,22,0.12)' : 'rgba(59,130,246,0.12)',
-              color: roleColor, fontWeight: 700, fontSize: '0.78rem',
+              background: 'rgba(249,115,22,0.12)', color: '#fb923c',
+              fontWeight: 700, fontSize: '0.78rem',
             }}>
-              {isConstruction ? '🏗️' : '👤'} {user?.role || 'No role set'}
+              🧁 Bakery Food Safety
             </span>
-            {' '}
-            <span style={{ color: 'var(--text-muted)' }}>· Safety Intelligence Overview</span>
+            <span style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>{now}</span>
           </p>
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
+          <button className="btn btn-ghost btn-sm" onClick={handleRefresh} disabled={refreshing}>
+            <RefreshCw size={14} style={{ animation: refreshing ? 'spin 1s linear infinite' : 'none' }} />
+            Refresh
+          </button>
           <Link to="/alerts" className="btn btn-ghost btn-sm">
             <Bell size={14} /> Alerts
           </Link>
-          <Link to="/monitor" className="btn btn-primary" style={
-            isConstruction ? {
-              background: 'linear-gradient(135deg, #f97316, #ea580c)',
-              boxShadow: '0 4px 15px rgba(249,115,22,0.3)',
-            } : {}
-          }>
-            <Video size={15} /> Start Monitoring
+          <Link to="/monitor" className="btn btn-primary" style={{
+            background: 'linear-gradient(135deg, #f97316, #ea580c)',
+            boxShadow: '0 4px 15px rgba(249,115,22,0.3)',
+          }}>
+            <Video size={15} /> Live Monitor
           </Link>
         </div>
       </div>
 
-      {/* ── KPI Stat Cards ── */}
+      {/* ── KPI Cards ── */}
       <div className="grid-4" style={{ marginBottom: 24 }}>
         <StatCard
           icon={<Bell size={22} />}
@@ -158,7 +162,7 @@ export default function Dashboard() {
           iconClass="stat-icon-orange"
           value={stats?.critical_alerts ?? 0}
           label="Critical Alerts"
-          delta={stats?.critical_alerts > 0 ? '⚠ Immediate action' : '✓ None today'}
+          delta={stats?.critical_alerts > 0 ? '⚠ Action needed' : '✓ None today'}
           deltaClass={stats?.critical_alerts > 0 ? 'stat-delta-up' : 'stat-delta-down'}
         />
         <StatCard
@@ -166,87 +170,94 @@ export default function Dashboard() {
           iconClass="stat-icon-green"
           value={`${compliancePct}%`}
           label="Compliance Rate"
-          delta={compliancePct >= 80 ? '✓ Target met' : '↓ Below 80% target'}
+          delta={compliancePct >= 80 ? '✓ On target' : '↓ Below 80%'}
           deltaClass={compliancePct >= 80 ? 'stat-delta-down' : 'stat-delta-up'}
         />
         <StatCard
           icon={<Activity size={22} />}
           iconClass="stat-icon-construction"
-          value={stats?.today_alerts ?? 0}
-          label="Alerts Today"
-          delta="Real-time detection"
+          value={summary?.total_today ?? stats?.today_alerts ?? 0}
+          label="Workflow Events"
+          delta="All types · today"
         />
+      </div>
+
+      {/* ── Floor Status Grid ── */}
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+          <Layers size={16} color="#f97316" />
+          <h3 style={{ fontSize: '0.95rem', fontWeight: 700 }}>Floor Status</h3>
+          <span style={{ marginLeft: 'auto', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+            alert counts today
+          </span>
+        </div>
+        <div className="grid-4">
+          {FLOORS.map(f => {
+            const count = floorCounts[f.id] ?? 0
+            const hasAlerts = count > 0
+            return (
+              <Link key={f.id} to={`/floors/${f.id}`} style={{ textDecoration: 'none' }}>
+                <div style={{
+                  background: 'var(--bg-card)',
+                  border: `1px solid ${hasAlerts ? f.color + '60' : 'var(--border)'}`,
+                  borderRadius: 'var(--radius-lg)',
+                  padding: '16px 18px',
+                  cursor: 'pointer',
+                  transition: 'all var(--transition)',
+                  position: 'relative',
+                  overflow: 'hidden',
+                }}
+                onMouseEnter={e => e.currentTarget.style.transform = 'translateY(-2px)'}
+                onMouseLeave={e => e.currentTarget.style.transform = ''}>
+                  {/* Color accent bar */}
+                  <div style={{
+                    position: 'absolute', top: 0, left: 0, right: 0, height: 3,
+                    background: `linear-gradient(90deg, ${f.color}, ${f.color}80)`,
+                  }} />
+                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <span style={{ fontSize: '1.4rem' }}>{f.icon}</span>
+                    <span style={{
+                      fontSize: '1.4rem', fontWeight: 800,
+                      color: hasAlerts ? f.color : 'var(--text-muted)',
+                    }}>{count}</span>
+                  </div>
+                  <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>{f.label}</div>
+                  <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginBottom: 6 }}>
+                    ⏰ Work starts {f.workStart}
+                  </div>
+                  <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)', lineHeight: 1.4 }}>{f.zones}</div>
+                  {hasAlerts && (
+                    <div style={{
+                      marginTop: 8, display: 'inline-flex', alignItems: 'center', gap: 4,
+                      fontSize: '0.68rem', color: f.color, fontWeight: 700,
+                      padding: '2px 8px', background: `${f.color}15`, borderRadius: 99,
+                    }}>
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: f.color, animation: 'pulse 2s infinite' }} />
+                      {count} alert{count !== 1 ? 's' : ''}
+                    </div>
+                  )}
+                </div>
+              </Link>
+            )
+          })}
+        </div>
       </div>
 
       {/* ── Charts Row ── */}
       <div className="grid-2" style={{ marginBottom: 24 }}>
 
-        {/* Compliance Gauge */}
-        <div className="card card-p">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-            <Eye size={16} color={roleColor} />
-            <h3 style={{ fontSize: '1rem' }}>Safety Compliance</h3>
-            <span style={{
-              marginLeft: 'auto', fontSize: '0.72rem', fontWeight: 700, padding: '2px 8px',
-              borderRadius: 99, background: compliancePct >= 80
-                ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
-              color: compliancePct >= 80 ? '#34d399' : '#f87171',
-            }}>
-              {compliancePct >= 80 ? 'ON TARGET' : 'NEEDS ATTENTION'}
-            </span>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 28 }}>
-            <div style={{ width: 150, height: 150, flexShrink: 0 }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie data={pieData} cx="50%" cy="50%"
-                    innerRadius={42} outerRadius={64}
-                    dataKey="value" startAngle={90} endAngle={-270} stroke="none">
-                    <Cell fill={complianceColor} />
-                    <Cell fill="rgba(255,255,255,0.06)" />
-                  </Pie>
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-            <div>
-              <div style={{ fontSize: '2.8rem', fontWeight: 800, color: complianceColor, lineHeight: 1 }}>
-                {compliancePct}%
-              </div>
-              <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginTop: 6 }}>
-                Compliance Rate
-              </div>
-              <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <LegendDot color={complianceColor} label="Compliant personnel" />
-                <LegendDot color="#ef4444" label="PPE violations detected" />
-              </div>
-              {/* Target bar */}
-              <div style={{ marginTop: 14 }}>
-                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: 4 }}>
-                  Target: 80%
-                </div>
-                <div className="progress-bar">
-                  <div className="progress-fill" style={{
-                    width: `${Math.min(compliancePct, 100)}%`,
-                    background: `linear-gradient(90deg, ${complianceColor}, ${complianceColor}88)`,
-                  }} />
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
         {/* Alert Trend */}
         <div className="card card-p">
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-            <TrendingUp size={16} color={roleColor} />
+            <TrendingUp size={16} color="#f97316" />
             <h3 style={{ fontSize: '1rem' }}>Alert Activity (24h)</h3>
           </div>
           <ResponsiveContainer width="100%" height={148}>
             <AreaChart data={trendData} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
               <defs>
                 <linearGradient id="alertGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%"  stopColor={isConstruction ? '#f97316' : '#3b82f6'} stopOpacity={0.35} />
-                  <stop offset="95%" stopColor={isConstruction ? '#f97316' : '#3b82f6'} stopOpacity={0}    />
+                  <stop offset="5%"  stopColor="#f97316" stopOpacity={0.35} />
+                  <stop offset="95%" stopColor="#f97316" stopOpacity={0}    />
                 </linearGradient>
               </defs>
               <XAxis dataKey="hour" tick={{ fontSize: 10, fill: 'var(--text-muted)' }} tickLine={false} axisLine={false} />
@@ -256,99 +267,109 @@ export default function Dashboard() {
                 borderRadius: 8, fontSize: 12
               }} />
               <Area type="monotone" dataKey="alerts"
-                stroke={isConstruction ? '#f97316' : '#3b82f6'} strokeWidth={2}
+                stroke="#f97316" strokeWidth={2}
                 fill="url(#alertGrad)" dot={false} />
             </AreaChart>
           </ResponsiveContainer>
         </div>
-      </div>
 
-      {/* ── PPE Breakdown Bar chart (Construction) + Violation List ── */}
-      <div className={ppeBreakdown.length > 0 ? 'grid-2' : ''} style={{ marginBottom: 24 }}>
-
-        {/* PPE violation breakdown */}
-        {ppeBreakdown.length > 0 && (
-          <div className="card card-p">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-              <HardHat size={16} color={roleColor} />
-              <h3 style={{ fontSize: '1rem' }}>PPE Violation Breakdown</h3>
+        {/* Violation Type Breakdown */}
+        <div className="card card-p">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+            <AlertTriangle size={16} color="#f59e0b" />
+            <h3 style={{ fontSize: '1rem' }}>Violation Types</h3>
+          </div>
+          {typeBreakdown.length === 0 ? (
+            <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.84rem', padding: '32px 0' }}>
+              <ShieldCheck size={32} style={{ marginBottom: 8, opacity: 0.3 }} />
+              <div>No violations today</div>
             </div>
-            <ResponsiveContainer width="100%" height={160}>
-              <BarChart data={ppeBreakdown} margin={{ top: 0, right: 10, left: -20, bottom: 0 }}>
-                <XAxis dataKey="name" tick={{ fontSize: 10, fill: 'var(--text-muted)' }} tickLine={false} axisLine={false} />
-                <YAxis tick={{ fontSize: 10, fill: 'var(--text-muted)' }} tickLine={false} axisLine={false} allowDecimals={false} />
+          ) : (
+            <ResponsiveContainer width="100%" height={148}>
+              <BarChart data={typeBreakdown} margin={{ top: 0, right: 10, left: -20, bottom: 0 }}>
+                <XAxis dataKey="name" tick={{ fontSize: 9, fill: 'var(--text-muted)' }} tickLine={false} axisLine={false} />
+                <YAxis  tick={{ fontSize: 9, fill: 'var(--text-muted)' }} tickLine={false} axisLine={false} allowDecimals={false} />
                 <Tooltip contentStyle={{
                   background: 'var(--bg-secondary)', border: '1px solid var(--border)',
                   borderRadius: 8, fontSize: 12
                 }} />
-                <Bar dataKey="value" fill={isConstruction ? '#f97316' : '#3b82f6'} radius={[4, 4, 0, 0]} />
+                <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+                  {typeBreakdown.map((_, i) => (
+                    <Cell key={i} fill={['#ef4444','#f59e0b','#f97316','#8b5cf6','#3b82f6','#10b981'][i % 6]} />
+                  ))}
+                </Bar>
               </BarChart>
             </ResponsiveContainer>
-          </div>
-        )}
-
-        {/* Top violation ranking */}
-        {violationSummary.length > 0 && (
-          <div className="card card-p">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-              <AlertTriangle size={16} color="var(--accent-orange)" />
-              <h3 style={{ fontSize: '1rem' }}>Top Violations</h3>
-              <span style={{ marginLeft: 'auto', fontSize: '0.72rem', color: 'var(--text-muted)' }}>all time</span>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {violationSummary.map(({ item, count }, i) => {
-                const max = violationSummary[0].count
-                const barColor = i === 0 ? '#ef4444' : i === 1 ? '#f59e0b' : '#f97316'
-                return (
-                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <div style={{ width: 20, fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 700 }}>
-                      #{i + 1}
-                    </div>
-                    <div style={{ width: 120, fontSize: '0.82rem', color: 'var(--text-secondary)', flexShrink: 0 }}>{item}</div>
-                    <div style={{ flex: 1, background: 'var(--bg-tertiary)', borderRadius: 4, overflow: 'hidden', height: 8 }}>
-                      <div style={{
-                        width: `${(count / max) * 100}%`, height: '100%',
-                        background: barColor, borderRadius: 4, transition: 'width 0.4s'
-                      }} />
-                    </div>
-                    <div style={{ width: 28, fontSize: '0.78rem', color: 'var(--text-muted)', textAlign: 'right' }}>{count}×</div>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
-      {/* ── PPE Quick-check grid for Construction ── */}
-      {isConstruction && (
-        <div className="card card-p" style={{ marginBottom: 24 }}>
+      {/* ── Workflow Summary Cards ── */}
+      {summary && (
+        <div style={{ marginBottom: 24 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-            <Zap size={16} color={roleColor} />
-            <h3 style={{ fontSize: '1rem' }}>Required PPE — Construction Worker</h3>
-            <span style={{
-              marginLeft: 'auto', fontSize: '0.7rem', fontWeight: 700, padding: '2px 8px',
-              borderRadius: 99, background: 'rgba(249,115,22,0.12)', color: '#fb923c'
-            }}>5 ITEMS MONITORED</span>
+            <Zap size={16} color="#f97316" />
+            <h3 style={{ fontSize: '0.95rem', fontWeight: 700 }}>Today's Workflow Events</h3>
           </div>
-          <div className="ppe-grid">
-            {PPE_ITEMS.map(p => {
-              const missCount = (stats?.recent_alerts || []).filter(a =>
-                (a.detected_issue || '').toLowerCase().includes(p.key.toLowerCase())
-              ).length
-              return (
-                <div key={p.key} className={`ppe-item ${missCount === 0 ? 'ok' : 'miss'}`}>
-                  <span style={{ fontSize: '1.5rem' }}>{p.icon}</span>
-                  <span>{p.label}</span>
-                  {missCount > 0
-                    ? <span style={{ fontSize: '0.65rem' }}>{missCount} violation{missCount > 1 ? 's' : ''}</span>
-                    : <span style={{ fontSize: '0.65rem' }}>✓ No issues</span>}
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+            {[
+              { label: 'Idle Events',    value: summary.idle_events_today,       icon: '⏰', color: '#f59e0b', to: '/workflow' },
+              { label: 'Dress Code',     value: summary.dress_code_events_today, icon: '👷', color: '#ef4444', to: '/workflow' },
+              { label: 'Cash Zone',      value: summary.cash_events_today,       icon: '💰', color: '#10b981', to: '/workflow' },
+              { label: 'Oven/Gas',       value: summary.oven_events_today,       icon: '🔥', color: '#f97316', to: '/workflow' },
+              { label: 'Stock Flow',     value: summary.stock_events_today,      icon: '📦', color: '#8b5cf6', to: '/workflow' },
+              { label: 'Lift Events',    value: summary.lift_events_today,       icon: '🛗', color: '#3b82f6', to: '/workflow' },
+            ].map(({ label, value, icon, color, to }) => (
+              <Link key={label} to={to} style={{ textDecoration: 'none', flex: 1, minWidth: 120 }}>
+                <div style={{
+                  background: 'var(--bg-card)', border: '1px solid var(--border)',
+                  borderRadius: 'var(--radius-lg)', padding: '12px 16px',
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  transition: 'all var(--transition)',
+                }}
+                onMouseEnter={e => e.currentTarget.style.borderColor = color + '60'}
+                onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--border)'}>
+                  <span style={{ fontSize: '1.3rem' }}>{icon}</span>
+                  <div>
+                    <div style={{ fontSize: '1.3rem', fontWeight: 800, color, lineHeight: 1 }}>{value ?? 0}</div>
+                    <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: 2, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
+                  </div>
                 </div>
-              )
-            })}
+              </Link>
+            ))}
           </div>
         </div>
       )}
+
+      {/* ── Bakery Safety Checklist ── */}
+      <div className="card card-p" style={{ marginBottom: 24 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+          <HardHat size={16} color="#f97316" />
+          <h3 style={{ fontSize: '1rem' }}>Bakery Safety Checklist</h3>
+          <span style={{
+            marginLeft: 'auto', fontSize: '0.7rem', fontWeight: 700, padding: '2px 8px',
+            borderRadius: 99, background: 'rgba(249,115,22,0.12)', color: '#fb923c'
+          }}>ALL FLOORS</span>
+        </div>
+        <div className="ppe-grid">
+          {BAKERY_CHECKS.map(p => {
+            const missCount = (stats?.recent_alerts || []).filter(a =>
+              (a.detected_issue || '').toLowerCase().includes(p.key.toLowerCase()) ||
+              (a.message || '').toLowerCase().includes(p.key.toLowerCase())
+            ).length
+            return (
+              <div key={p.key} className={`ppe-item ${missCount === 0 ? 'ok' : 'miss'}`}>
+                <span style={{ fontSize: '1.4rem' }}>{p.icon}</span>
+                <span style={{ fontWeight: 600 }}>{p.label}</span>
+                <span style={{ fontSize: '0.62rem', color: 'var(--text-muted)', lineHeight: 1.3 }}>{p.desc}</span>
+                {missCount > 0
+                  ? <span style={{ fontSize: '0.65rem', color: '#ef4444', fontWeight: 700 }}>{missCount} violation{missCount > 1 ? 's' : ''}</span>
+                  : <span style={{ fontSize: '0.65rem', color: '#10b981' }}>✓ No issues</span>}
+              </div>
+            )
+          })}
+        </div>
+      </div>
 
       {/* ── Recent Alerts Table ── */}
       <div className="card card-p">
@@ -374,30 +395,32 @@ export default function Dashboard() {
             <thead>
               <tr>
                 <th>Time</th>
+                <th>Floor</th>
                 <th>Violation</th>
                 <th>Severity</th>
-                <th>Missing PPE</th>
                 <th>Confidence</th>
               </tr>
             </thead>
             <tbody>
-              {stats.recent_alerts.slice(0, 8).map(a => (
+              {stats.recent_alerts.slice(0, 10).map(a => (
                 <tr key={a.id}>
                   <td style={{ color: 'var(--text-muted)', fontSize: '0.78rem', whiteSpace: 'nowrap' }}>
                     <Clock size={11} style={{ marginRight: 4, verticalAlign: 'middle' }} />
-                    {formatTime(a.timestamp)}
+                    {new Date(a.timestamp).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}
                   </td>
-                  <td style={{ color: 'var(--text-primary)', maxWidth: 200 }}>{a.message}</td>
-                  <td><span className={`badge badge-${a.severity}`}>{a.severity}</span></td>
                   <td>
-                    {a.detected_issue
-                      ? a.detected_issue.split(',').map((item, i) => (
-                          <span key={i} className="ppe-badge ppe-err" style={{ marginRight: 4 }}>
-                            {item.trim()}
-                          </span>
-                        ))
-                      : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                    {a.floor ? (
+                      <span style={{
+                        fontSize: '0.7rem', fontWeight: 700, padding: '2px 7px', borderRadius: 99,
+                        background: `${FLOOR_COLORS[a.floor] || '#64748b'}18`,
+                        color: FLOOR_COLORS[a.floor] || 'var(--text-muted)',
+                      }}>
+                        {FLOORS.find(f => f.id === a.floor)?.icon || ''} {a.floor}
+                      </span>
+                    ) : <span style={{ color: 'var(--text-muted)' }}>—</span>}
                   </td>
+                  <td style={{ color: 'var(--text-primary)', maxWidth: 220 }}>{a.detected_issue || a.message}</td>
+                  <td><span className={`badge badge-${a.severity}`}>{a.severity}</span></td>
                   <td style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
                     {a.confidence ? `${(a.confidence * 100).toFixed(0)}%` : '—'}
                   </td>
@@ -424,17 +447,4 @@ function StatCard({ icon, iconClass, value, label, delta, deltaClass }) {
       </div>
     </div>
   )
-}
-
-function LegendDot({ color, label }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-      <span style={{ width: 10, height: 10, borderRadius: '50%', background: color, display: 'inline-block', flexShrink: 0 }} />
-      {label}
-    </div>
-  )
-}
-
-function formatTime(iso) {
-  return new Date(iso).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })
 }

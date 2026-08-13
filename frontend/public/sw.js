@@ -1,10 +1,10 @@
 /**
  * SafeGuard AI — Manual Service Worker (Vite 8 compatible)
- * Implements a Network-First strategy for API calls and
- * Cache-First for static assets.
+ * Caches only the application shell and static build assets.
+ * Authenticated API data and camera evidence always stay network-only.
  */
 
-const CACHE_NAME  = 'safeguard-ai-v1'
+const CACHE_NAME  = 'safeguard-ai-v2'
 const STATIC_URLS = [
   '/',
   '/index.html',
@@ -34,63 +34,53 @@ self.addEventListener('activate', (event) => {
   )
 })
 
-// ── Fetch: Network-First for API, Cache-First for assets ──
+// ── Fetch: network-only data, cached shell/static assets ──
 self.addEventListener('fetch', (event) => {
   const { request } = event
   const url = new URL(request.url)
 
-  // Skip non-GET and cross-origin requests
-  if (request.method !== 'GET') return
-  if (url.origin !== self.location.origin && !url.hostname.includes('localhost')) return
+  if (request.method !== 'GET' || url.origin !== self.location.origin) return
 
-  // API calls → Network-First (5s timeout, fallback to cache)
-  // Match both bare (/auth, /alerts, /users) and /api-prefixed paths
-  // (the /api prefix is used in production single-origin builds).
-  const apiLike =
-    url.pathname.startsWith('/alerts') ||
-    url.pathname.startsWith('/auth') ||
-    url.pathname.startsWith('/users') ||
-    url.pathname.startsWith('/api/')
-  if (apiLike) {
-    event.respondWith(networkFirst(request))
+  // SPA navigations use the network, with the cached shell only as an
+  // offline fallback. Route responses themselves are never cached.
+  if (request.mode === 'navigate') {
+    event.respondWith(fetchShell(request))
     return
   }
 
-  // Static assets → Cache-First
-  event.respondWith(cacheFirst(request))
+  const isStaticAsset =
+    STATIC_URLS.includes(url.pathname) ||
+    url.pathname.startsWith('/assets/') ||
+    url.pathname.startsWith('/fonts/')
+
+  // API, auth, camera snapshots, and uploaded evidence are intentionally
+  // not intercepted, so the browser can never persist them in this cache.
+  if (!isStaticAsset) return
+
+  event.respondWith(cacheFirstStatic(request))
 })
 
-async function networkFirst(request) {
+async function fetchShell(request) {
   try {
-    const networkResponse = await fetch(request)
-    if (networkResponse.ok) {
-      const cache = await caches.open(CACHE_NAME)
-      cache.put(request, networkResponse.clone())
-    }
-    return networkResponse
+    return await fetch(request)
   } catch {
-    const cached = await caches.match(request)
-    return cached || new Response(JSON.stringify({ error: 'Offline' }), {
-      headers: { 'Content-Type': 'application/json' }, status: 503
-    })
+    return (await caches.match('/index.html')) ||
+      new Response('Offline', { status: 503 })
   }
 }
 
-async function cacheFirst(request) {
+async function cacheFirstStatic(request) {
   const cached = await caches.match(request)
   if (cached) return cached
+
   try {
     const networkResponse = await fetch(request)
     if (networkResponse.ok) {
       const cache = await caches.open(CACHE_NAME)
-      cache.put(request, networkResponse.clone())
+      await cache.put(request, networkResponse.clone())
     }
     return networkResponse
   } catch {
-    // Return the app shell for navigation requests (SPA fallback)
-    if (request.mode === 'navigate') {
-      return caches.match('/') || caches.match('/index.html')
-    }
     return new Response('Offline', { status: 503 })
   }
 }
