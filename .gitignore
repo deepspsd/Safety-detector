@@ -71,3 +71,5 @@ bakery_cv_plan.md
 training/
 fine_tuning_guide.md
 banglefir_main.zip
+backend\safety.db-shm
+backend\safety.db-wal
