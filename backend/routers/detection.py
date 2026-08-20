@@ -40,6 +40,26 @@ _last_alert_time:       dict = {}
 _last_phone_alert_time: dict = {}   # separate cooldown for phone alerts
 
 
+def _fire_attendance(face_result: dict, camera_id) -> None:
+    """
+    Given a face_service result dict, clock-in every positively identified employee.
+    handle_face_match deduplicates within the same calendar day automatically.
+    """
+    recognized = face_result.get("recognized_employees", {})
+    if not recognized:
+        return
+    try:
+        from services.attendance_service import handle_face_match
+        for emp_id, conf in recognized.items():
+            handle_face_match(
+                camera_id   = camera_id,
+                employee_id = emp_id,
+                confidence  = conf,
+            )
+    except Exception as exc:
+        print(f"[Attendance] _fire_attendance error: {exc}")
+
+
 async def _get_user(token: str, db: Session) -> User | None:
     payload = decode_token(token)
     if not payload:
@@ -176,6 +196,10 @@ async def detection_websocket(websocket: WebSocket):
                         ]
                         violations_count = 1 if not result.get("is_compliant") else 0
                         persons_count    = len(result.get("faces", []))
+
+                        # ── Attendance: clock-in any recognized employee ──
+                        _fire_attendance(result, camera_id=None)
+
                     else:
                         inference_fn = partial(
                             yolo_service.process_frame,
@@ -196,6 +220,17 @@ async def detection_websocket(websocket: WebSocket):
                             print(f"[YOLO] Frame#{frame_num} det={det_labels} "
                                   f"missing={missing} filters_used={det_filters} "
                                   f"compliant={result.get('is_compliant')}")
+
+                        # ── Attendance: also run face recognition for non-Home roles ──
+                        # Runs every 15 frames to avoid overloading CPU (doesn't affect PPE)
+                        if frame_num % 15 == 1:
+                            try:
+                                face_result_attn = face_service.process_face_frame(
+                                    b64_frame, user.id, db
+                                )
+                                _fire_attendance(face_result_attn, camera_id=None)
+                            except Exception:
+                                pass   # never let attendance failure break PPE flow
 
                      # ── Build response ──────────────────────────────
                     response = {

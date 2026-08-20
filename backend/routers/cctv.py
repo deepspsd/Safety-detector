@@ -459,9 +459,10 @@ def _run_combined_inference(
     merged["alert_message"]   = alert_message if not is_compliant else None
     merged["severity"]        = severity if not is_compliant else None
     merged["face_result"]     = {
-        "faces":            face_result.get("faces", []),
-        "unknown_detected": face_unknown,
-        "face_count":       len(face_result.get("faces", [])),
+        "faces":                face_result.get("faces", []),
+        "unknown_detected":     face_unknown,
+        "face_count":           len(face_result.get("faces", [])),
+        "recognized_employees": face_result.get("recognized_employees", {}),
     } if enable_face else None
     merged["source"] = "cctv"
     return merged
@@ -815,6 +816,21 @@ async def cctv_detection_websocket(websocket: WebSocket):
                                 snapshot_b64=result.get("snapshot_b64"),
                             )
                             response["face_alert_saved"] = True
+
+                    # ── Attendance auto clock-in on face match ─────────────
+                    # Fires for ANY camera that recognizes a registered employee.
+                    # handle_face_match already deduplicates within the same day.
+                    face_res = result.get("face_result") or {}
+                    recognized = face_res.get("recognized_employees", {})
+                    if recognized and ef:
+                        from services.attendance_service import handle_face_match as _attn_hook
+                        _cam_id_for_attn = managed_camera_id  # None in legacy mode
+                        for _emp_id, _conf in recognized.items():
+                            _attn_hook(
+                                camera_id   = _cam_id_for_attn,
+                                employee_id = _emp_id,
+                                confidence  = _conf,
+                            )
 
                     await websocket.send_json(response)
                     last_sent = time.time()

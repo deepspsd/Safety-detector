@@ -98,6 +98,22 @@ def load_known_encodings(user_id: int, db) -> Tuple[List[np.ndarray], List[str]]
     return encs, labels
 
 
+def _lookup_employee_id(label: str, db) -> Optional[int]:
+    """
+    Given a recognized face label (name), look up the matching Employee.id.
+    Returns None if no active employee with that name exists.
+    """
+    try:
+        from database import Employee
+        emp = db.query(Employee).filter(
+            Employee.name == label,
+            Employee.active == True,  # noqa: E712
+        ).first()
+        return emp.id if emp else None
+    except Exception:
+        return None
+
+
 # ── Registration ───────────────────────────────────────────────────────────────
 
 def encode_face_from_image(b64_image: str) -> Optional[Dict]:
@@ -171,6 +187,7 @@ def _run_detection(rgb_frame: np.ndarray, user_id: int, db) -> Dict:
     - Only alerts when a KNOWN database exists AND a face doesn't match any entry
     - Uses multi-shot voting: each stored encoding votes, majority label wins
     - Filters out tiny faces to avoid false detections
+    - Returns employee_id alongside label for attendance hook
     """
     known_encs, known_labels = load_known_encodings(user_id, db)
     has_registered = len(known_encs) > 0
@@ -187,6 +204,8 @@ def _run_detection(rgb_frame: np.ndarray, user_id: int, db) -> Dict:
 
     faces: List[Dict] = []
     unknown_detected  = False
+    # Track recognized employees for attendance hook: {employee_id: confidence}
+    recognized_employees: Dict[int, float] = {}
 
     for enc, (top, right, bottom, left) in zip(encs, locs):
         face_height = bottom - top
@@ -196,9 +215,10 @@ def _run_detection(rgb_frame: np.ndarray, user_id: int, db) -> Dict:
             log.debug(f"[Face] Skipping small face h={face_height}px < {MIN_FACE_PX}")
             continue
 
-        label      = "Unknown"
-        confidence = 0.0
-        is_unknown = True
+        label       = "Unknown"
+        confidence  = 0.0
+        is_unknown  = True
+        employee_id = None
 
         if has_registered:
             # Compute distances to ALL stored encodings
@@ -220,7 +240,13 @@ def _run_detection(rgb_frame: np.ndarray, user_id: int, db) -> Dict:
             if best_dist <= RECOGNITION_TOLERANCE:
                 label      = best_label
                 is_unknown = False
-                log.debug(f"[Face] Matched '{label}' dist={best_dist:.3f} conf={confidence:.0%}")
+                # Look up employee_id so attendance can be updated
+                employee_id = _lookup_employee_id(label, db)
+                if employee_id is not None:
+                    # Keep best confidence for each employee seen this frame
+                    if employee_id not in recognized_employees or confidence > recognized_employees[employee_id]:
+                        recognized_employees[employee_id] = confidence
+                log.debug(f"[Face] Matched '{label}' emp={employee_id} dist={best_dist:.3f} conf={confidence:.0%}")
             else:
                 # Distance exceeds tolerance → UNKNOWN person
                 unknown_detected = True
@@ -232,24 +258,26 @@ def _run_detection(rgb_frame: np.ndarray, user_id: int, db) -> Dict:
             # unknown_detected stays False — no alert until registration is done
 
         faces.append({
-            "label":      label,
-            "confidence": confidence,
-            "bbox":       [left, top, right, bottom],
-            "is_unknown": is_unknown,
+            "label":       label,
+            "confidence":  confidence,
+            "bbox":        [left, top, right, bottom],
+            "is_unknown":  is_unknown,
+            "employee_id": employee_id,
         })
 
     bgr = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
     ann = _draw_faces(bgr, faces, unknown_detected, has_registered)
 
     return {
-        "faces":            faces,
-        "face_count":       len(faces),
-        "unknown_detected": unknown_detected,
-        "is_compliant":     not unknown_detected,
-        "alert_message":    "⚠️ Unknown person detected!" if unknown_detected else None,
-        "severity":         "critical" if unknown_detected else None,
-        "annotated_frame":  _encode_jpg(ann),
-        "snapshot_b64":     _encode_jpg(bgr) if unknown_detected else None,
+        "faces":                 faces,
+        "face_count":            len(faces),
+        "unknown_detected":      unknown_detected,
+        "is_compliant":          not unknown_detected,
+        "alert_message":         "⚠️ Unknown person detected!" if unknown_detected else None,
+        "severity":              "critical" if unknown_detected else None,
+        "annotated_frame":       _encode_jpg(ann),
+        "snapshot_b64":          _encode_jpg(bgr) if unknown_detected else None,
+        "recognized_employees":  recognized_employees,   # {employee_id: confidence}
     }
 
 

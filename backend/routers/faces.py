@@ -63,12 +63,19 @@ def register_face(
         db.commit()
         db.refresh(face_record)
 
-    employee = Employee(
-        name=face_record.label,
-        face_encoding_id=face_record.id,
-        active=True,
-    )
-    db.add(employee)
+    # Upsert employee: reuse existing record if one with this label exists,
+    # otherwise create fresh. Prevents duplicate inactive + active employee rows.
+    employee = db.query(Employee).filter(Employee.name == face_record.label).first()
+    if employee:
+        employee.face_encoding_id = face_record.id
+        employee.active = True
+    else:
+        employee = Employee(
+            name=face_record.label,
+            face_encoding_id=face_record.id,
+            active=True,
+        )
+        db.add(employee)
     db.commit()
     db.refresh(employee)
 
@@ -137,8 +144,7 @@ def delete_face(
     if not face:
         raise HTTPException(status_code=404, detail="Face not found")
     for employee in face.employees:
-        employee.active = False
-        employee.face_encoding_id = None
+        db.delete(employee)
     db.delete(face)
     db.commit()
     return {"message": "Face deleted"}
