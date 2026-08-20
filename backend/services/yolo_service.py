@@ -1107,6 +1107,38 @@ def _run_pipeline(frame: np.ndarray, role: str,
 
     print(f"[PIPELINE] role={role} | sim={_use_simulation} | ded_helmet={_helmet_model_dedicated} | filters={detection_filters}")
 
+    # ── Camera Blockage / Tampering Check ────────────────────────────────
+    if frame is not None and frame.size > 0:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        mean, stddev = cv2.meanStdDev(gray)
+        # stddev < 5 means almost no variation (e.g. covered by hand, totally dark)
+        if stddev[0][0] < 5.0:
+            msg = "⚠️ Camera Blocked or Covered!"
+            if mean[0][0] < 15.0:
+                msg = "⚠️ Camera Signal Lost (Completely Black)!"
+            
+            ann_frame = frame.copy()
+            cv2.rectangle(ann_frame, (0, 0), (ann_frame.shape[1], 80), (0, 0, 200), -1)
+            cv2.putText(ann_frame, msg, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            
+            return {
+                "persons":          [],
+                "violations":       [],
+                "detections":       [],
+                "is_compliant":     False,
+                "missing_items":    ["Camera Tampering"],
+                "violations_count": 1,
+                "persons_count":    0,
+                "alert_message":    msg,
+                "severity":         "critical",
+                "annotated_frame":  _encode_jpg(ann_frame),
+                "snapshot_b64":     _encode_jpg(frame),
+                "phone_status":     "safe",
+                "phone_detected":   False,
+                "model_mode":       "tamper_detection",
+                "phone_severity":   "low",
+            }
+
     # ── Traffic Police: use dedicated helmet pipeline ─────────────────
     if role == "Traffic Police":
         if _helmet_model_dedicated:

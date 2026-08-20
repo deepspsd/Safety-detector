@@ -55,7 +55,6 @@ def clock_in(
             .filter(
                 AttendanceRecord.employee_id == employee_id,
                 AttendanceRecord.clock_in    >= today_start,
-                AttendanceRecord.clock_out   == None,         # noqa: E711
             )
             .first()
         )
@@ -197,10 +196,10 @@ def handle_face_match(
 ) -> None:
     """
     Auto-clock-in when face-recognition positively identifies an employee.
-    Only fires if confidence >= 0.72 to avoid low-quality false matches.
-    Uses its own short-lived DB session (background thread safe).
+    The face service RECOGNITION_TOLERANCE is 0.42 (which means minimum confidence is 0.58).
+    We use 0.58 here to perfectly match the face service's match threshold.
     """
-    if confidence < 0.72:
+    if confidence < 0.58:
         return
 
     from database import SessionLocal
