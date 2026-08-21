@@ -888,7 +888,7 @@ def _fire_shop_absence_alert(camera_id: int, empty_for: float, db) -> None:
         log.error(f"[rule_engine] shop-absence alert save failed: {exc}")
 
 # -----------------------------------------------------------------------------
-# SECTION G ó Camera Blocking Detection (REQ-041)
+# SECTION G ÔøΩ Camera Blocking Detection (REQ-041)
 # -----------------------------------------------------------------------------
 _camera_blocking_state: Dict[int, dict] = {}
 _camera_blocking_lock = threading.Lock()
@@ -935,7 +935,7 @@ def check_camera_blocking(camera_id: int, frame_shape: Tuple[int, int, int], per
                     db=db,
                     user_id=_get_rule_engine_user_id(db),
                     message=(
-                        f"?? Camera {camera_id} is blocked by a person "
+                        f" Camera {camera_id} is blocked by a person "
                         f"standing too close for over {limit} seconds."
                     ),
                     role="Safety Monitor",
@@ -949,7 +949,7 @@ def check_camera_blocking(camera_id: int, frame_shape: Tuple[int, int, int], per
 
 
 # -----------------------------------------------------------------------------
-# SECTION H ó Stock Zone Monitor (REQ-011, REQ-014)
+# SECTION H ÔøΩ Stock Zone Monitor (REQ-011, REQ-014)
 # -----------------------------------------------------------------------------
 def check_stock_zone(camera_id: int, floor: str, raw_detections: List[dict], zones: dict, db) -> None:
     if not zones: return
@@ -971,7 +971,7 @@ def check_stock_zone(camera_id: int, floor: str, raw_detections: List[dict], zon
                     save_alert(
                         db=db,
                         user_id=_get_rule_engine_user_id(db),
-                        message=f"?? Stock left openly in {zone_name} zone on camera {camera_id}.",
+                        message=f"‚ö†Ô∏è Stock left openly in {zone_name} zone on camera {camera_id}.",
                         role="Factory Worker",
                         severity="high",
                         detected_issue="Stock Kept Openly",
@@ -986,7 +986,7 @@ def check_stock_zone(camera_id: int, floor: str, raw_detections: List[dict], zon
 
 
 # -----------------------------------------------------------------------------
-# SECTION I ó Machinery Zone Monitor (REQ-022, REQ-023)
+# SECTION I ‚Äî Machinery Zone Monitor (REQ-022, REQ-023)
 # -----------------------------------------------------------------------------
 _machinery_idle_state: Dict[int, dict] = {}
 _machinery_idle_lock = threading.Lock()
@@ -1026,7 +1026,7 @@ def check_machinery_zone(camera_id: int, floor: str, raw_detections: List[dict],
                         save_alert(
                             db=db,
                             user_id=_get_rule_engine_user_id(db),
-                            message=f"?? Machinery in {zone_name} zone is unattended (no person present).",
+                            message=f" Machinery in {zone_name} zone is unattended (no person present).",
                             role="Factory Worker",
                             severity="high",
                             detected_issue="Machine unattended",
@@ -1040,7 +1040,7 @@ def check_machinery_zone(camera_id: int, floor: str, raw_detections: List[dict],
 
 
 # -----------------------------------------------------------------------------
-# SECTION J ó Vendor Payment Snapshot (REQ-044)
+# SECTION J ÔøΩ Vendor Payment Snapshot (REQ-044)
 # -----------------------------------------------------------------------------
 _vendor_snapshot_state: Dict[int, float] = {}
 _vendor_snapshot_lock = threading.Lock()

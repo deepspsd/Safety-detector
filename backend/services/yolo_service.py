@@ -1556,26 +1556,45 @@ def process_frame_numpy_tracked(
         no_phone_zone=no_phone_zone,
         camera_id=camera_id,
     )
- 
-def run_ocr_gate_for_camera(frame, raw_dets, zone_config, db_session, camera_id, direction="inward") -> None:
-    \"\"\"
+
+
+# =============================================================================
+# OCR gate — called directly from camera_manager._detection_loop (REQ-001/004)
+# =============================================================================
+
+def run_ocr_gate_for_camera(
+    frame,
+    raw_dets: list,
+    zone_config: dict,
+    db_session,
+    camera_id: int,
+    direction: str = "inward",
+) -> None:
+    """
     Standalone OCR gate called by camera_manager._detection_loop.
-    \"\"\"
+
+    Checks whether any 'Document-in-hand' (class 13) detection is inside the
+    configured 'entrance' zone polygon, then runs OCR and either:
+      - Saves an InvoiceLog (inward) or OrderFormLog (outward) on approval.
+      - Fires a high-severity REVIEW alert if the document doesn't match.
+
+    No hardware gate is connected — compliance log only.
+    """
     doc_dets = [d for d in raw_dets if d.get("label") == "Document-in-hand"]
     if not doc_dets or not zone_config:
         return
-        
+
     entrance_poly = zone_config.get("entrance")
     from services import zone_service as _zs
-    
+
     for doc in doc_dets:
         cx = (doc["bbox"][0] + doc["bbox"][2]) / 2
         cy = (doc["bbox"][1] + doc["bbox"][3]) / 2
-        
-        in_zone = (entrance_poly is None or _zs.point_in_zone(cx, cy, entrance_poly))
+
+        in_zone = entrance_poly is None or _zs.point_in_zone(cx, cy, entrance_poly)
         if not in_zone:
             continue
-            
+
         try:
             from services import ocr_service as _ocr
             ocr_result = _ocr.scan_document_in_frame(
@@ -1586,79 +1605,74 @@ def run_ocr_gate_for_camera(frame, raw_dets, zone_config, db_session, camera_id,
         except Exception as oe:
             log.error(f"[OCR] scan_document_in_frame error: {oe}")
             continue
-            
+
         log.info(
             f"[OCR] direction={ocr_result['direction']} "
             f"approved={ocr_result['approved']} "
             f"raw_text={ocr_result['raw_text'][:80]!r}"
         )
-        
-        if db_session is not None:
-            if ocr_result["approved"]:
-                try:
-                    from database import InvoiceLog, OrderFormLog
-                    import datetime as dt
-                    ts_str = ocr_result.get("timestamp", "")
-                    try:
-                        ts = dt.datetime.fromisoformat(ts_str.rstrip("Z"))
-                    except Exception:
-                        ts = dt.datetime.utcnow()
-                        
-                    if ocr_result["direction"] == "inward":
-                        log_row = InvoiceLog(
-                            camera_id=camera_id,
-                            direction="inward",
-                            raw_ocr_text=ocr_result["raw_text"],
-                            approved=True,
-                            snapshot_b64=ocr_result.get("snapshot_b64"),
-                            ocr_available=ocr_result.get("ocr_available", True),
-                            timestamp=ts,
-                        )
-                    else:
-                        log_row = OrderFormLog(
-                            camera_id=camera_id,
-                            direction="outward",
-                            raw_ocr_text=ocr_result["raw_text"],
-                            approved=True,
-                            snapshot_b64=ocr_result.get("snapshot_b64"),
-                            ocr_available=ocr_result.get("ocr_available", True),
-                            timestamp=ts,
-                        )
-                    db_session.add(log_row)
-                    db_session.commit()
-                    log.info(f"[OCR] Log saved for {ocr_result['direction']}")
-                except Exception as dbe:
-                    log.error(f"[OCR] DB save error: {dbe}")
-            else:
-                try:
-                    from services.alert_service import save_alert
-                    from database import get_rule_engine_user_id
-                    
-                    ocr_msg = (
-                        f"[REVIEW � OCR GATE] "
-                        f"{'Inward' if ocr_result['direction'] == 'inward' else 'Outward'} "
-                        f"document at entrance did NOT match expected pattern. "
-                        f"Raw OCR: {ocr_result['raw_text'][:120]!r}. "
-                        f"ACTION REQUIRED: verify document manually."
-                    )
-                    
-                    # Try to get rule engine user, fallback to 0
-                    try:
-                        uid = get_rule_engine_user_id(db_session)
-                    except:
-                        uid = 0
-                        
-                    save_alert(
-                        db=db_session,
-                        user_id=uid,
-                        message=ocr_msg,
-                        role="Factory Worker",
-                        severity="high",
-                        detected_issue="Invalid/unrecognised document at entrance",
-                        confidence=None,
-                        snapshot_b64=ocr_result.get("snapshot_b64"),
-                        camera_id=camera_id,
-                    )
-                except Exception as ae:
-                    log.error(f"[OCR] Alert save error: {ae}")
 
+        if db_session is None:
+            continue
+
+        if ocr_result["approved"]:
+            try:
+                import datetime as _dt
+                from database import InvoiceLog, OrderFormLog
+                ts_str = ocr_result.get("timestamp", "")
+                try:
+                    ts = _dt.datetime.fromisoformat(ts_str.rstrip("Z"))
+                except Exception:
+                    ts = _dt.datetime.utcnow()
+
+                if ocr_result["direction"] == "inward":
+                    log_row = InvoiceLog(
+                        camera_id=camera_id,
+                        direction="inward",
+                        raw_ocr_text=ocr_result["raw_text"],
+                        approved=True,
+                        snapshot_b64=ocr_result.get("snapshot_b64"),
+                        ocr_available=ocr_result.get("ocr_available", True),
+                        timestamp=ts,
+                    )
+                else:
+                    log_row = OrderFormLog(
+                        camera_id=camera_id,
+                        direction="outward",
+                        raw_ocr_text=ocr_result["raw_text"],
+                        approved=True,
+                        snapshot_b64=ocr_result.get("snapshot_b64"),
+                        ocr_available=ocr_result.get("ocr_available", True),
+                        timestamp=ts,
+                    )
+                db_session.add(log_row)
+                db_session.commit()
+                log.info(f"[OCR] {'InvoiceLog' if ocr_result['direction'] == 'inward' else 'OrderFormLog'} saved cam={camera_id}")
+            except Exception as dbe:
+                log.error(f"[OCR] DB save error: {dbe}")
+        else:
+            try:
+                from services.alert_service import save_alert
+                from services.rule_engine import _get_rule_engine_user_id
+                uid = _get_rule_engine_user_id(db_session)
+                ocr_msg = (
+                    f"[REVIEW - OCR GATE] "
+                    f"{'Inward' if ocr_result['direction'] == 'inward' else 'Outward'} "
+                    f"document at entrance did NOT match expected pattern. "
+                    f"Raw OCR: {ocr_result['raw_text'][:120]!r}. "
+                    f"ACTION REQUIRED: verify document manually. "
+                    f"No hardware gate connected - compliance check only."
+                )
+                save_alert(
+                    db=db_session,
+                    user_id=uid,
+                    message=ocr_msg,
+                    role="Factory Worker",
+                    severity="high",
+                    detected_issue="Invalid/unrecognised document at entrance",
+                    confidence=None,
+                    snapshot_b64=ocr_result.get("snapshot_b64"),
+                    camera_id=camera_id,
+                )
+            except Exception as ae:
+                log.error(f"[OCR] Alert save error: {ae}")
