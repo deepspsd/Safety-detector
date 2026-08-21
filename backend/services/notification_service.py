@@ -1,41 +1,36 @@
 """
-notification_service.py — Telegram Bot alert dispatch
-======================================================
-Sends "confirmed" factory alerts to a Telegram group chat so the
-client's staff are notified immediately on their phones.
+notification_service.py — Mobile push alert dispatch
+=====================================================
+Sends "confirmed" factory alerts to the client's phones via two channels:
 
-Setup (5 minutes, completely free)
-───────────────────────────────────
-  1. Open Telegram → search @BotFather → send /newbot
-  2. Follow the prompts → BotFather gives you an API token.
-  3. Add the bot to your group chat (the one your workers/admins are in).
-  4. Send any message in the group so the bot has a chat to post to.
-  5. Fetch the chat_id:
-       GET https://api.telegram.org/bot<token>/getUpdates
-     Look for "chat":{"id": -100xxxxxxxxx} in the response.
-  6. Add to your .env file:
-       TELEGRAM_BOT_TOKEN=123456:ABCdefGHIjklMNOpqrsTUVwxyz
-       TELEGRAM_CHAT_ID=-100123456789   # negative for group chats
-  7. Restart the server.  Test with:
-       POST /alerts/test-telegram    (admin only)
+  1. ntfy.sh (PRIMARY — recommended)
+     ─────────────────────────────────
+     Free, open-source, native push notifications for Android + iOS.
+     No account needed.  No vendor lock-in.  Works self-hosted.
+
+     Setup (60 seconds):
+       a. Install ntfy app on phone:
+            Android: https://play.google.com/store/apps/details?id=io.heckel.ntfy
+            iOS:     https://apps.apple.com/app/ntfy/id1625396347
+       b. Open app → tap "+" → type a unique topic name (e.g. "bakery-alerts-x7k2").
+       c. Add to .env:
+            NTFY_TOPIC=bakery-alerts-x7k2
+       d. Restart server — done.  All confirmed alerts go to the phone immediately.
+
+       Self-hosted (unlimited, no data leaves your server):
+         Run: docker run -p 80:80 binwiederhier/ntfy serve
+         Then: NTFY_SERVER=http://your-server-ip
+
+  2. Telegram (FALLBACK — kept for compatibility)
+     ─────────────────────────────────────────────
+     Setup: @BotFather → /newbot → add to group → set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID.
 
 Behaviour
-─────────
-  • Only "confirmed" alerts are sent to Telegram.
-  • "pending_review" alerts stay in-app only until an admin confirms them
-    via PATCH /alerts/{id}/confirm — that endpoint calls
-    send_telegram_alert() after promoting the status.
-  • If TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is empty, notifications are
-    silently disabled — no exception, no traceback, just a log.info().
-    This means the server works out of the box without any Telegram setup.
-  • Snapshot is sent as a photo (sendPhoto) if available; otherwise plain
-    text (sendMessage).
-  • httpx is used synchronously from a background thread (camera daemon).
-    If called from an async context, wrap in asyncio.to_thread().
-
-No paid API, no cloud service, no vendor lock-in.
-All that leaves the server is the alert text + snapshot JPEG.
-No raw video is ever transmitted to Telegram.
+ ─────────
+  • send_push_alert() tries ntfy first, Telegram second.  Use this function everywhere.
+  • Only "confirmed" alerts are sent.  "pending_review" stays in-app only.
+  • If neither channel is configured, notifications are silently skipped.
+  • No raw video is ever transmitted.  Only alert text + snapshot JPEG.
 """
 
 from __future__ import annotations
@@ -65,10 +60,20 @@ _TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 _TIMEOUT = 10.0
 
 
-def _is_configured() -> bool:
-    """Return True only if both token and chat_id are set in config."""
+def _is_telegram_configured() -> bool:
+    """Return True only if Telegram token and chat_id are set in config."""
     from config import settings
     return bool(settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID)
+
+
+# Keep the old name as an alias so existing callers still work.
+_is_configured = _is_telegram_configured
+
+
+def _is_ntfy_configured() -> bool:
+    """Return True only if ntfy topic is set in config."""
+    from config import settings
+    return bool(settings.NTFY_TOPIC)
 
 
 def _build_caption(
@@ -235,3 +240,131 @@ def _send_message(token: str, chat_id: str, text: str) -> bool:
     except httpx.RequestError as exc:
         log.warning(f"[notification_service] Telegram network error: {exc}")
         return False
+def send_ntfy_alert(
+    message: str,
+    severity: str = "medium",
+    floor: Optional[str] = None,
+    camera_name: Optional[str] = None,
+    detected_issue: Optional[str] = None,
+) -> bool:
+    """
+    Send a push notification via ntfy.sh (or self-hosted ntfy server).
+
+    ntfy delivers native Android/iOS push notifications with no account
+    needed.  The client subscribes to a topic in the ntfy app.
+
+    Parameters
+    ----------
+    message        : Main alert text.
+    severity       : low / medium / high / critical (maps to ntfy priority)
+    floor          : ground / first / second / shop (optional context)
+    camera_name    : Display name of the camera that fired the alert.
+    detected_issue : Short issue label e.g. "Packing zone idle".
+
+    Returns True on success, False on failure.  Never raises.
+    """
+    if not _HTTPX_AVAILABLE:
+        log.debug("[notification_service] httpx missing — skipping ntfy send")
+        return False
+
+    if not _is_ntfy_configured():
+        log.debug("[notification_service] ntfy not configured — skipping send")
+        return False
+
+    from config import settings
+
+    # ntfy priority: 1=min, 2=low, 3=default, 4=high, 5=max
+    ntfy_priority = {
+        "low":      "2",
+        "medium":   "3",
+        "high":     "4",
+        "critical": "5",
+    }.get(severity, "3")
+
+    severity_emoji = {
+        "low":      "🟡",
+        "medium":   "🟠",
+        "high":     "🔴",
+        "critical": "🚨",
+    }.get(severity, "⚠️")
+
+    # Build title and body
+    title_parts = [f"{severity_emoji} {severity.upper()} ALERT"]
+    if detected_issue:
+        title_parts.append(f"— {detected_issue}")
+    title = " ".join(title_parts)
+
+    body_parts = [message]
+    if floor:
+        body_parts.append(f"Floor: {floor.capitalize()}")
+    if camera_name:
+        body_parts.append(f"Camera: {camera_name}")
+    body = "\n".join(body_parts)
+
+    url = f"{settings.NTFY_SERVER.rstrip('/')}/{settings.NTFY_TOPIC}"
+
+    try:
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            resp = client.post(
+                url,
+                data=body.encode("utf-8"),
+                headers={
+                    "Title":    title,
+                    "Priority": ntfy_priority,
+                    "Tags":     "warning,factory",
+                },
+            )
+        if resp.status_code in (200, 201):
+            log.info(
+                f"[notification_service] ntfy push sent — topic={settings.NTFY_TOPIC} "
+                f"priority={ntfy_priority}"
+            )
+            return True
+        else:
+            log.warning(
+                f"[notification_service] ntfy send failed "
+                f"({resp.status_code}): {resp.text[:200]}"
+            )
+            return False
+    except httpx.TimeoutException:
+        log.warning("[notification_service] ntfy send timed out")
+        return False
+    except httpx.RequestError as exc:
+        log.warning(f"[notification_service] ntfy network error: {exc}")
+        return False
+
+
+def send_push_alert(
+    message: str,
+    severity: str = "medium",
+    floor: Optional[str] = None,
+    camera_name: Optional[str] = None,
+    detected_issue: Optional[str] = None,
+    snapshot_b64: Optional[str] = None,
+) -> bool:
+    """
+    Convenience wrapper that dispatches to the best available push channel.
+
+    Priority:
+      1. ntfy.sh  — if NTFY_TOPIC is configured.
+      2. Telegram — if TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID are configured.
+      3. No-op    — logs a debug message and returns False.
+
+    Use this function in all new code instead of calling send_telegram_alert()
+    or send_ntfy_alert() directly.
+    """
+    if _is_ntfy_configured():
+        return send_ntfy_alert(
+            message=message, severity=severity, floor=floor,
+            camera_name=camera_name, detected_issue=detected_issue,
+        )
+
+    if _is_telegram_configured():
+        return send_telegram_alert(
+            message=message, severity=severity, floor=floor,
+            camera_name=camera_name, detected_issue=detected_issue,
+            snapshot_b64=snapshot_b64,
+        )
+
+    log.debug("[notification_service] No push channel configured — alert is in-app only")
+    return False

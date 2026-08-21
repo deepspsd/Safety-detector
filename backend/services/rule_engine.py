@@ -50,11 +50,15 @@ import os
 import threading
 import time
 from typing import Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import cv2
 import numpy as np
 
 log = logging.getLogger("rule_engine")
+
+# IST timezone — all shift-time comparisons use this, never bare datetime.now()
+_IST = ZoneInfo("Asia/Kolkata")
 
 # ── System user that receives rule-engine alerts ─────────────────────────────
 # user_id=1 = first admin registered. Change via env RULE_ENGINE_USER_ID.
@@ -217,34 +221,29 @@ def record_person_seen(floor: str) -> None:
     """
     with _shift_lock:
         if floor not in _shift_first_seen:
-            _shift_first_seen[floor] = datetime.datetime.now()
+            # Record the first-seen time in IST-aware datetime for correct comparison
+            _shift_first_seen[floor] = datetime.datetime.now(_IST)
 
 
 def check_shift_start(camera_id: int, floor: str, db) -> None:
     """
     Once per floor per calendar day: verify that at least one person was
-    detected on this floor BEFORE the configured shift_start time.
+    detected on this floor BEFORE the configured shift_start time (IST).
 
-    If no person was seen by shift_start + a 5-minute grace window, fire a
-    "Late shift start" alert with severity=high.
+    Two checks are made:
+      1. Pre-shift warning: fires 5 minutes BEFORE shift_start if no one seen yet.
+      2. Post-shift alert: fires 5 minutes AFTER shift_start if still no one seen.
 
+    Both use IST so 08:00 IST shift correctly matches client wall-clock time.
     Call this from camera_manager._detection_loop() near the start of each tick.
-    The check is a no-op on every tick except the first tick after shift_start
-    on a new day for each floor.
     """
     if floor not in _FLOOR_SETTING_KEY:
         return  # unknown floor — skip
 
-    now = datetime.datetime.now()
-    today = now.date()
+    now_ist = datetime.datetime.now(_IST)
+    today   = now_ist.date()
 
-    with _shift_lock:
-        last_checked = _shift_checked.get(floor)
-        if last_checked == today:
-            return  # already checked today for this floor
-
-    # Only run the check after shift_start time (don't spam at 2 AM)
-    setting_key    = _FLOOR_SETTING_KEY[floor]
+    setting_key     = _FLOOR_SETTING_KEY[floor]
     shift_start_str = get_setting(setting_key, db) or SETTING_DEFAULTS[setting_key][0]
     try:
         h, m = map(int, shift_start_str.split(":"))
@@ -253,41 +252,78 @@ def check_shift_start(camera_id: int, floor: str, db) -> None:
         log.error(f"[rule_engine] Invalid shift_start format for {floor!r}: {shift_start_str!r}")
         return
 
-    # 5-minute grace window before we fire the alert
+    shift_dt  = datetime.datetime.combine(today, shift_start_time, tzinfo=_IST)
+
+    # ── Pre-shift warning: 5 minutes BEFORE shift start ──────────────────────────────
+    pre_warn_key = f"_pre_warned_{floor}"
+    warn_at  = shift_dt - datetime.timedelta(minutes=5)
+    warn_end = shift_dt  # stop warning once shift actually started
+
+    if warn_at <= now_ist < warn_end:
+        with _shift_lock:
+            already_warned = _shift_checked.get(pre_warn_key)
+            first_seen     = _shift_first_seen.get(floor)
+
+        if not already_warned and first_seen is None:
+            with _shift_lock:
+                _shift_checked[pre_warn_key] = today
+            from services.alert_service import save_alert
+            try:
+                save_alert(
+                    db=db,
+                    user_id=_get_rule_engine_user_id(db),
+                    message=(
+                        f"⏰ {floor.capitalize()} Floor shift starts in 5 minutes "
+                        f"({shift_start_str} IST) — no employee detected yet on camera {camera_id}."
+                    ),
+                    role="Factory Worker",
+                    severity="high",
+                    detected_issue="Pre-shift warning — no employee on floor",
+                    camera_id=camera_id,
+                    floor=floor,
+                )
+                log.warning(
+                    f"[rule_engine] Pre-shift warning fired — floor={floor} shift={shift_start_str}"
+                )
+            except Exception as exc:
+                log.error(f"[rule_engine] pre-shift alert save failed: {exc}")
+
+    # ── Post-shift alert: 5 minutes AFTER shift start ──────────────────────────────
     grace_minutes = 5
-    shift_dt = datetime.datetime.combine(today, shift_start_time)
-    check_after = shift_dt + datetime.timedelta(minutes=grace_minutes)
+    check_after   = shift_dt + datetime.timedelta(minutes=grace_minutes)
 
-    if now < check_after:
-        return  # not yet time to check
+    if now_ist < check_after:
+        return  # not yet time for the post-shift check
 
-    # Mark as checked for today so we don't re-run
+    with _shift_lock:
+        last_checked = _shift_checked.get(floor)
+        if last_checked == today:
+            return  # already checked today for this floor
+
+    # Mark as checked for today so we don’t re-run
     with _shift_lock:
         _shift_checked[floor] = today
         first_seen = _shift_first_seen.get(floor)
 
-    # Determine if the floor was active on time
+    # Determine if the floor was active on time (IST comparison)
     was_on_time = (
         first_seen is not None
         and first_seen.date() == today
-        and first_seen.time() <= shift_start_time
+        and first_seen.timetz().replace(tzinfo=None) <= shift_start_time
     )
 
     if not was_on_time:
         from services.alert_service import save_alert
-        from database import SessionLocal
 
-        late_str = (
-            f"First activity at {first_seen.strftime('%H:%M')}"
-            if first_seen and first_seen.date() == today
-            else "No activity detected"
-        )
-        _db = None
+        if first_seen and first_seen.date() == today:
+            late_str = f"First activity at {first_seen.strftime('%H:%M IST')}"
+        else:
+            late_str = "No activity detected"
+
         try:
-            _db = db  # reuse caller's session if available
             save_alert(
-                db=_db,
-                user_id=_get_rule_engine_user_id(_db),
+                db=db,
+                user_id=_get_rule_engine_user_id(db),
                 message=(
                     f"⏰ Late shift start on {floor.capitalize()} Floor. "
                     f"Shift starts at {shift_start_str}. {late_str}."

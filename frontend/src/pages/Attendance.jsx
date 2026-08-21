@@ -8,11 +8,13 @@ import {
 
 // ── API helpers ────────────────────────────────────────────────────────────────
 const attendanceApi = {
-  stats:    ()              => api.get('/attendance/stats'),
-  list:     (params)        => api.get('/attendance/', { params }),
-  clockIn:  (data)          => api.post('/attendance/clock-in', data),
-  clockOut: (recordId)      => api.post(`/attendance/clock-out/${recordId}`),
-  export:   (date)          => api.get('/attendance/export', { params: date ? { date } : {}, responseType: 'blob' }),
+  stats:       ()         => api.get('/attendance/stats'),
+  list:        (params)   => api.get('/attendance/', { params }),
+  clockIn:     (data)     => api.post('/attendance/clock-in', data),
+  clockOut:    (recordId) => api.post(`/attendance/clock-out/${recordId}`),
+  clockOutAll: ()         => api.post('/attendance/clock-out-all'),
+  importCsv:   (formData) => api.post('/attendance/employees/import', formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
+  export:      (date)     => api.get('/attendance/export', { params: date ? { date } : {}, responseType: 'blob' }),
 }
 
 // ── Stat card ──────────────────────────────────────────────────────────────────
@@ -154,11 +156,12 @@ function ClockInModal({ onClose, onSuccess }) {
 // ── Main page ──────────────────────────────────────────────────────────────────
 export default function Attendance() {
   const { addToast } = useToast()
-  const [stats,     setStats]     = useState(null)
-  const [records,   setRecords]   = useState([])
-  const [loading,   setLoading]   = useState(true)
-  const [showModal, setShowModal] = useState(false)
-  const [date,      setDate]      = useState(() => new Date().toISOString().slice(0, 10))
+  const [stats,         setStats]         = useState(null)
+  const [records,       setRecords]       = useState([])
+  const [loading,       setLoading]       = useState(true)
+  const [showModal,     setShowModal]     = useState(false)
+  const [clockingOutAll, setClockingOutAll] = useState(false)
+  const [date,          setDate]          = useState(() => new Date().toISOString().slice(0, 10))
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -200,6 +203,20 @@ export default function Attendance() {
     }
   }
 
+  const handleClockOutAll = async () => {
+    if (!window.confirm('End of Day: clock out ALL currently open sessions?\n\nThis will close every open attendance session right now.')) return
+    setClockingOutAll(true)
+    try {
+      const res = await attendanceApi.clockOutAll()
+      addToast('End of Day complete', `${res.data.closed} session(s) closed`, 'success')
+      load()
+    } catch {
+      addToast('Bulk clock-out failed', '', 'danger')
+    } finally {
+      setClockingOutAll(false)
+    }
+  }
+
   return (
     <div className="page-container">
       {/* Header */}
@@ -229,6 +246,16 @@ export default function Attendance() {
           </button>
           <button className="btn btn-ghost" style={{ gap: 6 }} onClick={handleExport}>
             <Download size={14} /> Export CSV
+          </button>
+          <button
+            className="btn btn-ghost"
+            style={{ gap: 6, color: '#f97316', borderColor: '#f9731640' }}
+            onClick={handleClockOutAll}
+            disabled={clockingOutAll}
+            title="Close all open attendance sessions (End of Day)"
+          >
+            <LogOut size={14} />
+            {clockingOutAll ? 'Closing…' : 'End of Day'}
           </button>
           <button className="btn btn-primary" style={{ gap: 6 }} onClick={() => setShowModal(true)}>
             <Plus size={14} /> Clock In

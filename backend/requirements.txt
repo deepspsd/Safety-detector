@@ -35,3 +35,5 @@ cryptography>=42.0.0
 # browser WebRTC delivery. Install them into backend/.venv before enabling.
 onvif-zeep>=0.2.12
 aiortc>=1.9.0
+# Windows requires tzdata for zoneinfo (Linux/macOS have system tz DB built-in)
+tzdata>=2024.1

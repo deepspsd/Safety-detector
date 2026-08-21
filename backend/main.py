@@ -1,6 +1,5 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import os
 
@@ -319,6 +318,60 @@ def startup():
     from services import camera_manager
     _started = camera_manager.start_all()
     print(f"✅ Camera manager: {_started} camera(s) started")
+
+    # ── Start shared YOLO inference pool ──────────────────────────────────
+    # One daemon thread runs YOLO for all cameras — no duplicate model loads.
+    try:
+        from services.inference_pool import inference_pool
+        inference_pool.start()
+        print("✅ Shared inference pool started (single YOLO model for all cameras)")
+    except Exception as _ie:
+        print(f"⚠️  Inference pool startup warning: {_ie}")
+
+    # ── Nightly auto clock-out scheduler (pure threading — no extra dependency) ──
+    # Runs at 19:00 IST (UTC+05:30 = 13:30 UTC) every day.
+    # Closes all open attendance sessions and sends a Telegram notification.
+    import threading
+    from zoneinfo import ZoneInfo
+    _IST = ZoneInfo("Asia/Kolkata")
+
+    def _auto_clockout_scheduler():
+        """Background daemon: sleep until 19:00 IST each day, then bulk-close."""
+        import datetime as _dt
+        from database import SessionLocal as _SessionLocal
+        from services.attendance_service import auto_clock_out_open_sessions as _aco
+        import logging as _logging
+        _log = _logging.getLogger("auto_clockout")
+        while True:
+            now_ist = _dt.datetime.now(tz=_IST)
+            target  = now_ist.replace(hour=19, minute=0, second=0, microsecond=0)
+            if now_ist >= target:
+                # Already past 19:00 today — sleep until 19:00 tomorrow
+                target += _dt.timedelta(days=1)
+            sleep_secs = (target - now_ist).total_seconds()
+            _log.info(f"[AutoClockOut] Next run in {sleep_secs/3600:.1f}h at {target.strftime('%Y-%m-%d %H:%M IST')}")
+            import time as _time
+            _time.sleep(max(sleep_secs, 1))
+            # Time to run
+            _db = None
+            try:
+                _db = _SessionLocal()
+                result = _aco(_db)
+                _log.info(f"[AutoClockOut] {result}")
+            except Exception as exc:
+                _log.error(f"[AutoClockOut] Failed: {exc}")
+            finally:
+                if _db:
+                    try: _db.close()
+                    except Exception: pass
+
+    _clockout_thread = threading.Thread(
+        target=_auto_clockout_scheduler,
+        name="auto-clockout-scheduler",
+        daemon=True,
+    )
+    _clockout_thread.start()
+    print("✅ Nightly auto clock-out scheduler started (19:00 IST)")
 
     print("✅ Safety Monitor API v4.0 started (factory monitoring schema)")
 

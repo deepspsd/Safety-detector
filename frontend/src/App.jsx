@@ -16,7 +16,6 @@ import SetupRules from './pages/SetupRules'
 import FloorOverview from './pages/FloorOverview'
 import Cameras from './pages/Cameras'
 import Employees from './pages/Employees'
-import TVDisplay from './pages/TVDisplay'
 import Attendance from './pages/Attendance'
 import Documents from './pages/Documents'
 import WorkflowMonitor from './pages/WorkflowMonitor'
@@ -72,9 +71,6 @@ function AppRoutes() {
       {/* ── Public ──────────────────────────────────────── */}
       <Route path="/login"  element={user ? <Navigate to="/floors/ground" /> : <Login  />} />
       <Route path="/signup" element={user ? <Navigate to="/floors/ground" /> : <Signup />} />
-
-      {/* TV display — public, no auth, no layout */}
-      <Route path="/tv" element={<TVDisplay />} />
 
       {/* ── Protected — default landing is /floors/ground ─ */}
       <Route path="/" element={<Navigate to={user ? '/floors/ground' : '/login'} replace />} />

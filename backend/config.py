@@ -54,6 +54,15 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str = ""   # set in .env — never commit this value
     TELEGRAM_CHAT_ID:   str = ""   # group chat id (negative number for group chats)
 
+    # ── ntfy.sh push notifications ──────────────────────────────────────────
+    # Free, open-source push notifications — works on Android + iOS via ntfy app.
+    # Self-hosted option: set NTFY_SERVER to your own ntfy instance URL.
+    # Cloud relay (ntfy.sh): free up to 250 messages/day, no signup needed.
+    # Setup: install ntfy app → add topic → set NTFY_TOPIC in .env → restart server.
+    # If NTFY_TOPIC is set, ntfy is used for push; Telegram used as fallback if also set.
+    NTFY_TOPIC:  str = ""                  # e.g. "bakery-safety-abc123" — set in .env
+    NTFY_SERVER: str = "https://ntfy.sh"  # change to your self-hosted URL if needed
+
 settings = Settings()
 
 # Ensure directories exist

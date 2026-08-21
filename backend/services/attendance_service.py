@@ -6,13 +6,31 @@ and hooks for the face-recognition pipeline to auto-fire clock-in.
 
 All DB access uses short-lived per-call sessions (same pattern
 as idle_service.py) to avoid session leaks in background threads.
+
+Timezone policy
+---------------
+All datetime objects stored in DB are naive UTC (datetime.utcnow()).
+All datetimes returned via the API include a trailing 'Z' so
+JavaScript correctly parses them as UTC and converts to the user's
+local timezone (IST = UTC+05:30) for display.
+
+Late-count comparison is done in IST so 08:30 IST is correctly
+recognised as on-time for an 08:00 IST shift, not the wrong UTC hour.
 """
 
 import datetime
 import logging
+from zoneinfo import ZoneInfo
 from typing import Optional, List, Dict
 
 log = logging.getLogger("attendance_service")
+
+# IST reference for all shift-time comparisons
+_IST = ZoneInfo("Asia/Kolkata")
+
+# Auto clock-out time (IST): configurable via SETTING_DEFAULTS
+_AUTO_CLOCKOUT_HOUR_IST = 19   # 7 PM IST — change via rule_engine setting
+_AUTO_CLOCKOUT_MIN_IST  = 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -45,16 +63,16 @@ def clock_in(
     """
     from database import AttendanceRecord
 
+    now_utc = datetime.datetime.utcnow()
+
     # Prevent duplicate open sessions for the same employee today
     if employee_id is not None:
-        today_start = datetime.datetime.utcnow().replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        today_start_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
         existing = (
             db.query(AttendanceRecord)
             .filter(
                 AttendanceRecord.employee_id == employee_id,
-                AttendanceRecord.clock_in    >= today_start,
+                AttendanceRecord.clock_in    >= today_start_utc,
             )
             .first()
         )
@@ -71,7 +89,7 @@ def clock_in(
         method      = method,
         notes       = notes,
         user_id     = user_id,
-        clock_in    = datetime.datetime.utcnow(),
+        clock_in    = now_utc,
     )
     db.add(record)
     db.commit()
@@ -98,8 +116,9 @@ def clock_out(db, record_id: int) -> Optional[dict]:
         log.info(f"[Attendance] clock_out: record #{record_id} already closed")
         return _record_to_dict(record)
 
-    record.clock_out = datetime.datetime.utcnow()
-    duration = (record.clock_out - record.clock_in).total_seconds()
+    now_utc = datetime.datetime.utcnow()
+    record.clock_out = now_utc
+    duration = (now_utc - record.clock_in).total_seconds()
     record.duration_seconds = duration
     db.commit()
     db.refresh(record)
@@ -108,6 +127,59 @@ def clock_out(db, record_id: int) -> Optional[dict]:
         f"duration={duration:.0f}s record_id={record.id}"
     )
     return _record_to_dict(record)
+
+
+def auto_clock_out_open_sessions(db) -> dict:
+    """
+    Close ALL open attendance sessions (clock_out=NULL).
+
+    Called automatically by the nightly scheduler at 19:00 IST and
+    also available as POST /attendance/clock-out-all for manual bulk close.
+
+    Returns
+    -------
+    {"closed": N, "message": "..."}
+    """
+    from database import AttendanceRecord
+
+    now_utc = datetime.datetime.utcnow()
+    open_records = (
+        db.query(AttendanceRecord)
+        .filter(AttendanceRecord.clock_out.is_(None))
+        .all()
+    )
+    closed = 0
+    for r in open_records:
+        r.clock_out = now_utc
+        try:
+            r.duration_seconds = (now_utc - r.clock_in).total_seconds()
+        except Exception:
+            r.duration_seconds = 0.0
+        closed += 1
+
+    if closed:
+        db.commit()
+
+    msg = f"Auto clock-out complete: {closed} open session(s) closed."
+    log.info(f"[Attendance] {msg}")
+
+    # Fire Telegram notification to owner
+    if closed:
+        try:
+            from services.notification_service import send_telegram_alert
+            send_telegram_alert(
+                message=(
+                    f"🕖 Nightly auto clock-out ran at "
+                    f"{datetime.datetime.now(_IST).strftime('%H:%M IST')}. "
+                    f"{closed} open session(s) were closed automatically."
+                ),
+                severity="low",
+                detected_issue="Auto clock-out",
+            )
+        except Exception as exc:
+            log.warning(f"[Attendance] auto clock-out Telegram notify failed: {exc}")
+
+    return {"closed": closed, "message": msg}
 
 
 def get_today_summary(db) -> dict:
@@ -119,21 +191,46 @@ def get_today_summary(db) -> dict:
     {
         present_count  : int   # employees who clocked in today
         absent_count   : int   # registered employees with no clock-in today
-        late_count     : int   # employees clocked in after their shift start (09:00 default)
+        late_count     : int   # employees clocked in after their floor shift start (IST)
         open_sessions  : int   # currently on-site (clock_out=NULL)
         records        : list  # all today's records
     }
+
+    Timezone note
+    -------------
+    "Today" is computed in IST midnight → converted to UTC for the DB query,
+    so records at 23:30 UTC (= 05:00 IST next day) are NOT counted as today.
+    Late check uses IST hours to match the client's shift times.
     """
     from database import AttendanceRecord, Employee
 
-    today_start = datetime.datetime.utcnow().replace(
-        hour=0, minute=0, second=0, microsecond=0
+    # IST midnight → UTC (subtract 5h30m)
+    now_ist = datetime.datetime.now(_IST)
+    today_midnight_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    # Convert to UTC (naive) for DB query
+    today_start_utc = (
+        today_midnight_ist
+        .astimezone(datetime.timezone.utc)
+        .replace(tzinfo=None)
     )
-    late_threshold_hour = 9   # 09:00 UTC — adjust per shift
+
+    # Default late threshold: 09:00 IST. Pull floor-specific setting if we can.
+    # Use the ground-floor setting as the global fallback (most common shift).
+    late_threshold_hour_ist = 9
+    late_threshold_min_ist  = 0
+    try:
+        from services.rule_engine import get_setting
+        val = get_setting("shift_start_ground", db)
+        if val and ":" in val:
+            h, m = map(int, val.split(":"))
+            late_threshold_hour_ist = h
+            late_threshold_min_ist  = m
+    except Exception:
+        pass
 
     records = (
         db.query(AttendanceRecord)
-        .filter(AttendanceRecord.clock_in >= today_start)
+        .filter(AttendanceRecord.clock_in >= today_start_utc)
         .order_by(AttendanceRecord.clock_in.desc())
         .all()
     )
@@ -145,11 +242,22 @@ def get_today_summary(db) -> dict:
     present_count  = len(clocked_in_employee_ids)
     absent_count   = max(0, total_employees - present_count)
     open_sessions  = sum(1 for r in records if r.clock_out is None)
-    late_count     = sum(
-        1 for r in records
-        if r.clock_in.hour >= late_threshold_hour
-        and r.employee_id is not None
-    )
+
+    # Late count — compare clock_in converted to IST
+    late_count = 0
+    for r in records:
+        if r.employee_id is None:
+            continue
+        # r.clock_in is naive UTC → make timezone-aware → convert to IST
+        clock_in_utc = r.clock_in.replace(tzinfo=datetime.timezone.utc)
+        clock_in_ist = clock_in_utc.astimezone(_IST)
+        shift_limit = clock_in_ist.replace(
+            hour=late_threshold_hour_ist,
+            minute=late_threshold_min_ist,
+            second=0, microsecond=0,
+        )
+        if clock_in_ist > shift_limit:
+            late_count += 1
 
     return {
         "present_count":  present_count,
@@ -172,11 +280,16 @@ def get_records(
 
     q = db.query(AttendanceRecord)
     if date:
-        day_start = datetime.datetime.combine(date, datetime.time.min)
-        day_end   = datetime.datetime.combine(date, datetime.time.max)
+        # Interpret the requested date as IST calendar day → UTC range for DB
+        day_start_ist = datetime.datetime(date.year, date.month, date.day,
+                                          0, 0, 0, tzinfo=_IST)
+        day_end_ist   = datetime.datetime(date.year, date.month, date.day,
+                                          23, 59, 59, tzinfo=_IST)
+        day_start_utc = day_start_ist.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        day_end_utc   = day_end_ist.astimezone(datetime.timezone.utc).replace(tzinfo=None)
         q = q.filter(
-            AttendanceRecord.clock_in >= day_start,
-            AttendanceRecord.clock_in <= day_end,
+            AttendanceRecord.clock_in >= day_start_utc,
+            AttendanceRecord.clock_in <= day_end_utc,
         )
     if employee_id:
         q = q.filter(AttendanceRecord.employee_id == employee_id)
@@ -227,6 +340,17 @@ def handle_face_match(
 # Serialisation helper
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _utc_iso(dt: Optional[datetime.datetime]) -> Optional[str]:
+    """
+    Serialise a naive-UTC datetime to ISO 8601 with trailing 'Z'.
+    JavaScript new Date("2024-08-21T03:30:00Z") correctly converts to IST.
+    Without 'Z' JS treats the string as local time, causing a 5h30m display error.
+    """
+    if dt is None:
+        return None
+    return dt.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+
+
 def _record_to_dict(r) -> dict:
     duration = None
     if r.clock_out and r.clock_in:
@@ -249,8 +373,8 @@ def _record_to_dict(r) -> dict:
         "camera_id":        r.camera_id,
         "method":           r.method,
         "notes":            r.notes,
-        "clock_in":         r.clock_in.isoformat() if r.clock_in else None,
-        "clock_out":        r.clock_out.isoformat() if r.clock_out else None,
+        "clock_in":         _utc_iso(r.clock_in),
+        "clock_out":        _utc_iso(r.clock_out),
         "duration_seconds": duration,
         "is_open":          r.clock_out is None,
     }

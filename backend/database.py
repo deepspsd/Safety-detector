@@ -304,9 +304,10 @@ class Employee(Base):
     created_at        = Column(DateTime, default=datetime.utcnow)
 
     # Relationships
-    face_encoding = relationship("FaceEncoding", back_populates="employees", foreign_keys=[face_encoding_id])
-    idle_sessions = relationship("IdleSession",  back_populates="employee")
-    alerts        = relationship("Alert",        back_populates="employee", foreign_keys="Alert.employee_id")
+    face_encoding= relationship("FaceEncoding", back_populates="employees", foreign_keys=[face_encoding_id])
+    idle_sessions= relationship("IdleSession",  back_populates="employee")
+    alerts= relationship("Alert",back_populates="employee", foreign_keys="Alert.employee_id")
+    attendance_records = relationship("AttendanceRecord", foreign_keys="AttendanceRecord.employee_id",back_populates="employee", lazy="dynamic")
 
 
 class ZoneConfig(Base):
@@ -485,8 +486,15 @@ class AttendanceRecord(Base):
     method           = Column(String(20), default="manual")   # face | manual | qr
     notes            = Column(String(500), nullable=True)
 
-    employee = relationship("Employee", foreign_keys=[employee_id])
+    employee = relationship("Employee", foreign_keys=[employee_id], back_populates="attendance_records")
     camera   = relationship("Camera",   foreign_keys=[camera_id])
+
+
+# Indexes for fast attendance queries (defined after class so SQLAlchemy registers them)
+# ix_att_emp_clockin: speeds up today_summary and per-employee history lookups
+from sqlalchemy import Index as _Idx
+_Idx("ix_att_emp_clockin",    AttendanceRecord.employee_id, AttendanceRecord.clock_in)
+_Idx("ix_att_clockout_null",  AttendanceRecord.clock_out)   # fast open-session scans
 
 
 class LiftEvent(Base):

@@ -13,7 +13,8 @@ Endpoints
   GET    /alerts/{id}              Single alert detail (includes snapshot_b64)
   DELETE /alerts/{id}              Hard-delete one alert
   DELETE /alerts/                  Hard-delete all alerts for current user
-  POST   /alerts/test-telegram     Send a test Telegram message (admin debug)
+  POST   /alerts/test-push          Send a test push notification (ntfy + Telegram) — admin debug
+  POST   /alerts/test-telegram      Alias for test-push (backward compat)
 """
 
 import os
@@ -50,7 +51,7 @@ def alert_to_dict(a: Alert, include_snapshot: bool = True) -> dict:
         "snapshot_url":    snapshot_url,
         "snapshot_b64":    a.snapshot_b64 if include_snapshot else None,
         "has_snapshot":    snapshot_url is not None or bool(a.snapshot_b64),
-        "timestamp":       a.timestamp.isoformat(),
+        "timestamp":       a.timestamp.strftime("%Y-%m-%dT%H:%M:%S") + "Z",
         "camera_id":       getattr(a, "camera_id", None),
         "floor":           getattr(a, "floor", None),
         "employee_id":     getattr(a, "employee_id", None),
@@ -374,3 +375,59 @@ def clear_all_alerts(
     db.query(Alert).filter(Alert.user_id == current_user.id).delete()
     db.commit()
     return {"message": "All alerts cleared"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# POST /alerts/test-push  (and legacy alias /alerts/test-telegram)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/test-push")
+@router.post("/test-telegram")   # legacy alias
+def test_push_notification(current_user: User = Depends(get_current_user)):
+    """
+    Fire a real test push notification and return a diagnostic report.
+    Shows which channels are configured, which succeeded/failed, and why.
+    Admin/debug use only.
+    """
+    from config import settings
+    from services.notification_service import (
+        send_ntfy_alert, send_telegram_alert,
+        _is_ntfy_configured, _is_telegram_configured,
+    )
+
+    result = {
+        "ntfy": {
+            "configured": _is_ntfy_configured(),
+            "topic":  settings.NTFY_TOPIC  or "(not set)",
+            "server": settings.NTFY_SERVER or "(not set)",
+            "sent": False,
+        },
+        "telegram": {
+            "configured": _is_telegram_configured(),
+            "token_set":  bool(settings.TELEGRAM_BOT_TOKEN),
+            "chat_id":    settings.TELEGRAM_CHAT_ID or "(not set)",
+            "sent": False,
+        },
+    }
+
+    # Try ntfy
+    if result["ntfy"]["configured"]:
+        result["ntfy"]["sent"] = send_ntfy_alert(
+            message        = "Test push from OccuSafe — ntfy is working!",
+            severity       = "medium",
+            detected_issue = "Test notification",
+        )
+    else:
+        result["ntfy"]["reason"] = "NTFY_TOPIC not set in .env"
+
+    # Try Telegram
+    if result["telegram"]["configured"]:
+        result["telegram"]["sent"] = send_telegram_alert(
+            message        = "Test push from OccuSafe — Telegram is working!",
+            severity       = "medium",
+            detected_issue = "Test notification",
+        )
+    else:
+        result["telegram"]["reason"] = "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set in .env"
+
+    return result

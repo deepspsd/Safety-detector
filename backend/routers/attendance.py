@@ -3,25 +3,30 @@ routers/attendance.py — Employee attendance REST API
 =====================================================
 Endpoints
 ---------
-  GET    /attendance/           List records (date, employee_id filters)
-  GET    /attendance/stats      Today's summary (present / absent / late)
-  POST   /attendance/clock-in   Manual or face-triggered clock-in
-  POST   /attendance/clock-out/{record_id}  Close an open session
-  GET    /attendance/export     CSV download for payroll
+  GET    /attendance/                   List records (date, employee_id filters)
+  GET    /attendance/stats              Today's summary (present / absent / late)
+  POST   /attendance/clock-in           Manual or face-triggered clock-in
+  POST   /attendance/clock-out/{id}     Close an open session
+  POST   /attendance/clock-out-all      Bulk close ALL open sessions (nightly / admin)
+  GET    /attendance/export             CSV download for payroll
+  POST   /attendance/employees/import   Bulk import employees from uploaded CSV
 """
 
 import csv
 import io
 import datetime
+import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import get_db, AttendanceRecord, Employee
 from routers.auth import get_current_user
+
+log = logging.getLogger("attendance_router")
 
 router = APIRouter(prefix="/attendance", tags=["attendance"])
 
@@ -51,9 +56,9 @@ def list_employees(
     )
     return [
         {
-            "id": employee.id,
-            "name": employee.name,
-            "role": employee.role,
+            "id":         employee.id,
+            "name":       employee.name,
+            "role":       employee.role,
             "department": employee.department,
         }
         for employee in rows
@@ -126,6 +131,27 @@ def clock_out(
     return result
 
 
+@router.post("/clock-out-all")
+def clock_out_all(
+    db:           Session = Depends(get_db),
+    current_user           = Depends(get_current_user),
+):
+    """
+    Bulk-close ALL currently open attendance sessions.
+
+    Use cases
+    ---------
+    • Admin clicks "End of Day" button to close all sessions at once.
+    • Called automatically at 19:00 IST by the nightly scheduler.
+
+    Returns
+    -------
+    {"closed": N, "message": "..."}
+    """
+    from services.attendance_service import auto_clock_out_open_sessions
+    return auto_clock_out_open_sessions(db)
+
+
 @router.get("/export")
 def export_csv(
     date:        Optional[str] = Query(None, description="YYYY-MM-DD"),
@@ -170,3 +196,111 @@ def export_csv(
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
+
+
+@router.post("/employees/import")
+async def import_employees_csv(
+    file:         UploadFile     = File(...),
+    db:           Session        = Depends(get_db),
+    current_user                 = Depends(get_current_user),
+):
+    """
+    Bulk import employees from a CSV file (server-side streaming — memory-safe for large files).
+
+    Expected CSV columns (order-independent, case-insensitive):
+        name   — required  — employee full name
+        role   — optional  — e.g. Baker, Supervisor
+        department — optional
+
+    Returns
+    -------
+    {
+        "imported": N,     # new rows created
+        "updated":  N,     # existing rows updated (matched by name)
+        "skipped":  N,     # blank / malformed rows
+        "errors":   [...]  # list of row-level error descriptions
+    }
+    """
+    if not file.filename.lower().endswith(".csv"):
+        raise HTTPException(400, "Only .csv files are accepted")
+
+    # Read the entire upload into memory as bytes — streaming chunk-by-chunk
+    # avoids holding the file open but CSV parse needs a seekable object.
+    raw_bytes = await file.read()
+    try:
+        text = raw_bytes.decode("utf-8-sig")   # strip BOM if Excel-exported
+    except UnicodeDecodeError:
+        text = raw_bytes.decode("latin-1")
+
+    reader = csv.DictReader(io.StringIO(text))
+
+    # Normalise headers to lowercase, strip spaces
+    if reader.fieldnames is None:
+        raise HTTPException(400, "CSV is empty or has no header row")
+
+    normalised_headers = {h.strip().lower(): h for h in reader.fieldnames}
+    if "name" not in normalised_headers:
+        raise HTTPException(
+            400,
+            "CSV must have a 'name' column. "
+            f"Found: {list(reader.fieldnames)}"
+        )
+
+    imported = 0
+    updated  = 0
+    skipped  = 0
+    errors: list[str] = []
+
+    for row_num, raw_row in enumerate(reader, start=2):
+        # Normalise keys
+        row = {k.strip().lower(): (v.strip() if v else "") for k, v in raw_row.items()}
+
+        name = row.get("name", "").strip()
+        if not name:
+            skipped += 1
+            continue
+
+        role       = row.get("role", "") or None
+        department = row.get("department", "") or None
+        phone      = row.get("phone", "") or row.get("mobile", "") or None
+        shift      = row.get("shift", "") or None
+
+        try:
+            existing = db.query(Employee).filter(Employee.name == name).first()
+            if existing:
+                # Update existing row with any new info
+                if role:       existing.role       = role
+                if department: existing.department = department
+                existing.active = True
+                updated += 1
+            else:
+                emp = Employee(
+                    name       = name,
+                    role       = role,
+                    department = department,
+                    active     = True,
+                )
+                db.add(emp)
+                imported += 1
+        except Exception as exc:
+            errors.append(f"Row {row_num} ({name!r}): {exc}")
+            db.rollback()
+            skipped += 1
+            continue
+
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(500, f"DB commit failed: {exc}")
+
+    log.info(
+        f"[Attendance] CSV import complete: imported={imported} updated={updated} "
+        f"skipped={skipped} errors={len(errors)}"
+    )
+    return {
+        "imported": imported,
+        "updated":  updated,
+        "skipped":  skipped,
+        "errors":   errors[:50],   # cap error list — never return megabytes of errors
+    }

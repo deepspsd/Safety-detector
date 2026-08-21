@@ -1,17 +1,18 @@
 """
-alert_service.py — v3.0
+alert_service.py — v3.1
 ========================
 Persists factory compliance alerts with:
   • Confidence-tier routing: high-confidence detectors → status="confirmed";
     low-confidence (Phase 4) detectors → status="pending_review".
-  • Telegram notification: fires immediately on status="confirmed" alerts.
+  • Push notification: fires immediately on status="confirmed" alerts via
+    send_push_alert() — tries ntfy.sh first, Telegram as fallback.
     "pending_review" alerts stay in-app only until an admin reviews them.
   • Full backward compatibility: all existing callers work with zero changes
     (confidence_tier defaults to "high" so old code paths save as "confirmed").
 
 Confidence tiers
 ────────────────
-  "high"  — confirmed detectors, always send to Telegram immediately:
+  "high"  — confirmed detectors, always send push notification immediately:
               PPE violations, head-cap/no-cap, bangles, idle-time, shift-start,
               shop-absence, cylinder-swap, camera-down, shift-late.
   "low"   — Phase 4 / best-effort detectors, saved as "pending_review":
@@ -22,7 +23,7 @@ Confidence tiers
               gas-idle      ~40-60% steam recall (bakery_cv_plan.md §12)
 
   pending_review alerts are shown in the admin review queue (Block 9 UI).
-  Admins promote them via PATCH /alerts/{id}/confirm which then fires Telegram.
+  Admins promote them via PATCH /alerts/{id}/confirm which then fires push notification.
   Admins dismiss false positives via PATCH /alerts/{id}/dismiss.
 
 Snapshot storage
@@ -152,8 +153,8 @@ def save_alert(
     Parameters
     ----------
     confidence_tier
-        "high"  → status="confirmed", Telegram sent immediately.
-        "low"   → status="pending_review", Telegram skipped until admin confirms.
+        "high"  → status="confirmed", push notification sent immediately.
+        "low"   → status="pending_review", notification skipped until admin confirms.
         "auto"  → auto-detect from detected_issue (default, backward-compatible).
 
     All other parameters are unchanged from v2 — existing callers need no edits.
@@ -176,7 +177,7 @@ def save_alert(
         confidence     = confidence,
         snapshot_b64   = snapshot_b64,
         snapshot_path  = snapshot_path,
-        timestamp      = datetime.datetime.utcnow(),
+        timestamp      = datetime.datetime.utcnow(),   # stored as naive UTC — serialised with Z suffix
         camera_id      = camera_id,
         floor          = floor,
         employee_id    = employee_id,
@@ -192,10 +193,11 @@ def save_alert(
         f"snapshot={'✅' if snapshot_path else '—'}"
     )
 
-    # Fire Telegram notification for confirmed alerts only
+    # Fire push notification for confirmed alerts only.
+    # send_push_alert() auto-selects: ntfy.sh if configured, else Telegram.
     if status == "confirmed":
         camera_name = _get_camera_name(camera_id, db)
-        _fire_telegram(
+        _fire_push(
             message        = message,
             severity       = severity,
             floor          = floor,
@@ -227,9 +229,9 @@ def confirm_alert(alert_id: int, db: Session) -> Alert:
 
     log.info(f"Alert {alert_id} promoted to 'confirmed' by admin")
 
-    # Now fire Telegram (was deliberately skipped when first saved)
+    # Now fire push notification (was deliberately skipped when first saved)
     camera_name = _get_camera_name(alert.camera_id, db)
-    _fire_telegram(
+    _fire_push(
         message        = alert.message,
         severity       = alert.severity,
         floor          = alert.floor,
@@ -259,9 +261,9 @@ def dismiss_alert(alert_id: int, db: Session) -> Alert:
     return alert
 
 
-# ── Internal: Telegram dispatch ───────────────────────────────────────────────
+# ── Internal: push notification dispatch ─────────────────────────────────────
 
-def _fire_telegram(
+def _fire_push(
     message: str,
     severity: str,
     floor: str | None,
@@ -270,12 +272,12 @@ def _fire_telegram(
     snapshot_b64: str | None,
 ) -> None:
     """
-    Background-safe Telegram send.  Failures are logged, never raised.
-    Wraps notification_service to keep import isolated.
+    Background-safe push dispatch.  Tries ntfy first, Telegram as fallback.
+    Failures are logged, never raised.
     """
     try:
-        from services.notification_service import send_telegram_alert
-        send_telegram_alert(
+        from services.notification_service import send_push_alert
+        send_push_alert(
             message        = message,
             severity       = severity,
             floor          = floor,
@@ -284,4 +286,4 @@ def _fire_telegram(
             snapshot_b64   = snapshot_b64,
         )
     except Exception as exc:
-        log.error(f"[alert_service] Telegram dispatch error: {exc}")
+        log.error(f"[alert_service] Push dispatch error: {exc}")

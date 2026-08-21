@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import api from '../api/api'
 import { facesApi } from '../api/api'
 import { useToast } from '../context/ToastContext'
 import {
   Users, Plus, Trash2, Pencil, Camera, Upload,
-  X, Save, CheckCircle, UserCircle, Search, RefreshCw
+  X, Save, CheckCircle, UserCircle, Search, RefreshCw, FileUp
 } from 'lucide-react'
 
 const ROLES_HINT = ['Employee', 'Manager', 'Supervisor', 'Security', 'Visitor', 'Owner']
@@ -116,14 +117,16 @@ function RotateCcw({ size }) {
 
 export default function Employees() {
   const { addToast } = useToast()
-  const [faces,       setFaces]       = useState([])
-  const [loading,     setLoading]     = useState(true)
-  const [search,      setSearch]      = useState('')
-  const [showCapture, setShowCapture] = useState(false)
-  const [editingId,   setEditingId]   = useState(null)
-  const [editLabel,   setEditLabel]   = useState('')
-  const [deleting,    setDeleting]    = useState(null)
-  const [enrolling,   setEnrolling]   = useState(false)
+  const [faces,        setFaces]        = useState([])
+  const [loading,      setLoading]      = useState(true)
+  const [search,       setSearch]       = useState('')
+  const [showCapture,  setShowCapture]  = useState(false)
+  const [editingId,    setEditingId]    = useState(null)
+  const [editLabel,    setEditLabel]    = useState('')
+  const [deleting,     setDeleting]     = useState(null)
+  const [enrolling,    setEnrolling]    = useState(false)
+  const [importing,    setImporting]    = useState(false)
+  const csvInputRef = useRef(null)
 
   const loadFaces = useCallback(async () => {
     try {
@@ -145,6 +148,34 @@ export default function Employees() {
     } catch (e) {
       addToast('Enrollment failed', e.response?.data?.detail || 'No face detected — use a clear front-facing photo', 'danger')
     } finally { setEnrolling(false) }
+  }
+
+  const handleCsvImport = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    // Reset input so the same file can be re-selected after an error
+    e.target.value = ''
+
+    const formData = new FormData()
+    formData.append('file', file)
+    setImporting(true)
+    try {
+      const res = await api.post('/attendance/employees/import', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      const { imported, updated, skipped, errors } = res.data
+      addToast(
+        `CSV Import: ${imported} added, ${updated} updated, ${skipped} skipped`,
+        errors.length ? `${errors.length} row error(s) — check console` : '',
+        imported + updated > 0 ? 'success' : 'warning',
+      )
+      if (errors.length) console.warn('[CSV Import] Row errors:', errors)
+      loadFaces()  // refresh list — new employees may now be visible if they have faces
+    } catch (err) {
+      addToast('CSV import failed', err.response?.data?.detail || 'Unknown error', 'danger')
+    } finally {
+      setImporting(false)
+    }
   }
 
   const handleRenameStart = (face) => {
@@ -188,6 +219,23 @@ export default function Employees() {
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-ghost btn-icon" onClick={loadFaces} title="Refresh"><RefreshCw size={15} /></button>
+          {/* CSV bulk import — triggers hidden file input */}
+          <label
+            className={`btn btn-ghost${importing ? ' disabled' : ''}`}
+            title="Import employees from CSV (columns: name, role, department)"
+            style={{ cursor: importing ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}
+          >
+            <FileUp size={14} />
+            {importing ? 'Importing…' : 'Import CSV'}
+            <input
+              ref={csvInputRef}
+              type="file"
+              accept=".csv"
+              style={{ display: 'none' }}
+              onChange={handleCsvImport}
+              disabled={importing}
+            />
+          </label>
           <button className="btn btn-primary" onClick={() => setShowCapture(true)} disabled={enrolling}>
             <Plus size={14} />
             {enrolling ? 'Enrolling…' : 'Enroll Employee'}

@@ -8,7 +8,7 @@ import {
   Video, Bell, LayoutDashboard, Settings, Shield,
   LogOut, UserCircle, HardHat, Sun, Moon, Menu, X,
   Camera, Users, Layers, ChevronDown, ChevronRight,
-  ShieldAlert, Tv2, ClipboardList, FileText, Briefcase
+  ShieldAlert, ClipboardList, FileText, Briefcase
 } from 'lucide-react'
 
 const FLOORS = [
@@ -238,10 +238,6 @@ export default function Sidebar() {
           Profile
         </NavLink>
 
-        <a href="/tv" target="_blank" rel="noopener noreferrer" className="nav-item" style={{ textDecoration: 'none' }}>
-          <Tv2 size={17} />
-          TV Display
-        </a>
 
         {/* User card + logout */}
         <div className="sidebar-bottom">

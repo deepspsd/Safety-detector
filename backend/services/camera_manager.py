@@ -89,6 +89,7 @@ class _ManagedCamera:
         self._det_thread: Optional[threading.Thread] = None
         self._det_running = False
         self._last_frame_ts: float = 0.0   # epoch; 0 = no frame yet
+        self._last_face_rec_ts: float = 0.0  # rate-limit face recognition to 1 call/2s
 
     # ── Public ────────────────────────────────────────────────────────────────
 
@@ -234,18 +235,23 @@ class _ManagedCamera:
 
     def _detection_loop(self):
         """
-        Persistent detection + rule-engine loop (~5 fps).
+        Persistent detection + rule-engine loop (~5 fps per camera).
 
         Each tick:
           1. Read latest frame from CameraReader.
-          2. Run YOLO inference + ByteTrack via yolo_service.
-          3. Feed persons to idle_service.
-          4. Run rule-engine hooks:
+          2. Submit frame to the shared InferencePool (one YOLO model for all cameras).
+          3. Read latest inference result (non-blocking — uses previous result if
+             the pool hasn't produced a new one yet; rule-engine still runs).
+          4. Feed persons to idle_service.
+          5. Run rule-engine hooks:
                a. record_person_seen / check_shift_start
                b. process_cylinder_detections
                c. check_dirty_floor
                d. check_shop_absence  (shop floor only)
                e. gas_idle_update     (second floor only)
+               f. process_packing_frame  (packing zone cameras only)
+               g. process_lift_frame     (lift zone cameras only)
+               h. check_cash_zone / check_stock_zone  (shop floor only)
         All rule-engine calls share one SQLAlchemy session opened per tick and
         closed in a finally block — no session is held between ticks.
         """
@@ -288,17 +294,26 @@ class _ManagedCamera:
                 if zones is None:
                     zones = zone_service.load_zones_for_camera(self.camera_id, db)
 
-                # ── YOLO inference + tracking ───────────────────────────────
-                # Enterprise path: YOLO produces only raw detections; tracking,
-                # semantic context, events, workflows and rules are independent.
-                # The legacy idle/cylinder hooks below consume the neutral output
-                # during the migration period, preserving existing behaviour.
+                # ── YOLO inference via shared pool ──────────────────────────
+                # Submit the current frame for inference.  The pool runs one
+                # YOLO model for ALL cameras — no duplicate model loads.
+                # We read back the latest available result (may be from the
+                # previous tick if the pool is busy) so the rule-engine loop
+                # is never blocked waiting for inference.
+                from services.inference_pool import inference_pool
+                inference_pool.put_frame(self.camera_id, frame)
+                pool_result = inference_pool.get_result(self.camera_id) or {}
+
+                # Tracking is kept on the enterprise_runtime path so ByteTrack
+                # state is preserved per-camera across ticks.
                 res = enterprise_runtime.process_frame(self.camera_id, frame, db)
                 persons = [
                     {"bbox": track["bbox"], "confidence": track["confidence"], "track_id": int(track["track_id"])}
                     for track in res.get("tracks", [])
                 ]
-                raw_dets = res.get("detections", [])
+                # Prefer pool detections (fresher class labels) if available,
+                # else fall back to enterprise_runtime detections.
+                raw_dets = pool_result.get("detections") or res.get("detections", [])
 
                 # ── Idle service ─────────────────────────────────────────────
                 idle_service.process_frame(
@@ -349,6 +364,80 @@ class _ManagedCamera:
                         zone_polygon=stove_polygon,
                         db=db,
                     )
+
+                # ── Packing monitor (cameras whose zone_type contains "packing") ─
+                # Checks that workers' hands stay in motion while packing.
+                if "packing" in zone_name:
+                    try:
+                        from services import packing_monitor
+                        packing_monitor.process_packing_frame(
+                            db=db,
+                            camera_id=self.camera_id,
+                            frame=frame,
+                            persons=persons,
+                            packing_polygon=(zones or {}).get("packing"),
+                        )
+                    except Exception as pm_exc:
+                        log.debug(f"[CamMgr] packing_monitor error (cam={self.camera_id}): {pm_exc}")
+
+                # ── Lift monitor (cameras whose zone_type contains "lift") ────────
+                # Tracks person entry/exit through lift zones on all 3 floors.
+                if "lift" in zone_name:
+                    try:
+                        from services import lift_monitor
+                        lift_monitor.process_lift_frame(
+                            db=db,
+                            camera_id=self.camera_id,
+                            floor=self.floor,
+                            persons=persons,
+                            lift_polygon=(zones or {}).get("lift"),
+                        )
+                    except Exception as lm_exc:
+                        log.debug(f"[CamMgr] lift_monitor error (cam={self.camera_id}): {lm_exc}")
+
+                # ── Cash + stock monitor (shop floor cameras only) ─────────────
+                # Alerts on unauthorized cashbox access and exposed stock items.
+                if self.floor == "shop":
+                    try:
+                        from services import cash_monitor
+                        cash_monitor.check_cash_zone(
+                            db=db,
+                            camera_id=self.camera_id,
+                            detections=raw_dets,
+                            cashbox_polygon=(zones or {}).get("cashbox"),
+                        )
+                        cash_monitor.check_stock_zone(
+                            db=db,
+                            camera_id=self.camera_id,
+                            detections=raw_dets,
+                            stock_polygon=(zones or {}).get("stock"),
+                        )
+                    except Exception as cm_exc:
+                        log.debug(f"[CamMgr] cash_monitor error (cam={self.camera_id}): {cm_exc}")
+
+                # ── Face recognition → Auto attendance (rate-limited 1× per 2s) ─
+                # Runs at 0.5 fps to keep CPU load low while still catching
+                # every employee who passes within a 2-second window.
+                now_ts = time.time()
+                if now_ts - self._last_face_rec_ts >= 2.0:
+                    self._last_face_rec_ts = now_ts
+                    try:
+                        from services import face_service, attendance_service
+                        face_result = face_service.process_face_numpy(
+                            frame_bgr=frame,
+                            user_id=1,    # system user; encodings are shared across users
+                            db=db,
+                        )
+                        recognized = face_result.get("recognized_employees", {})
+                        for emp_id, confidence in recognized.items():
+                            # handle_face_match opens its own DB session internally
+                            attendance_service.handle_face_match(
+                                camera_id   = self.camera_id,
+                                employee_id = emp_id,
+                                confidence  = confidence,
+                            )
+                    except Exception as face_exc:
+                        log.debug(f"[CamMgr] Face recognition error (cam={self.camera_id}): {face_exc}")
 
             except Exception as exc:
                 log.error(f"[CamMgr] Detection loop error (cam={self.camera_id}): {exc}")
