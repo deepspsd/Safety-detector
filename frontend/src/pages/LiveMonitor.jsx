@@ -258,7 +258,7 @@ export default function LiveMonitor() {
   const startWebcam = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480, facingMode: 'environment' }
+        video: { width: 640, height: 480, facingMode: { ideal: 'environment' } }
       })
       streamRef.current = stream
       if (videoRef.current) {

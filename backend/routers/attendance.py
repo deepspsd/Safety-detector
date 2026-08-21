@@ -10,6 +10,7 @@ Endpoints
   POST   /attendance/clock-out-all      Bulk close ALL open sessions (nightly / admin)
   GET    /attendance/export             CSV download for payroll
   POST   /attendance/employees/import   Bulk import employees from uploaded CSV
+  DELETE /attendance/{id}               Hard-delete a single attendance record
 """
 
 import csv
@@ -304,3 +305,26 @@ async def import_employees_csv(
         "skipped":  skipped,
         "errors":   errors[:50],   # cap error list — never return megabytes of errors
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DELETE /attendance/{id}
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.delete("/{record_id}")
+def delete_attendance_record(
+    record_id:    int,
+    db:           Session = Depends(get_db),
+    current_user          = Depends(get_current_user),
+):
+    """Hard-delete a single attendance record by ID."""
+    record = db.query(AttendanceRecord).filter(AttendanceRecord.id == record_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Attendance record not found")
+    db.delete(record)
+    db.commit()
+    log.info(
+        f"[Attendance] Record #{record_id} deleted by user={current_user.id} "
+        f"(employee_id={record.employee_id})"
+    )
+    return {"deleted": True, "id": record_id}

@@ -142,7 +142,7 @@ function ScanPanel({ onScanned }) {
     setCaptured(null)
     setResult(null)
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } } })
       streamRef.current = stream
       if (videoRef.current) {
         videoRef.current.srcObject = stream

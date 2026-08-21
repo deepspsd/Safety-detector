@@ -3,7 +3,7 @@ import api from '../api/api'
 import { useToast } from '../context/ToastContext'
 import {
   Users, UserCheck, UserX, Clock, LogIn, LogOut,
-  Download, RefreshCw, Calendar, Plus, X, ChevronDown
+  Download, RefreshCw, Calendar, Plus, X, ChevronDown, Trash2
 } from 'lucide-react'
 
 // ── API helpers ────────────────────────────────────────────────────────────────
@@ -15,6 +15,7 @@ const attendanceApi = {
   clockOutAll: ()         => api.post('/attendance/clock-out-all'),
   importCsv:   (formData) => api.post('/attendance/employees/import', formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
   export:      (date)     => api.get('/attendance/export', { params: date ? { date } : {}, responseType: 'blob' }),
+  deleteRecord:(recordId) => api.delete(`/attendance/${recordId}`),
 }
 
 // ── Stat card ──────────────────────────────────────────────────────────────────
@@ -217,6 +218,18 @@ export default function Attendance() {
     }
   }
 
+  const handleDelete = async (r) => {
+    const name = r.employee_name || `Record #${r.id}`
+    if (!window.confirm(`Delete attendance record for "${name}"?\n\nThis cannot be undone.`)) return
+    try {
+      await attendanceApi.deleteRecord(r.id)
+      addToast('Record deleted', `Attendance for ${name} removed`, 'success')
+      load()
+    } catch {
+      addToast('Delete failed', '', 'danger')
+    }
+  }
+
   return (
     <div className="page-container">
       {/* Header */}
@@ -334,15 +347,25 @@ export default function Attendance() {
                       {r.notes || '—'}
                     </td>
                     <td style={{ padding: '10px 14px' }}>
-                      {r.is_open && (
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        {r.is_open && (
+                          <button
+                            className="btn btn-ghost"
+                            style={{ fontSize: '0.72rem', padding: '3px 10px', gap: 4, color: '#f97316' }}
+                            onClick={() => handleClockOut(r.id)}
+                          >
+                            <LogOut size={12} /> Clock Out
+                          </button>
+                        )}
                         <button
                           className="btn btn-ghost"
-                          style={{ fontSize: '0.72rem', padding: '3px 10px', gap: 4, color: '#ef4444' }}
-                          onClick={() => handleClockOut(r.id)}
+                          style={{ fontSize: '0.72rem', padding: '3px 8px', gap: 4, color: '#ef4444' }}
+                          title="Delete this record"
+                          onClick={() => handleDelete(r)}
                         >
-                          <LogOut size={12} /> Clock Out
+                          <Trash2 size={12} />
                         </button>
-                      )}
+                      </div>
                     </td>
                   </tr>
                 ))}
