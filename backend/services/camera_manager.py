@@ -354,7 +354,7 @@ class _ManagedCamera:
                 )
 
                 # ── Rule engine — gas/oven idle (second floor only) ───────────
-                if self.floor == "second":
+                if self.floor == "second" or "oven" in zone_name:
                     stove_polygon = (zones or {}).get("stove") or (zones or {}).get("oven")
                     rule_engine.gas_idle_update(
                         camera_id=self.camera_id,
@@ -364,6 +364,17 @@ class _ManagedCamera:
                         zone_polygon=stove_polygon,
                         db=db,
                     )
+                
+                # ── New Rule Engine checks (from gap audit) ───────────────────
+                rule_engine.check_camera_blocking(self.camera_id, frame.shape, persons, db)
+                rule_engine.check_stock_zone(self.camera_id, self.floor, raw_dets, zones, db)
+                rule_engine.check_machinery_zone(self.camera_id, self.floor, raw_dets, persons, zones, db)
+                rule_engine.trigger_vendor_snapshot(self.camera_id, self.floor, persons, frame, zones, db)
+                
+                if "entrance" in zone_name or (zones and "entrance" in zones):
+                    from services.yolo_service import run_ocr_gate_for_camera
+                    direction = "outward" if "outward" in zone_name else "inward"
+                    run_ocr_gate_for_camera(frame, raw_dets, zones, db, self.camera_id, direction)
 
                 # ── Packing monitor (cameras whose zone_type contains "packing") ─
                 # Checks that workers' hands stay in motion while packing.
