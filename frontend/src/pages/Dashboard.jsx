@@ -17,7 +17,7 @@ const FLOORS = [
   { id: 'ground', label: 'Ground Floor', icon: '🏭', color: '#3b82f6', workStart: '8:00 AM', zones: 'Entrance · Dough Mixing · Cutting · Oven · Packing' },
   { id: 'first',  label: 'First Floor',  icon: '🏗️', color: '#8b5cf6', workStart: '6:00 AM', zones: 'Work Tables · Dough Mixing · Lift · Cylinders' },
   { id: 'second', label: 'Second Floor', icon: '🏢', color: '#06b6d4', workStart: '5:00 AM', zones: 'Cooking · Ovens · Stock · Windows' },
-  { id: 'shop',   label: 'Shop',         icon: '🛒', color: '#f59e0b', workStart: '9:00 AM', zones: 'Counter · Cashbox · Entrance' },
+  { id: 'shop',   label: 'Shop',         icon: '🛒', color: '#f59e0b', workStart: '8:00 AM', zones: 'Counter · Cashbox · Entrance' },
 ]
 
 const BAKERY_CHECKS = [

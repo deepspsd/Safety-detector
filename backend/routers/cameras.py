@@ -37,7 +37,7 @@ from services import camera_manager
 from services.camera_credentials import (CredentialConfigurationError, decrypt,
                                          encrypt, encrypt_credentials)
 from services.onvif_client import OnvifConnectionError, OnvifUnavailable, inspect_camera
-from services.camera_discovery import discover_onvif, probe_onvif_endpoints
+from services.camera_discovery import discover_onvif, probe_onvif_endpoints, hikvision_quick_add
 
 log = logging.getLogger("cameras_router")
 router = APIRouter(prefix="/cameras", tags=["cameras"])
@@ -65,6 +65,57 @@ async def webrtc_offer(
     
     answer = await webrtc_manager.handle_offer(camera_id, offer.sdp, offer.type)
     return answer
+
+
+# ── HikVision Quick-Add ────────────────────────────────────────────────────
+
+class HikVisionQuickAdd(BaseModel):
+    name:           str
+    ip:             str
+    username:       str
+    password:       str
+    floor:          str            = "ground"
+    channel:        int            = 1
+    ai_stream:      str            = "sub"    # "main" | "sub"
+    display_stream: str            = "main"
+
+@router.post("/hikvision-quick-add", summary="Add a HikVision camera by IP + credentials")
+def hikvision_add(
+    payload:      HikVisionQuickAdd,
+    db:           Session = Depends(get_db),
+    current_user: User    = Depends(get_current_user),
+):
+    """
+    One-step HikVision camera add.
+    Builds the RTSP URL from the supplied IP, username, password and channel,
+    then creates the camera row and starts the reader — no manual URL needed.
+    """
+    cam_dict = hikvision_quick_add(
+        name           = payload.name,
+        ip             = payload.ip,
+        username       = payload.username,
+        password       = payload.password,
+        floor          = payload.floor,
+        channel        = payload.channel,
+        ai_stream      = payload.ai_stream,
+        display_stream = payload.display_stream,
+    )
+    cam = CameraModel(**{
+        k: v for k, v in cam_dict.items()
+        if hasattr(CameraModel, k)
+    })
+    cam.created_at = datetime.datetime.utcnow()
+    db.add(cam)
+    db.commit()
+    db.refresh(cam)
+
+    # Start reader thread immediately
+    try:
+        camera_manager.start_camera(cam.id, cam.name, cam_dict["rtsp_url"], floor=cam.floor)
+    except Exception as exc:
+        log.warning("[cameras] hikvision-quick-add reader start warning: %s", exc)
+
+    return {"id": cam.id, "name": cam.name, "rtsp_url": cam_dict["rtsp_url"], "status": "started"}
 
 
 # ── Pydantic schemas ─────────────────────────────────────────────────────────

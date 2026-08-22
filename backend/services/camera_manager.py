@@ -371,10 +371,14 @@ class _ManagedCamera:
                 rule_engine.check_machinery_zone(self.camera_id, self.floor, raw_dets, persons, zones, db)
                 rule_engine.trigger_vendor_snapshot(self.camera_id, self.floor, persons, frame, zones, db)
                 
+                # ── Rule engine — OCR gate (entrance cameras) ───────────────────────
                 if "entrance" in zone_name or (zones and "entrance" in zones):
-                    from services.yolo_service import run_ocr_gate_for_camera
-                    direction = "outward" if "outward" in zone_name else "inward"
-                    run_ocr_gate_for_camera(frame, raw_dets, zones, db, self.camera_id, direction)
+                    try:
+                        from services.yolo_service import run_ocr_gate_for_camera
+                        direction = "outward" if "outward" in zone_name else "inward"
+                        run_ocr_gate_for_camera(frame, raw_dets, zones, db, self.camera_id, direction)
+                    except Exception as exc:
+                        log.debug(f"[CamMgr] ocr_gate error (cam={self.camera_id}): {exc}")
 
                 # ── Packing monitor (cameras whose zone_type contains "packing") ─
                 # Checks that workers' hands stay in motion while packing.
@@ -449,6 +453,19 @@ class _ManagedCamera:
                             )
                     except Exception as face_exc:
                         log.debug(f"[CamMgr] Face recognition error (cam={self.camera_id}): {face_exc}")
+
+                # ── Chewing + clean-shave detection (MediaPipe) ───────────────────
+                # Runs at low frequency internally; skips if MEDIAPIPE_ENABLED=false.
+                try:
+                    from services import chew_monitor
+                    chew_monitor.process_frame(
+                        db=db,
+                        camera_id=self.camera_id,
+                        frame=frame,
+                        persons=persons,
+                    )
+                except Exception as chew_exc:
+                    log.debug(f"[CamMgr] chew_monitor error (cam={self.camera_id}): {chew_exc}")
 
             except Exception as exc:
                 log.error(f"[CamMgr] Detection loop error (cam={self.camera_id}): {exc}")
@@ -570,6 +587,11 @@ def stop_camera(camera_id: int):
         mc = _registry.pop(camera_id, None)
     if mc:
         mc.stop()
+        try:
+            from services import chew_monitor
+            chew_monitor.cleanup_camera(camera_id)
+        except Exception:
+            pass
         log.info(f"[CamMgr] camera {camera_id} removed from registry")
     else:
         log.warning(f"[CamMgr] stop_camera({camera_id}) — not in registry, skipped")

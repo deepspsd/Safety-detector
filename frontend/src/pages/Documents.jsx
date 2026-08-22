@@ -469,6 +469,19 @@ export default function Documents() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                   <DirBadge direction={r.direction} />
                   <StatusBadge approved={r.approved} ocr_available={r.ocr_available} />
+                  {r.goods_count !== null && r.goods_count !== undefined && (
+                    <span style={{
+                      fontSize: '0.72rem',
+                      fontWeight: 600,
+                      padding: '2px 8px',
+                      borderRadius: 6,
+                      background: 'rgba(59,130,246,0.15)',
+                      color: 'var(--accent-blue)',
+                      border: '1px solid rgba(59,130,246,0.3)',
+                    }}>
+                      📦 Qty: {r.goods_count}
+                    </span>
+                  )}
                   <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginLeft: 'auto' }}>
                     {new Date(r.timestamp).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}
                   </span>
@@ -498,8 +511,24 @@ export default function Documents() {
                 </div>
                 {expandedId === r.id && (
                   <div style={{ marginTop: 10, padding: '10px 14px', background: 'var(--bg-secondary)', borderRadius: 8, fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-                    {r.snapshot_b64 && (
-                      <img src={r.snapshot_b64} alt="scan" style={{ maxWidth: 180, maxHeight: 130, objectFit: 'cover', borderRadius: 6, marginBottom: 10, border: '1px solid var(--border)', display: 'block' }} />
+                    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
+                      {r.snapshot_b64 && (
+                        <div>
+                          <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 4 }}>📄 Document Scan</div>
+                          <img src={r.snapshot_b64} alt="scan" style={{ maxWidth: 180, maxHeight: 130, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)', display: 'block' }} />
+                        </div>
+                      )}
+                      {r.person_snapshot_b64 && (
+                        <div>
+                          <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: 4 }}>👤 Carrier Snapshot</div>
+                          <img src={r.person_snapshot_b64} alt="person" style={{ maxWidth: 180, maxHeight: 130, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)', display: 'block' }} />
+                        </div>
+                      )}
+                    </div>
+                    {r.goods_count !== null && r.goods_count !== undefined && (
+                      <div style={{ marginBottom: 6, fontWeight: 600, color: 'var(--accent-blue)' }}>
+                        Parsed Goods Quantity: {r.goods_count} units
+                      </div>
                     )}
                     <div style={{ fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 120, overflowY: 'auto' }}>
                       {r.raw_ocr_text || '(No OCR text)'}

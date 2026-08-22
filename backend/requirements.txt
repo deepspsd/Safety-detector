@@ -16,24 +16,12 @@ pydantic-settings==2.2.1
 gdown>=5.1.0
 # OCR pipeline — Tesseract engine wrapper (system binary also required)
 # Install system binary: https://github.com/UB-Mannheim/tesseract/wiki
-# Windows: winget install UB-Mannheim.TesseractOCR
-# Linux:   sudo apt install tesseract-ocr
 pytesseract>=0.3.10
-# Zone polygon containment check (optional — ocr_service falls back if missing)
 shapely>=2.0.0
-# ByteTrack object tracking via supervision wrapper
-# System requirement: pip install supervision
-# Provides sv.ByteTrack for stable per-camera person tracking across frames
 supervision>=0.21.0
-# face-recognition is optional — install separately if dlib is available
-# pip install face-recognition
-# Telegram Bot API HTTP client (notification_service.py)
-# httpx is used over requests because it supports both sync and async call patterns.
 httpx>=0.27.0
 cryptography>=42.0.0
-# Optional runtime integrations for vendor-neutral IP-camera discovery and
-# browser WebRTC delivery. Install them into backend/.venv before enabling.
 onvif-zeep>=0.2.12
 aiortc>=1.9.0
-# Windows requires tzdata for zoneinfo (Linux/macOS have system tz DB built-in)
 tzdata>=2024.1
+mediapipe>=0.10.0

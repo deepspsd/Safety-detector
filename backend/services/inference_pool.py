@@ -45,6 +45,7 @@ import time
 from typing import Dict, Optional
 
 import numpy as np
+import cv2
 
 log = logging.getLogger("inference_pool")
 
@@ -55,6 +56,21 @@ _MAX_QUEUE_DEPTH = 2
 
 # How long (seconds) the worker sleeps when the queue is empty.
 _IDLE_SLEEP = 0.05
+
+
+def _resize_for_inference(frame: np.ndarray, target_width: int) -> np.ndarray:
+    """
+    Downscale frame to target_width while preserving aspect ratio.
+    Skipped if frame is already at or below target_width.
+    Using INTER_AREA for downscaling (best quality, avoids moire).
+    """
+    h, w = frame.shape[:2]
+    if w <= target_width:
+        return frame
+    scale = target_width / w
+    new_w = target_width
+    new_h = int(h * scale)
+    return cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
 
 class _InferencePool:
@@ -174,7 +190,9 @@ class _InferencePool:
 
                 processed_any = True
                 try:
-                    detections = detector.detect(frame)
+                    from config import settings
+                    infer_frame = _resize_for_inference(frame, settings.YOLO_INFERENCE_WIDTH)
+                    detections = detector.detect(infer_frame)
                     det_dicts  = [d.to_dict() for d in detections]
                 except Exception as exc:
                     log.debug(f"[InferencePool] Inference error cam={camera_id}: {exc}")

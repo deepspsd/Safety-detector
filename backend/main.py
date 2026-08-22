@@ -1,7 +1,9 @@
+import logging
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-import os
 
 from database import create_tables, ensure_enterprise_schema
 from config import settings
@@ -12,6 +14,9 @@ from routers.enterprise import router as enterprise_router
 from routers.attendance import router as attendance_router
 from routers.documents import router as documents_router
 from routers.workflow import router as workflow_router
+from routers.alarm import router as alarm_router
+
+log = logging.getLogger("main")
 
 app = FastAPI(
     title="Safety Monitor API",
@@ -19,13 +24,25 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS — allow browser on any device (localhost + LAN IP)
-# The "*" wildcard covers all origins so mobile browsers on the same
-# WiFi network can reach the API when VITE_API_BASE_URL is set to the LAN IP.
+# ── CORS configuration ──────────────────────────────────────────────────────
+# In development (APP_ENV=development or ALLOWED_ORIGINS unset) all origins
+# are permitted so Vite on localhost and mobile browsers on the LAN work
+# without extra configuration.
+#
+# In production set: ALLOWED_ORIGINS=http://192.168.1.100:5173,http://192.168.1.100
+# — only those origins will be accepted; requests from others are rejected.
+_allowed_origins_raw = settings.ALLOWED_ORIGINS.strip()
+if _allowed_origins_raw:
+    _cors_origins = [o.strip() for o in _allowed_origins_raw.split(",") if o.strip()]
+    _allow_credentials = True   # safe with an explicit origin list
+else:
+    _cors_origins = ["*"]
+    _allow_credentials = False  # must be False when origin is "*"
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],      # wildcard enables mobile browser access
-    allow_credentials=False,  # must be False when allow_origins=["*"]
+    allow_origins=_cors_origins,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -45,6 +62,7 @@ app.include_router(baseline_router)   # POST/DELETE /cameras/{id}/baseline
 app.include_router(attendance_router)  # GET/POST /attendance/*
 app.include_router(documents_router)   # GET/POST /documents/*
 app.include_router(workflow_router)    # GET /workflow/*
+app.include_router(alarm_router)        # POST /alarm/*
 
 # ── /api prefix aggregate router (production single-origin compatibility) ──────
 from fastapi import APIRouter as _APIRouter
@@ -61,6 +79,7 @@ _api_router.include_router(baseline_router)
 _api_router.include_router(attendance_router)
 _api_router.include_router(documents_router)
 _api_router.include_router(workflow_router)
+_api_router.include_router(alarm_router)
 app.include_router(_api_router)
 
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
@@ -102,78 +121,158 @@ if os.path.isdir(_FRONTEND_DIST):
         return FileResponse(os.path.join(_FRONTEND_DIST, "index.html"))
 
 
+_DEFAULT_SECRET = "safety-monitor-super-secret-key-2024-change-in-prod"
+
+
+def _run_migrations() -> None:
+    """Run all incremental SQLite schema migrations in version order."""
+    from sqlalchemy import text
+    from database import engine
+
+    # v1: face_encodings thumbnail
+    _migrate_columns(engine, [
+        ("face_encodings", "thumbnail_b64",
+         "ALTER TABLE face_encodings ADD COLUMN thumbnail_b64 TEXT"),
+    ])
+
+    # v2: alert factory columns
+    _migrate_columns(engine, [
+        ("alerts", "camera_id",
+         "ALTER TABLE alerts ADD COLUMN camera_id   INTEGER REFERENCES cameras(id)"),
+        ("alerts", "floor",
+         "ALTER TABLE alerts ADD COLUMN floor        TEXT"),
+        ("alerts", "employee_id",
+         "ALTER TABLE alerts ADD COLUMN employee_id  INTEGER REFERENCES employees(id)"),
+    ])
+
+    # v3: alert status + core tables
+    _migrate_columns(engine, [
+        ("alerts", "status",
+         "ALTER TABLE alerts ADD COLUMN status TEXT NOT NULL DEFAULT 'confirmed'"),
+    ])
+    _migrate_tables(engine, [
+        ("system_settings",
+         "CREATE TABLE IF NOT EXISTS system_settings "
+         "(id INTEGER PRIMARY KEY, key TEXT UNIQUE NOT NULL, "
+         "value TEXT NOT NULL, description TEXT, updated_at DATETIME)"),
+        ("dirty_floor_baselines",
+         "CREATE TABLE IF NOT EXISTS dirty_floor_baselines "
+         "(id INTEGER PRIMARY KEY, camera_id INTEGER REFERENCES cameras(id), "
+         "zone_name TEXT NOT NULL, image_path TEXT NOT NULL, uploaded_at DATETIME)"),
+    ])
+
+    # v4: attendance + lift + OCR log tables
+    _migrate_tables(engine, [
+        ("attendance_records",
+         "CREATE TABLE IF NOT EXISTS attendance_records "
+         "(id INTEGER PRIMARY KEY, employee_id INTEGER REFERENCES employees(id), "
+         "user_id INTEGER REFERENCES users(id), camera_id INTEGER REFERENCES cameras(id), "
+         "clock_in DATETIME NOT NULL, clock_out DATETIME, duration_seconds FLOAT, "
+         "method VARCHAR(20) DEFAULT 'manual', notes VARCHAR(500))"),
+        ("lift_events",
+         "CREATE TABLE IF NOT EXISTS lift_events "
+         "(id INTEGER PRIMARY KEY, camera_id INTEGER NOT NULL REFERENCES cameras(id), "
+         "track_id INTEGER NOT NULL, employee_id INTEGER REFERENCES employees(id), "
+         "event_type VARCHAR(30) NOT NULL, floor_from VARCHAR(20), floor_to VARCHAR(20), "
+         "duration_sec FLOAT, timestamp DATETIME)"),
+        ("invoice_logs",
+         "CREATE TABLE IF NOT EXISTS invoice_logs "
+         "(id INTEGER PRIMARY KEY, camera_id INTEGER REFERENCES cameras(id), "
+         "employee_id INTEGER REFERENCES employees(id), direction VARCHAR(10) DEFAULT 'inward', "
+         "raw_ocr_text TEXT, goods_count INTEGER, approved BOOLEAN NOT NULL DEFAULT 0, "
+         "snapshot_b64 TEXT, ocr_available BOOLEAN NOT NULL DEFAULT 1, timestamp DATETIME NOT NULL)"),
+        ("order_form_logs",
+         "CREATE TABLE IF NOT EXISTS order_form_logs "
+         "(id INTEGER PRIMARY KEY, camera_id INTEGER REFERENCES cameras(id), "
+         "employee_id INTEGER REFERENCES employees(id), direction VARCHAR(10) DEFAULT 'outward', "
+         "raw_ocr_text TEXT, approved BOOLEAN NOT NULL DEFAULT 0, "
+         "snapshot_b64 TEXT, person_snapshot_b64 TEXT, "
+         "ocr_available BOOLEAN NOT NULL DEFAULT 1, timestamp DATETIME NOT NULL)"),
+    ])
+    # goods_count + person_snapshot on existing tables (safe on fresh DBs too)
+    _migrate_columns(engine, [
+        ("invoice_logs",    "goods_count",
+         "ALTER TABLE invoice_logs    ADD COLUMN goods_count         INTEGER"),
+        ("order_form_logs", "person_snapshot_b64",
+         "ALTER TABLE order_form_logs ADD COLUMN person_snapshot_b64 TEXT"),
+    ])
+
+    # v5: camera credential / health tables + column extensions
+    _migrate_tables(engine, [
+        "CREATE TABLE IF NOT EXISTS camera_credentials (camera_id INTEGER PRIMARY KEY REFERENCES cameras(id), encrypted_username TEXT NOT NULL, encrypted_password TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS camera_streams (id INTEGER PRIMARY KEY, camera_id INTEGER NOT NULL REFERENCES cameras(id), profile_token VARCHAR(200), stream_type VARCHAR(20) NOT NULL, codec VARCHAR(40), width INTEGER, height INTEGER, fps FLOAT, encrypted_rtsp_uri TEXT NOT NULL, active BOOLEAN NOT NULL DEFAULT 1, created_at DATETIME NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS camera_health (id INTEGER PRIMARY KEY, camera_id INTEGER NOT NULL REFERENCES cameras(id), status VARCHAR(40) NOT NULL, fps FLOAT, bitrate_kbps FLOAT, latency_ms FLOAT, packet_loss FLOAT, last_frame_at DATETIME, reconnect_count INTEGER NOT NULL DEFAULT 0, last_error TEXT, created_at DATETIME NOT NULL)",
+    ], name_from_sql=True)
+    _migrate_columns(engine, [
+        ("cameras", "manufacturer",    "ALTER TABLE cameras ADD COLUMN manufacturer VARCHAR(120)"),
+        ("cameras", "model",            "ALTER TABLE cameras ADD COLUMN model VARCHAR(160)"),
+        ("cameras", "ip_address",       "ALTER TABLE cameras ADD COLUMN ip_address VARCHAR(64)"),
+        ("cameras", "onvif_endpoint",   "ALTER TABLE cameras ADD COLUMN onvif_endpoint VARCHAR(500)"),
+        ("cameras", "discovery_id",     "ALTER TABLE cameras ADD COLUMN discovery_id VARCHAR(100)"),
+        ("cameras", "preferred_stream", "ALTER TABLE cameras ADD COLUMN preferred_stream VARCHAR(20) NOT NULL DEFAULT 'sub'"),
+        ("cameras", "ai_stream",        "ALTER TABLE cameras ADD COLUMN ai_stream VARCHAR(20) NOT NULL DEFAULT 'sub'"),
+    ])
+
+
+def _migrate_tables(engine, statements, *, name_from_sql: bool = False) -> None:
+    """Execute CREATE TABLE IF NOT EXISTS statements, swallowing 'already exists'."""
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        for item in statements:
+            sql = item if isinstance(item, str) else item[-1]
+            label = item if isinstance(item, str) else item[0]
+            try:
+                conn.execute(text(sql))
+                conn.commit()
+            except Exception as err:
+                if "already exists" not in str(err).lower():
+                    log.warning("Migration table warning [%s]: %s", label, err)
+
+
+def _migrate_columns(engine, specs) -> None:
+    """Execute ALTER TABLE ADD COLUMN statements, swallowing 'duplicate column' / 'already exists'."""
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        for table, col, sql in specs:
+            try:
+                conn.execute(text(sql))
+                conn.commit()
+            except Exception as err:
+                msg = str(err).lower()
+                if "duplicate column" not in msg and "already exists" not in msg:
+                    log.warning("Migration column warning [%s.%s]: %s", table, col, err)
+
+
 @app.on_event("startup")
 def startup():
-    import logging
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    # ── Production guard ──────────────────────────────────────────────────────
+    if settings.APP_ENV == "production" and settings.SECRET_KEY == _DEFAULT_SECRET:
+        raise RuntimeError(
+            "\n\n"
+            "SECURITY ERROR: Running in production with the default SECRET_KEY.\n"
+            "Set SECRET_KEY=<random 64-char string> in your .env file before starting.\n"
+        )
+    if settings.SECRET_KEY == _DEFAULT_SECRET:
+        log.warning(
+            "[Security] Using default SECRET_KEY — acceptable in development only. "
+            "Set APP_ENV=production and a strong SECRET_KEY before going live."
+        )
+    if not _allowed_origins_raw:
+        log.warning(
+            "[Security] ALLOWED_ORIGINS is not set — all CORS origins permitted. "
+            "Set ALLOWED_ORIGINS=http://<server-ip>:<port> in .env for production."
+        )
+
     os.makedirs(os.path.join(settings.UPLOAD_DIR, "snapshots"), exist_ok=True)
     create_tables()
     ensure_enterprise_schema()
-
-    # ── Auto-migrate: add thumbnail_b64 to face_encodings if missing ──────────
-    try:
-        from sqlalchemy import text
-        from database import engine
-        with engine.connect() as conn:
-            conn.execute(text("ALTER TABLE face_encodings ADD COLUMN thumbnail_b64 TEXT"))
-            conn.commit()
-        print("✅ DB migration: thumbnail_b64 column added")
-    except Exception as e:
-        if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
-            pass  # column already there — all good
-        else:
-            print(f"⚠️  Migration warning: {e}")
-
-    # ── Auto-migrate v2: extend alerts table for multi-camera factory schema ───
-    # Adds three nullable columns introduced in database.py v2.0.
-    # Each ALTER is wrapped individually so a single missing column doesn't
-    # abort the others.  Errors other than "already exists" are surfaced.
-    _v2_alert_migrations = [
-        ("camera_id",   "ALTER TABLE alerts ADD COLUMN camera_id   INTEGER REFERENCES cameras(id)"),
-        ("floor",       "ALTER TABLE alerts ADD COLUMN floor        TEXT"),
-        ("employee_id", "ALTER TABLE alerts ADD COLUMN employee_id  INTEGER REFERENCES employees(id)"),
-    ]
-    try:
-        from sqlalchemy import text
-        from database import engine
-        with engine.connect() as conn:
-            for col_name, sql in _v2_alert_migrations:
-                try:
-                    conn.execute(text(sql))
-                    conn.commit()
-                    print(f"✅ DB migration v2: alerts.{col_name} column added")
-                except Exception as col_err:
-                    col_msg = str(col_err).lower()
-                    if "duplicate column" in col_msg or "already exists" in col_msg:
-                        pass  # already migrated — skip silently
-                    else:
-                        print(f"⚠️  Migration v2 warning [{col_name}]: {col_err}")
-    except Exception as e:
-        print(f"⚠️  Migration v2 block error: {e}")
-
-    # ── Auto-migrate v3: Alert.status column (confidence-tier routing) ────────
-    try:
-        from sqlalchemy import text
-        from database import engine
-        with engine.connect() as conn:
-            try:
-                conn.execute(text(
-                    "ALTER TABLE alerts ADD COLUMN status TEXT NOT NULL DEFAULT 'confirmed'"
-                ))
-                conn.commit()
-                print("✅ DB migration v3: alerts.status column added")
-            except Exception as col_err:
-                col_msg = str(col_err).lower()
-                if "duplicate column" in col_msg or "already exists" in col_msg:
-                    pass  # already migrated
-                else:
-                    print(f"⚠️  Migration v3 [alerts.status]: {col_err}")
-    except Exception as e:
-        print(f"⚠️  Migration v3 block error: {e}")
+    _run_migrations()
 
     load_model()
 
@@ -208,112 +307,7 @@ def startup():
     except Exception as e:
         print(f"⚠️  SystemSettings seed warning: {e}")
 
-    # ── Auto-migrate new tables (safe if already exist) ───────────────────────
-    _v3_migrations = [
-        ("system_settings",
-         "CREATE TABLE IF NOT EXISTS system_settings "
-         "(id INTEGER PRIMARY KEY, key TEXT UNIQUE NOT NULL, "
-         "value TEXT NOT NULL, description TEXT, updated_at DATETIME)"),
-        ("dirty_floor_baselines",
-         "CREATE TABLE IF NOT EXISTS dirty_floor_baselines "
-         "(id INTEGER PRIMARY KEY, camera_id INTEGER REFERENCES cameras(id), "
-         "zone_name TEXT NOT NULL, image_path TEXT NOT NULL, uploaded_at DATETIME)"),
-    ]
-    try:
-        from sqlalchemy import text
-        from database import engine
-        with engine.connect() as conn:
-            for tname, sql in _v3_migrations:
-                try:
-                    conn.execute(text(sql))
-                    conn.commit()
-                    print(f"✅ DB migration v3: table '{tname}' ensured")
-                except Exception as te:
-                    if "already exists" in str(te).lower():
-                        pass
-                    else:
-                        print(f"⚠️  Migration v3 [{tname}]: {te}")
-    except Exception as e:
-        print(f"⚠️  Migration v3 block error: {e}")
-
-    # ── Auto-migrate v4: new tables (attendance, lift events, ocr logs) ─────────
-    _v4_migrations = [
-        ("attendance_records",
-         "CREATE TABLE IF NOT EXISTS attendance_records "
-         "(id INTEGER PRIMARY KEY, employee_id INTEGER REFERENCES employees(id), "
-         "user_id INTEGER REFERENCES users(id), camera_id INTEGER REFERENCES cameras(id), "
-         "clock_in DATETIME NOT NULL, clock_out DATETIME, duration_seconds FLOAT, "
-         "method VARCHAR(20) DEFAULT 'manual', notes VARCHAR(500))"),
-        ("lift_events",
-         "CREATE TABLE IF NOT EXISTS lift_events "
-         "(id INTEGER PRIMARY KEY, camera_id INTEGER NOT NULL REFERENCES cameras(id), "
-         "track_id INTEGER NOT NULL, employee_id INTEGER REFERENCES employees(id), "
-         "event_type VARCHAR(30) NOT NULL, floor_from VARCHAR(20), floor_to VARCHAR(20), "
-         "duration_sec FLOAT, timestamp DATETIME)"),
-        ("invoice_logs",
-         "CREATE TABLE IF NOT EXISTS invoice_logs "
-         "(id INTEGER PRIMARY KEY, camera_id INTEGER REFERENCES cameras(id), "
-         "employee_id INTEGER REFERENCES employees(id), direction VARCHAR(10) DEFAULT 'inward', "
-         "raw_ocr_text TEXT, approved BOOLEAN NOT NULL DEFAULT 0, "
-         "snapshot_b64 TEXT, ocr_available BOOLEAN NOT NULL DEFAULT 1, timestamp DATETIME NOT NULL)"),
-        ("order_form_logs",
-         "CREATE TABLE IF NOT EXISTS order_form_logs "
-         "(id INTEGER PRIMARY KEY, camera_id INTEGER REFERENCES cameras(id), "
-         "employee_id INTEGER REFERENCES employees(id), direction VARCHAR(10) DEFAULT 'outward', "
-         "raw_ocr_text TEXT, approved BOOLEAN NOT NULL DEFAULT 0, "
-         "snapshot_b64 TEXT, ocr_available BOOLEAN NOT NULL DEFAULT 1, timestamp DATETIME NOT NULL)"),
-    ]
-    try:
-        from sqlalchemy import text
-        from database import engine
-        with engine.connect() as conn:
-            for tname, sql in _v4_migrations:
-                try:
-                    conn.execute(text(sql))
-                    conn.commit()
-                    print(f"✅ DB migration v4: table '{tname}' ensured")
-                except Exception as te:
-                    if "already exists" in str(te).lower():
-                        pass
-                    else:
-                        print(f"⚠️  Migration v4 [{tname}]: {te}")
-    except Exception as e:
-        print(f"⚠️  Migration v4 block error: {e}")
-
     # ── Start server-managed camera streams ───────────────────────────────────
-    # Reads all Camera rows with status != 'offline' from the DB and
-    # starts one background reader thread per camera.
-    # WebSocket endpoints subscribe to these shared streams via camera_manager.
-    # v5 camera registration schema. The tables are additive and camera fields
-    # are migrated one-by-one to keep existing SQLite deployments intact.
-    _v5_tables = [
-        "CREATE TABLE IF NOT EXISTS camera_credentials (camera_id INTEGER PRIMARY KEY REFERENCES cameras(id), encrypted_username TEXT NOT NULL, encrypted_password TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)",
-        "CREATE TABLE IF NOT EXISTS camera_streams (id INTEGER PRIMARY KEY, camera_id INTEGER NOT NULL REFERENCES cameras(id), profile_token VARCHAR(200), stream_type VARCHAR(20) NOT NULL, codec VARCHAR(40), width INTEGER, height INTEGER, fps FLOAT, encrypted_rtsp_uri TEXT NOT NULL, active BOOLEAN NOT NULL DEFAULT 1, created_at DATETIME NOT NULL)",
-        "CREATE TABLE IF NOT EXISTS camera_health (id INTEGER PRIMARY KEY, camera_id INTEGER NOT NULL REFERENCES cameras(id), status VARCHAR(40) NOT NULL, fps FLOAT, bitrate_kbps FLOAT, latency_ms FLOAT, packet_loss FLOAT, last_frame_at DATETIME, reconnect_count INTEGER NOT NULL DEFAULT 0, last_error TEXT, created_at DATETIME NOT NULL)",
-    ]
-    _v5_columns = [
-        "ALTER TABLE cameras ADD COLUMN manufacturer VARCHAR(120)",
-        "ALTER TABLE cameras ADD COLUMN model VARCHAR(160)",
-        "ALTER TABLE cameras ADD COLUMN ip_address VARCHAR(64)",
-        "ALTER TABLE cameras ADD COLUMN onvif_endpoint VARCHAR(500)",
-        "ALTER TABLE cameras ADD COLUMN discovery_id VARCHAR(100)",
-        "ALTER TABLE cameras ADD COLUMN preferred_stream VARCHAR(20) NOT NULL DEFAULT 'sub'",
-        "ALTER TABLE cameras ADD COLUMN ai_stream VARCHAR(20) NOT NULL DEFAULT 'sub'",
-    ]
-    try:
-        from sqlalchemy import text
-        from database import engine
-        with engine.connect() as conn:
-            for sql in _v5_tables:
-                conn.execute(text(sql)); conn.commit()
-            for sql in _v5_columns:
-                try:
-                    conn.execute(text(sql)); conn.commit()
-                except Exception as migration_error:
-                    if "duplicate column" not in str(migration_error).lower() and "already exists" not in str(migration_error).lower():
-                        print(f"Camera v5 migration warning: {migration_error}")
-    except Exception as migration_error:
-        print(f"Camera v5 migration block warning: {migration_error}")
 
     from services import camera_manager
     _started = camera_manager.start_all()
@@ -378,7 +372,9 @@ def startup():
 
 @app.on_event("shutdown")
 def shutdown():
-    """Gracefully stop all camera reader threads on server shutdown."""
+    """Gracefully stop all camera reader threads and shared inference pool on server shutdown."""
     from services import camera_manager
+    from services.inference_pool import inference_pool
     camera_manager.stop_all()
-    print("🛑 Safety Monitor: all camera readers stopped")
+    inference_pool.stop()
+    print("🛑 Safety Monitor: all camera readers and inference pool stopped")

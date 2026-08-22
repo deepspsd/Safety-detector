@@ -948,74 +948,99 @@ def check_camera_blocking(camera_id: int, frame_shape: Tuple[int, int, int], per
                 log.error(f"[rule_engine] camera-blocked alert save failed: {exc}")
 
 
-# -----------------------------------------------------------------------------
-# SECTION H � Stock Zone Monitor (REQ-011, REQ-014)
-# -----------------------------------------------------------------------------
-def check_stock_zone(camera_id: int, floor: str, raw_detections: List[dict], zones: dict, db) -> None:
-    if not zones: return
-    
-    from services.zone_service import bbox_in_zone
-    
-    # Check for Exposed-Item (class 15) in specific zones
+# ─────────────────────────────────────────────────────────────────────────────────
+# SECTION H — Stock Zone Monitor (REQ-011, REQ-014)
+# ─────────────────────────────────────────────────────────────────────────────────
+_stock_zone_state: Dict[int, float] = {}   # camera_id → last_alert_time
+_stock_zone_lock  = threading.Lock()
+
+
+def check_stock_zone(
+    camera_id: int,
+    floor: str,
+    raw_detections: List[dict],
+    zones: dict,
+    db,
+) -> None:
+    """Alert when an Exposed-Item detection falls inside a monitored zone."""
+    if not zones:
+        return
+
     exposed_items = [d for d in raw_detections if d.get("label") == "Exposed-Item"]
-    if not exposed_items: return
-    
-    for zone_name in ["entrance", "glassdoor", "stock"]:
+    if not exposed_items:
+        return
+
+    from services.zone_service import bbox_in_zone
+
+    for zone_name in ("entrance", "glassdoor", "stock"):
         poly = zones.get(zone_name)
-        if not poly: continue
-        
+        if not poly:
+            continue
         for item in exposed_items:
-            if bbox_in_zone(item["bbox"], poly):
-                from services.alert_service import save_alert
-                try:
-                    save_alert(
-                        db=db,
-                        user_id=_get_rule_engine_user_id(db),
-                        message=f"⚠️ Stock left openly in {zone_name} zone on camera {camera_id}.",
-                        role="Factory Worker",
-                        severity="high",
-                        detected_issue="Stock Kept Openly",
-                        camera_id=camera_id,
-                        floor=floor,
-                    )
-                    # We log once per frame that meets condition. Rate limiting should be handled upstream or we rely on idle_service throttling.
-                    # For simplicity, we just trigger. (In production, we'd add state tracking like shop_absence).
-                except Exception as exc:
-                    log.error(f"[rule_engine] stock-zone alert save failed: {exc}")
-                return # Alert once per tick
+            if not bbox_in_zone(item["bbox"], poly):
+                continue
+            # Rate-limit: one alert per camera per 5 minutes
+            now = time.monotonic()
+            with _stock_zone_lock:
+                if now - _stock_zone_state.get(camera_id, 0) < 300:
+                    return
+                _stock_zone_state[camera_id] = now
+            from services.alert_service import save_alert
+            try:
+                save_alert(
+                    db=db,
+                    user_id=_get_rule_engine_user_id(db),
+                    message=f"⚠️ Stock left openly in '{zone_name}' zone on camera {camera_id}.",
+                    role="Factory Worker",
+                    severity="high",
+                    detected_issue="Stock Kept Openly",
+                    camera_id=camera_id,
+                    floor=floor,
+                )
+            except Exception as exc:
+                log.error(f"[rule_engine] stock-zone alert save failed: {exc}")
+            return  # one alert per tick maximum
 
 
-# -----------------------------------------------------------------------------
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # SECTION I — Machinery Zone Monitor (REQ-022, REQ-023)
-# -----------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────────
 _machinery_idle_state: Dict[int, dict] = {}
 _machinery_idle_lock = threading.Lock()
 
-def check_machinery_zone(camera_id: int, floor: str, raw_detections: List[dict], persons: List[dict], zones: dict, db) -> None:
-    if not zones: return
-    
+
+def check_machinery_zone(
+    camera_id: int,
+    floor: str,
+    raw_detections: List[dict],
+    persons: List[dict],
+    zones: dict,
+    db,
+) -> None:
+    """Alert when a machine zone (dough, biscuit_cutting) is unattended for >60s."""
+    if not zones:
+        return
+
     from services.zone_service import bbox_in_zone
     now = time.monotonic()
-    
-    for zone_name in ["dough", "biscuit_cutting"]:
+
+    for zone_name in ("dough", "biscuit_cutting"):
         poly = zones.get(zone_name)
-        if not poly: continue
-        
-        # Are there machines in this zone?
+        if not poly:
+            continue
+
         machines = [d for d in raw_detections if d.get("label") == "machinery"]
         machines_in_zone = any(bbox_in_zone(m["bbox"], poly) for m in machines)
-        
-        # Are there persons in this zone?
-        persons_in_zone = any(bbox_in_zone(p["bbox"], poly) for p in persons)
-        
+        persons_in_zone  = any(bbox_in_zone(p["bbox"], poly) for p in persons)
+
+        state_key = f"{camera_id}_{zone_name}"
         with _machinery_idle_lock:
-            state = _machinery_idle_state.setdefault(f"{camera_id}_{zone_name}", {
+            state = _machinery_idle_state.setdefault(state_key, {
                 "unattended_since": None,
                 "alert_fired": False,
             })
-            
-            # Condition 1: Machine running but no person (REQ-023)
-            # We assume "machinery" detection means it's present. (Ideally we'd detect 'running', but we only have class detection).
+
             if machines_in_zone and not persons_in_zone:
                 if state["unattended_since"] is None:
                     state["unattended_since"] = now
@@ -1026,56 +1051,75 @@ def check_machinery_zone(camera_id: int, floor: str, raw_detections: List[dict],
                         save_alert(
                             db=db,
                             user_id=_get_rule_engine_user_id(db),
-                            message=f" Machinery in {zone_name} zone is unattended (no person present).",
+                            message=(
+                                f"⚠️ Machinery in '{zone_name}' zone is unattended "
+                                f"(no person present) on camera {camera_id}."
+                            ),
                             role="Factory Worker",
                             severity="high",
                             detected_issue="Machine unattended",
                             camera_id=camera_id,
                             floor=floor,
                         )
-                    except Exception as e: pass
+                    except Exception as exc:
+                        log.error(f"[rule_engine] machinery-zone alert save failed: {exc}")
             else:
                 state["unattended_since"] = None
                 state["alert_fired"] = False
 
 
-# -----------------------------------------------------------------------------
-# SECTION J � Vendor Payment Snapshot (REQ-044)
-# -----------------------------------------------------------------------------
-_vendor_snapshot_state: Dict[int, float] = {}
-_vendor_snapshot_lock = threading.Lock()
 
-def trigger_vendor_snapshot(camera_id: int, floor: str, persons: List[dict], frame, zones: dict, db) -> None:
-    if floor != "shop" or not zones: return
-    
+# ─────────────────────────────────────────────────────────────────────────────────
+# SECTION J — Counter Activity Snapshot (REQ-041)
+# Captures a snapshot when a person is detected at the shop counter/cashbox
+# zone. Useful for vendor payment audits and access log.
+# Rate-limited to once per 5 minutes per camera to avoid snapshot flooding.
+# ─────────────────────────────────────────────────────────────────────────────────
+_counter_snapshot_state: Dict[int, float] = {}   # camera_id → last_snapshot_time
+_counter_snapshot_lock = threading.Lock()
+
+
+def trigger_vendor_snapshot(
+    camera_id: int,
+    floor: str,
+    persons: List[dict],
+    frame,
+    zones: dict,
+    db,
+) -> None:
+    """Save a counter-activity snapshot when a person is at the counter/cashbox."""
+    if floor != "shop" or not zones:
+        return
+
     poly = zones.get("counter") or zones.get("cashbox")
-    if not poly: return
-    
+    if not poly:
+        return
+
     from services.zone_service import bbox_in_zone
-    persons_in_zone = any(bbox_in_zone(p["bbox"], poly) for p in persons)
-    
-    if persons_in_zone:
-        now = time.monotonic()
-        with _vendor_snapshot_lock:
-            last_snap = _vendor_snapshot_state.get(camera_id, 0)
-            if now - last_snap < 300: # 5 min cooldown
-                return
-            _vendor_snapshot_state[camera_id] = now
-            
-        from services.alert_service import save_alert
-        from services.yolo_service import encode_frame
-        try:
-            save_alert(
-                db=db,
-                user_id=_get_rule_engine_user_id(db),
-                message="Vendor interaction / counter activity detected. Snapshot for audit.",
-                role="Shop Monitor",
-                severity="low",
-                detected_issue="Vendor Audit",
-                camera_id=camera_id,
-                floor=floor,
-                snapshot_b64=encode_frame(frame, quality=70)
-            )
-        except Exception as exc:
-            log.error(f"[rule_engine] vendor-snapshot alert save failed: {exc}")
+    if not any(bbox_in_zone(p["bbox"], poly) for p in persons):
+        return
+
+    now = time.monotonic()
+    with _counter_snapshot_lock:
+        if now - _counter_snapshot_state.get(camera_id, 0) < 300:  # 5 min cooldown
+            return
+        _counter_snapshot_state[camera_id] = now
+
+    from services.alert_service import save_alert
+    from services.yolo_service import encode_frame
+    try:
+        save_alert(
+            db=db,
+            user_id=_get_rule_engine_user_id(db),
+            message="📸 Counter/cashbox activity detected. Snapshot saved for audit log.",
+            role="Shop Monitor",
+            severity="low",
+            detected_issue="Counter Activity Snapshot",
+            camera_id=camera_id,
+            floor=floor,
+            snapshot_b64=encode_frame(frame, quality=70),
+        )
+    except Exception as exc:
+        log.error(f"[rule_engine] counter-snapshot save failed: {exc}")
+
 

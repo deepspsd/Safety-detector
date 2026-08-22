@@ -129,6 +129,14 @@ export const camerasApi = {
     retries: 1,
     ...options,
   }),
+  // HikVision quick-add — builds RTSP URL server-side from IP + credentials
+  hikVisionAdd: (payload) => api.post('/cameras/hikvision-quick-add', payload),
+}
+
+// ── Alarm ─────────────────────────────────────────
+export const alarmApi = {
+  trigger: (severity = 'high') => api.post('/alarm/trigger', { severity }),
+  test:    ()                  => api.get('/alarm/test'),
 }
 
 // ── Platform / Analytics ─────────────────────────

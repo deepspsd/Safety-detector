@@ -121,3 +121,71 @@ def probe_onvif_endpoints(subnet: str, ports: Iterable[int] = (80, 8080, 8899), 
             except OSError:
                 continue
     return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HikVision / ONVIF Quick-Add helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_hikvision_rtsp_url(
+    ip: str,
+    username: str,
+    password: str,
+    channel: int = 1,
+    stream: str = "sub",   # "main" (1080p+) | "sub" (D1/CIF, recommended for AI)
+    port: int = 554,
+) -> str:
+    """
+    Build the RTSP stream URL for a HikVision IP camera.
+
+    Stream types
+    ─────────────
+      main → /Streaming/Channels/{channel}01  — full resolution, high bitrate
+      sub  → /Streaming/Channels/{channel}02  — sub-stream, lower bitrate (AI-recommended)
+
+    Example output:
+      rtsp://admin:pass123@192.168.1.64:554/Streaming/Channels/102
+
+    Usage in Settings UI (HikVision Quick-Add form):
+      POST /cameras with rtsp_url = build_hikvision_rtsp_url(ip, user, pass, channel, stream)
+
+    Note: Credentials are embedded in the URL only for RTSP transport.
+    They are encrypted at rest in the camera_credentials table.
+    """
+    suffix = "01" if stream == "main" else "02"
+    path   = f"/Streaming/Channels/{channel}{suffix}"
+    # URL-encode credentials to handle special characters
+    from urllib.parse import quote
+    u = quote(username, safe="")
+    p = quote(password, safe="")
+    return f"rtsp://{u}:{p}@{ip}:{port}{path}"
+
+
+def hikvision_quick_add(
+    name: str,
+    ip: str,
+    username: str,
+    password: str,
+    floor: str = "ground",
+    channel: int = 1,
+    ai_stream: str = "sub",
+    display_stream: str = "main",
+) -> dict:
+    """
+    Return a dict ready to POST to /cameras for a HikVision camera.
+    The frontend Quick-Add form calls this via POST /cameras/hikvision-quick-add.
+
+    Returns
+    -------
+    dict with all fields needed by the /cameras POST endpoint.
+    """
+    return {
+        "name":             name,
+        "floor":            floor,
+        "manufacturer":     "Hikvision",
+        "rtsp_url":         build_hikvision_rtsp_url(ip, username, password, channel, ai_stream),
+        "preferred_stream": display_stream,
+        "ai_stream":        ai_stream,
+        "ip_address":       ip,
+        "status":           "online",
+    }

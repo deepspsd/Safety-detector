@@ -194,7 +194,7 @@ def save_alert(
     )
 
     # Fire push notification for confirmed alerts only.
-    # send_push_alert() auto-selects: ntfy.sh if configured, else Telegram.
+    # send_push_alert() auto-selects: ntfy.sh (urgent for high) → Telegram fallback.
     if status == "confirmed":
         camera_name = _get_camera_name(camera_id, db)
         _fire_push(
@@ -205,6 +205,13 @@ def save_alert(
             detected_issue = detected_issue,
             snapshot_b64   = snapshot_b64,
         )
+        # Trigger local server alarm for high-severity alerts
+        if severity in ("high", "critical"):
+            try:
+                from routers.alarm import _play_beep
+                _play_beep()
+            except Exception as alarm_exc:
+                log.debug("[alert_service] local alarm error: %s", alarm_exc)
 
     return alert
 

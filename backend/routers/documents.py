@@ -137,20 +137,36 @@ async def manual_scan(
                 camera_id     = camera_id,
                 direction     = "inward",
                 raw_ocr_text  = result["raw_text"],
+                goods_count   = result.get("goods_count"),
                 approved      = result["approved"],
                 snapshot_b64  = result["snapshot_b64"],
                 ocr_available = result["ocr_available"],
                 timestamp     = datetime.datetime.utcnow(),
             )
         else:
+            # Outward: also capture a face/person snapshot from the camera frame
+            # if a live camera_id was supplied (dual-snapshot requirement REQ-039)
+            person_snap = None
+            if camera_id:
+                try:
+                    from services.camera_manager import get_latest_frame
+                    live = get_latest_frame(camera_id)
+                    if live is not None:
+                        import cv2, base64
+                        _, buf = cv2.imencode(".jpg", live, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                        person_snap = "data:image/jpeg;base64," + base64.b64encode(buf).decode()
+                except Exception as snap_exc:
+                    log.debug("[Documents] person snapshot failed: %s", snap_exc)
+
             row = OrderFormLog(
-                camera_id     = camera_id,
-                direction     = "outward",
-                raw_ocr_text  = result["raw_text"],
-                approved      = result["approved"],
-                snapshot_b64  = result["snapshot_b64"],
-                ocr_available = result["ocr_available"],
-                timestamp     = datetime.datetime.utcnow(),
+                camera_id          = camera_id,
+                direction          = "outward",
+                raw_ocr_text       = result["raw_text"],
+                approved           = result["approved"],
+                snapshot_b64       = result["snapshot_b64"],
+                person_snapshot_b64= person_snap,
+                ocr_available      = result["ocr_available"],
+                timestamp          = datetime.datetime.utcnow(),
             )
         db.add(row)
         db.commit()

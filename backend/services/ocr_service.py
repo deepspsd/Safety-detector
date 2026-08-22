@@ -115,6 +115,34 @@ def _text_looks_like_document(text: str, direction: str) -> bool:
     return any(p.search(stripped) for p in patterns)
 
 
+# Regex patterns to extract goods quantity from OCR text.
+# Matches common invoice formats:
+#   "Qty: 48", "Quantity 24", "48 bags", "48 packs", "48 nos", "48 units", "48 pcs"
+_QTY_PATTERNS = [
+    re.compile(r"(?:qty|quantity|nos|pcs|packs|bags|units)\s*[:\-]?\s*(\d+)", re.IGNORECASE),
+    re.compile(r"(\d+)\s*(?:qty|nos|pcs|packs|bags|units|pieces)", re.IGNORECASE),
+    re.compile(r"\bqty\s+(\d+)\b", re.IGNORECASE),
+]
+
+
+def _extract_goods_count(text: str) -> Optional[int]:
+    """
+    Parse a numeric goods count from invoice OCR text.
+    Returns None if no plausible quantity is found.
+    Tries patterns in priority order; returns the first match.
+    """
+    for pattern in _QTY_PATTERNS:
+        m = pattern.search(text)
+        if m:
+            try:
+                val = int(m.group(1))
+                if 1 <= val <= 100_000:   # sanity range — avoid OCR noise
+                    return val
+            except (IndexError, ValueError):
+                continue
+    return None
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Image pre-processing
 # ──────────────────────────────────────────────────────────────────────────────
@@ -348,6 +376,7 @@ def scan_document_in_frame(
     return {
         "approved":      approved,
         "raw_text":      raw_text,
+        "goods_count":   _extract_goods_count(raw_text),
         "timestamp":     ts,
         "direction":     direction,
         "snapshot_b64":  snapshot_b64,

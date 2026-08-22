@@ -929,9 +929,13 @@ function CamerasTab({ addToast }) {
   const [selectedCamera,   setSelectedCamera]   = useState(null)
   const [discovering,      setDiscovering]      = useState(false)
   const [discoveryResults, setDiscoveryResults] = useState(null)
+  // Manual RTSP form
   const [addForm,          setAddForm]          = useState({ name: '', floor: 'ground', rtsp_url: '', zone_type: '', camera_code: '', department: '', purpose: '', camera_type: 'rtsp' })
+  // HikVision quick-add form
+  const [hikForm,          setHikForm]          = useState({ name: '', ip: '', username: 'admin', password: '', floor: 'ground', channel: 1, ai_stream: 'sub', display_stream: 'main' })
   const [addingCamera,     setAddingCamera]     = useState(false)
   const [showAddForm,      setShowAddForm]      = useState(false)
+  const [addMode,          setAddMode]          = useState('manual')  // 'manual' | 'hikvision'
 
   const loadCameras = useCallback(async () => {
     try {
@@ -969,6 +973,26 @@ function CamerasTab({ addToast }) {
       await loadCameras()
     } catch (err) {
       addToast('Add failed', err.response?.data?.detail || '', 'danger')
+    } finally {
+      setAddingCamera(false)
+    }
+  }
+
+  const addHikVisionCamera = async () => {
+    if (!hikForm.name.trim()) return addToast('Name required', '', 'warning')
+    if (!hikForm.ip.trim())   return addToast('IP address required', '', 'warning')
+    setAddingCamera(true)
+    try {
+      const res = await camerasApi.hikVisionAdd({
+        ...hikForm,
+        channel: Number(hikForm.channel),
+      })
+      addToast('HikVision camera added', `${res.data.name} — ${res.data.rtsp_url.replace(/\/\/[^@]+@/, '//***@')}`, 'success')
+      setShowAddForm(false)
+      setHikForm({ name: '', ip: '', username: 'admin', password: '', floor: 'ground', channel: 1, ai_stream: 'sub', display_stream: 'main' })
+      await loadCameras()
+    } catch (err) {
+      addToast('HikVision add failed', err.response?.data?.detail || err.message || '', 'danger')
     } finally {
       setAddingCamera(false)
     }
@@ -1048,43 +1072,113 @@ function CamerasTab({ addToast }) {
       {/* ── Add camera form ── */}
       {showAddForm && (
         <div className="card card-p">
-          <div style={{ fontWeight: 700, marginBottom: 14 }}>+ Add Camera</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <div>
-              <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Display Name *</label>
-              <input className="input" value={addForm.name} onChange={e => setAddForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Ground Floor Entrance" />
-            </div>
-            <div>
-              <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Floor</label>
-              <input className="input" list="camera-floors" value={addForm.floor} onChange={e => setAddForm(f => ({ ...f, floor: e.target.value }))} placeholder="e.g. ground or third" />
-              <datalist id="camera-floors">
-                <option value="ground" /><option value="first" /><option value="second" /><option value="shop" /><option value="store" />
-              </datalist>
-            </div>
-            <div style={{ gridColumn: 'span 2' }}>
-              <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>RTSP / HTTP URL</label>
-              <input className="input" value={addForm.rtsp_url} onChange={e => setAddForm(f => ({ ...f, rtsp_url: e.target.value }))} placeholder="rtsp://user:pass@192.168.1.x:554/Streaming/Channels/101" />
-            </div>
-            <div>
-              <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Zone Type (for idle limit)</label>
-              <input className="input" value={addForm.zone_type} onChange={e => setAddForm(f => ({ ...f, zone_type: e.target.value }))} placeholder="shop / default / cashbox…" />
-            </div>
-            <div>
-              <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Camera ID</label>
-              <input className="input" value={addForm.camera_code} onChange={e => setAddForm(f => ({ ...f, camera_code: e.target.value }))} placeholder="e.g. GF-PACK-01" />
-            </div>
-            <div>
-              <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Department</label>
-              <input className="input" value={addForm.department} onChange={e => setAddForm(f => ({ ...f, department: e.target.value }))} placeholder="e.g. Packing" />
-            </div>
-            <div>
-              <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Purpose</label>
-              <input className="input" value={addForm.purpose} onChange={e => setAddForm(f => ({ ...f, purpose: e.target.value }))} placeholder="e.g. Workflow and PPE" />
-            </div>
+          {/* Mode toggle */}
+          <div style={{ display: 'flex', gap: 6, marginBottom: 16 }}>
+            {[['manual', '📡 Manual RTSP'], ['hikvision', '📷 HikVision Quick-Add']].map(([m, label]) => (
+              <button key={m} className={`btn ${addMode === m ? 'btn-primary' : 'btn-ghost'}`}
+                style={{ fontSize: '0.78rem', padding: '5px 14px' }}
+                onClick={() => setAddMode(m)}>{label}</button>
+            ))}
           </div>
-          <button className="btn btn-primary" style={{ marginTop: 14 }} onClick={addCamera} disabled={addingCamera}>
-            {addingCamera ? 'Adding…' : 'Add Camera'}
-          </button>
+
+          {addMode === 'manual' ? (
+            <>
+              <div style={{ fontWeight: 700, marginBottom: 14 }}>+ Add Camera (Manual RTSP)</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div>
+                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Display Name *</label>
+                  <input className="input" value={addForm.name} onChange={e => setAddForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Ground Floor Entrance" />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Floor</label>
+                  <input className="input" list="camera-floors" value={addForm.floor} onChange={e => setAddForm(f => ({ ...f, floor: e.target.value }))} placeholder="e.g. ground or third" />
+                  <datalist id="camera-floors">
+                    <option value="ground" /><option value="first" /><option value="second" /><option value="shop" /><option value="store" />
+                  </datalist>
+                </div>
+                <div style={{ gridColumn: 'span 2' }}>
+                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>RTSP / HTTP URL</label>
+                  <input className="input" value={addForm.rtsp_url} onChange={e => setAddForm(f => ({ ...f, rtsp_url: e.target.value }))} placeholder="rtsp://user:pass@192.168.1.x:554/Streaming/Channels/101" />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Zone Type (for idle limit)</label>
+                  <input className="input" value={addForm.zone_type} onChange={e => setAddForm(f => ({ ...f, zone_type: e.target.value }))} placeholder="shop / default / cashbox…" />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Camera ID</label>
+                  <input className="input" value={addForm.camera_code} onChange={e => setAddForm(f => ({ ...f, camera_code: e.target.value }))} placeholder="e.g. GF-PACK-01" />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Department</label>
+                  <input className="input" value={addForm.department} onChange={e => setAddForm(f => ({ ...f, department: e.target.value }))} placeholder="e.g. Packing" />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Purpose</label>
+                  <input className="input" value={addForm.purpose} onChange={e => setAddForm(f => ({ ...f, purpose: e.target.value }))} placeholder="e.g. Workflow and PPE" />
+                </div>
+              </div>
+              <button className="btn btn-primary" style={{ marginTop: 14 }} onClick={addCamera} disabled={addingCamera}>
+                {addingCamera ? 'Adding…' : 'Add Camera'}
+              </button>
+            </>
+          ) : (
+            <>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>📷 HikVision Quick-Add</div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 14 }}>
+                Enter IP and credentials — the RTSP URL is built automatically.<br />
+                Works with all HikVision NVR/IP cameras using standard ONVIF/RTSP ports.
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div>
+                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Display Name *</label>
+                  <input className="input" value={hikForm.name} onChange={e => setHikForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Entrance Cam" />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Camera IP Address *</label>
+                  <input className="input" value={hikForm.ip} onChange={e => setHikForm(f => ({ ...f, ip: e.target.value }))} placeholder="192.168.1.64" />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Username</label>
+                  <input className="input" value={hikForm.username} onChange={e => setHikForm(f => ({ ...f, username: e.target.value }))} placeholder="admin" />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Password</label>
+                  <input className="input" type="password" value={hikForm.password} onChange={e => setHikForm(f => ({ ...f, password: e.target.value }))} placeholder="••••••••" />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Floor</label>
+                  <input className="input" list="hik-floors" value={hikForm.floor} onChange={e => setHikForm(f => ({ ...f, floor: e.target.value }))} placeholder="ground" />
+                  <datalist id="hik-floors">
+                    <option value="ground" /><option value="first" /><option value="second" /><option value="shop" />
+                  </datalist>
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Channel (1–32)</label>
+                  <input className="input" type="number" min={1} max={32} value={hikForm.channel} onChange={e => setHikForm(f => ({ ...f, channel: e.target.value }))} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>AI Stream</label>
+                  <select className="input" value={hikForm.ai_stream} onChange={e => setHikForm(f => ({ ...f, ai_stream: e.target.value }))}>
+                    <option value="sub">Sub-stream (D1 / recommended for AI)</option>
+                    <option value="main">Main-stream (HD)</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Display Stream</label>
+                  <select className="input" value={hikForm.display_stream} onChange={e => setHikForm(f => ({ ...f, display_stream: e.target.value }))}>
+                    <option value="main">Main-stream (HD — recommended for display)</option>
+                    <option value="sub">Sub-stream</option>
+                  </select>
+                </div>
+              </div>
+              <div style={{ marginTop: 12, padding: '8px 12px', borderRadius: 8, background: 'rgba(59,130,246,0.07)', border: '1px solid rgba(59,130,246,0.2)', fontSize: '0.73rem', color: 'var(--text-muted)' }}>
+                💡 URL preview: <code style={{ color: 'var(--accent-blue)' }}>rtsp://{hikForm.username || 'admin'}:***@{hikForm.ip || '192.168.x.x'}:554/Streaming/Channels/{hikForm.channel || 1}{hikForm.ai_stream === 'main' ? '01' : '02'}</code>
+              </div>
+              <button className="btn btn-primary" style={{ marginTop: 14 }} onClick={addHikVisionCamera} disabled={addingCamera || !hikForm.ip}>
+                {addingCamera ? 'Adding…' : '📡 Add HikVision Camera'}
+              </button>
+            </>
+          )}
         </div>
       )}
 
