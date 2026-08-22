@@ -18,25 +18,98 @@ import { useToast } from '../context/ToastContext'
 
 // Zone colour palette — consistent across painter and overlay
 const ZONE_COLOURS = {
-  entrance:         '#00e5ff',
-  cashbox:          '#ff9800',
-  window:           '#f44336',
-  dough_table:      '#7c4dff',
-  oven:             '#ff5722',
-  packing:          '#4caf50',
-  camera_standing:  '#e91e63',
+  // Ground floor
+  entrance:           '#00e5ff',
+  entrance_outward:   '#00b8d4',
+  glass_door:         '#40c4ff',
+  loading:            '#80deea',
+  packing:            '#4caf50',
+  oven:               '#ff5722',
+  oven_stove:         '#ff5722',
+  stove:              '#ff5722',
+  dough_table:        '#7c4dff',
+  dough_mixing:       '#9c27b0',
+  cutting_machine:    '#e91e63',
+  machine:            '#f06292',
+  stock:              '#ffc107',
+  stock_area:         '#ffa000',
+  raw_material:       '#ff8f00',
+  finished_goods:     '#558b2f',
+  window:             '#f44336',
+  window_throw:       '#d50000',
+  // Shop floor
+  cashbox:            '#ff9800',
+  cash_counter:       '#fb8c00',
+  shop_counter:       '#ef6c00',
+  vendor_desk:        '#ffb300',
+  payment_desk:       '#ffa000',
+  // All floors
+  lift:               '#26a69a',
+  cylinder_area:      '#8d6e63',
+  camera_standing:    '#e91e63',
+  cleaning_area:      '#90a4ae',
+  dispatch:           '#78909c',
+  employee_area:      '#5c6bc0',
+  supervisor_area:    '#3949ab',
+  document_scan_area: '#1e88e5',
 }
 const FALLBACK_COLOUR = '#ffeb3b'
+
+// What each zone activates — shown next to the selector for admin clarity
+const ZONE_META = {
+  entrance:           { icon: '📥', rule: 'OCR gate — inward invoice scan + face attendance' },
+  entrance_outward:   { icon: '📤', rule: 'OCR gate — outward order form + person snapshot' },
+  glass_door:         { icon: '🚪', rule: 'Face attendance (glassdoor) + lift item tracking' },
+  loading:            { icon: '🚛', rule: 'Loading/unloading monitor + OCR gate + stock check' },
+  packing:            { icon: '📦', rule: 'Packing monitor — hand-motion idle alert (>5 min)' },
+  oven:               { icon: '🔥', rule: 'Gas/oven idle alert (boil >10 min / oil idle >10 min)' },
+  oven_stove:         { icon: '🔥', rule: 'Gas/oven idle alert (boil >10 min / oil idle >10 min)' },
+  stove:              { icon: '🔥', rule: 'Gas/oven idle alert — alias for oven zone' },
+  dough_table:        { icon: '🫓', rule: 'Machinery zone — shift check + post-job idle (must move)' },
+  dough_mixing:       { icon: '🫓', rule: 'Dough mixing zone — shift check (6 AM first floor)' },
+  cutting_machine:    { icon: '✂️', rule: 'Machine-on → worker must start; after finish → go to packing' },
+  machine:            { icon: '⚙️', rule: 'Generic machinery zone — idle post-job alert' },
+  stock:              { icon: '📊', rule: 'Stock zone — item exposure + dirty floor + raw material' },
+  stock_area:         { icon: '📊', rule: 'Stock area — item exposure alert' },
+  raw_material:       { icon: '🧱', rule: 'Raw material stock monitor — exposure + movement' },
+  finished_goods:     { icon: '✅', rule: 'Finished goods — dispatch check (sent to vehicle?)' },
+  window:             { icon: '🪟', rule: 'Window zone — throwing/passing goods alert (immediate)' },
+  window_throw:       { icon: '🪟', rule: 'Window throw — stealing/passing items out alert' },
+  cashbox:            { icon: '💰', rule: 'Cash monitor — pocket vs cashbox alert' },
+  cash_counter:       { icon: '💳', rule: 'Cash counter — unauthorized access + stock check' },
+  shop_counter:       { icon: '🏪', rule: 'Shop absence — alert if no person > 1 min' },
+  vendor_desk:        { icon: '🤝', rule: 'Vendor payment — captures payee snapshot' },
+  payment_desk:       { icon: '💳', rule: 'Payment desk — captures payee snapshot' },
+  lift:               { icon: '🛗', rule: 'Lift monitor — person + item tracking across all floors' },
+  cylinder_area:      { icon: '🫙', rule: 'Cylinder tracking — count + usage days' },
+  camera_standing:    { icon: '🚫', rule: 'Camera blocking — alert if person stands in front >1 min' },
+  cleaning_area:      { icon: '🧹', rule: 'Dirty floor detection baseline zone' },
+  dispatch:           { icon: '🚚', rule: 'Dispatch area — outward goods monitoring' },
+  employee_area:      { icon: '👷', rule: 'Employee zone — dress code + idle check' },
+  supervisor_area:    { icon: '👔', rule: 'Supervisor area — activity monitoring' },
+  document_scan_area: { icon: '📄', rule: 'Document scan zone — OCR gate for paperwork' },
+}
 
 function zoneColour(name) {
   return ZONE_COLOURS[name] || FALLBACK_COLOUR
 }
 
+// Ordered preset zone list — grouped logically for the dropdown
 const PRESET_ZONES = [
-  'entrance', 'exit', 'packing', 'dough_table', 'machine', 'oven', 'cash_counter', 'cashbox',
-  'lift', 'window', 'dispatch', 'loading', 'raw_material', 'finished_goods', 'stock', 'employee_area',
-  'supervisor_area', 'cleaning_area', 'waiting_area', 'vehicle_area', 'document_scan_area',
-  'shop_counter', 'payment_desk', 'camera_standing',
+  // Entrances & movement
+  'entrance', 'entrance_outward', 'glass_door', 'loading', 'dispatch',
+  // Ground floor production
+  'dough_table', 'dough_mixing', 'cutting_machine', 'machine', 'oven', 'oven_stove', 'stove', 'packing',
+  // Stock & goods
+  'stock', 'stock_area', 'raw_material', 'finished_goods', 'cylinder_area',
+  // Windows
+  'window', 'window_throw',
+  // Lift
+  'lift',
+  // Shop floor
+  'cashbox', 'cash_counter', 'shop_counter', 'vendor_desk', 'payment_desk',
+  // General
+  'camera_standing', 'cleaning_area', 'employee_area', 'supervisor_area', 'document_scan_area',
 ]
 
 export default function ZonePainter({ cameraId, onSaved }) {
@@ -289,25 +362,71 @@ export default function ZonePainter({ cameraId, onSaved }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
       {/* Zone name selector */}
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-        <label style={{ fontWeight: 600, fontSize: 14 }}>Zone name:</label>
-        <select
-          value={zoneName}
-          onChange={e => setZoneName(e.target.value)}
-          style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-primary)' }}
-        >
-          {PRESET_ZONES.map(z => (
-            <option key={z} value={z}>{z}</option>
-          ))}
-          <option value="__custom__">Custom…</option>
-        </select>
-        {zoneName === '__custom__' && (
-          <input
-            value={customName}
-            onChange={e => setCustomName(e.target.value)}
-            placeholder="e.g. dough_section_2"
-            style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-primary)', width: 200 }}
-          />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          <label style={{ fontWeight: 600, fontSize: 14 }}>Zone name:</label>
+          <select
+            value={zoneName}
+            onChange={e => setZoneName(e.target.value)}
+            style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-primary)', minWidth: 220 }}
+          >
+            <optgroup label="── Entrances &amp; Movement ──">
+              {['entrance', 'entrance_outward', 'glass_door', 'loading', 'dispatch'].map(z => (
+                <option key={z} value={z}>{ZONE_META[z]?.icon || '●'} {z}</option>
+              ))}
+            </optgroup>
+            <optgroup label="── Ground Floor Production ──">
+              {['dough_table', 'dough_mixing', 'cutting_machine', 'machine', 'oven', 'oven_stove', 'stove', 'packing'].map(z => (
+                <option key={z} value={z}>{ZONE_META[z]?.icon || '●'} {z}</option>
+              ))}
+            </optgroup>
+            <optgroup label="── Stock &amp; Goods ──">
+              {['stock', 'stock_area', 'raw_material', 'finished_goods', 'cylinder_area'].map(z => (
+                <option key={z} value={z}>{ZONE_META[z]?.icon || '●'} {z}</option>
+              ))}
+            </optgroup>
+            <optgroup label="── Windows ──">
+              {['window', 'window_throw'].map(z => (
+                <option key={z} value={z}>{ZONE_META[z]?.icon || '●'} {z}</option>
+              ))}
+            </optgroup>
+            <optgroup label="── Lift ──">
+              <option value="lift">{ZONE_META['lift']?.icon} lift</option>
+            </optgroup>
+            <optgroup label="── Shop Floor ──">
+              {['cashbox', 'cash_counter', 'shop_counter', 'vendor_desk', 'payment_desk'].map(z => (
+                <option key={z} value={z}>{ZONE_META[z]?.icon || '●'} {z}</option>
+              ))}
+            </optgroup>
+            <optgroup label="── General ──">
+              {['camera_standing', 'cleaning_area', 'employee_area', 'supervisor_area', 'document_scan_area'].map(z => (
+                <option key={z} value={z}>{ZONE_META[z]?.icon || '●'} {z}</option>
+              ))}
+            </optgroup>
+            <option value="__custom__">✏️ Custom…</option>
+          </select>
+          {zoneName === '__custom__' && (
+            <input
+              value={customName}
+              onChange={e => setCustomName(e.target.value)}
+              placeholder="e.g. dough_section_2"
+              style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-primary)', width: 200 }}
+            />
+          )}
+        </div>
+
+        {/* Zone description — tells admin what this zone activates */}
+        {zoneName !== '__custom__' && ZONE_META[zoneName] && (
+          <div style={{
+            padding: '6px 12px', borderRadius: 8,
+            background: zoneColour(zoneName) + '18',
+            border: `1px solid ${zoneColour(zoneName)}55`,
+            fontSize: '0.78rem', color: 'var(--text-secondary)',
+            display: 'flex', alignItems: 'center', gap: 8,
+          }}>
+            <span style={{ fontSize: '1.1rem' }}>{ZONE_META[zoneName].icon}</span>
+            <span><strong style={{ color: zoneColour(zoneName) }}>Activates:</strong> {ZONE_META[zoneName].rule}</span>
+          </div>
         )}
       </div>
 

@@ -260,13 +260,17 @@ class _ManagedCamera:
         from services.enterprise_runtime import runtime as enterprise_runtime
         from database import SessionLocal, Camera as CameraModel
 
-        zone_name = "default"
+        # zone_type is the camera-level tag (e.g. "packing", "lift").
+        # We also merge polygon zone names each tick so that painting a zone
+        # polygon is sufficient to activate the matching rule — no need to
+        # also change zone_type.
+        camera_zone_type = "default"
         db_init = None
         try:
             db_init = SessionLocal()
             cam = db_init.query(CameraModel).filter(CameraModel.id == self.camera_id).first()
             if cam and cam.zone_type:
-                zone_name = cam.zone_type
+                camera_zone_type = cam.zone_type
             # Seed settings defaults once per camera-start (safe: upsert only)
             rule_engine.seed_defaults(db_init)
         except Exception as exc:
@@ -294,6 +298,13 @@ class _ManagedCamera:
                 if zones is None:
                     zones = zone_service.load_zones_for_camera(self.camera_id, db)
 
+                # active_zones: union of the camera's zone_type tag and all
+                # painted polygon names.  Every dispatch check below uses this
+                # set — painting a zone polygon IS sufficient to activate the
+                # matching rule (no need to also update zone_type).
+                polygon_zone_names = set(zones.keys()) if zones else set()
+                active_zones: set = polygon_zone_names | {camera_zone_type}
+
                 # ── YOLO inference via shared pool ──────────────────────────
                 # Submit the current frame for inference.  The pool runs one
                 # YOLO model for ALL cameras — no duplicate model loads.
@@ -319,7 +330,7 @@ class _ManagedCamera:
                 idle_service.process_frame(
                     camera_id=self.camera_id,
                     persons=persons,
-                    zone_name=zone_name,
+                    zone_name=camera_zone_type,
                 )
 
                 # ── Rule engine — person seen recording (shift-start) ────────
@@ -353,9 +364,16 @@ class _ManagedCamera:
                     db=db,
                 )
 
-                # ── Rule engine — gas/oven idle (second floor only) ───────────
-                if self.floor == "second" or "oven" in zone_name:
-                    stove_polygon = (zones or {}).get("stove") or (zones or {}).get("oven")
+                # ── Rule engine — gas/oven idle (second floor + any camera with oven/stove polygon) ─
+                _has_oven = self.floor == "second" or bool(
+                    active_zones & {"oven", "stove", "oven_stove"}
+                )
+                if _has_oven:
+                    stove_polygon = (
+                        (zones or {}).get("stove")
+                        or (zones or {}).get("oven")
+                        or (zones or {}).get("oven_stove")
+                    )
                     rule_engine.gas_idle_update(
                         camera_id=self.camera_id,
                         floor=self.floor,
@@ -364,25 +382,39 @@ class _ManagedCamera:
                         zone_polygon=stove_polygon,
                         db=db,
                     )
-                
-                # ── New Rule Engine checks (from gap audit) ───────────────────
+
+                # ── Camera-blocking check (runs on ALL cameras) ───────────────
+                # Person standing in front of camera > 1 min → alert.
                 rule_engine.check_camera_blocking(self.camera_id, frame.shape, persons, db)
+
+                # ── Stock zone check (ALL cameras — raw materials + items) ─────
+                # Zone-polygon-gated internally by rule_engine.check_stock_zone.
                 rule_engine.check_stock_zone(self.camera_id, self.floor, raw_dets, zones, db)
-                rule_engine.check_machinery_zone(self.camera_id, self.floor, raw_dets, persons, zones, db)
-                rule_engine.trigger_vendor_snapshot(self.camera_id, self.floor, persons, frame, zones, db)
-                
-                # ── Rule engine — OCR gate (entrance cameras) ───────────────────────
-                if "entrance" in zone_name or (zones and "entrance" in zones):
+
+
+                # ── Rule engine — OCR gate (entrance cameras) ─────────────────────
+                # Triggers if zone_type contains "entrance" OR a polygon named
+                # "entrance" / "entrance_outward" / "glass_door" is painted.
+                _has_entrance = bool(
+                    active_zones & {"entrance", "entrance_outward", "glass_door", "loading"}
+                )
+                if _has_entrance:
                     try:
                         from services.yolo_service import run_ocr_gate_for_camera
-                        direction = "outward" if "outward" in zone_name else "inward"
+                        # outward direction: explicit outward zone_type OR outward polygon present
+                        direction = (
+                            "outward"
+                            if "outward" in camera_zone_type
+                            or "entrance_outward" in active_zones
+                            else "inward"
+                        )
                         run_ocr_gate_for_camera(frame, raw_dets, zones, db, self.camera_id, direction)
                     except Exception as exc:
                         log.debug(f"[CamMgr] ocr_gate error (cam={self.camera_id}): {exc}")
 
-                # ── Packing monitor (cameras whose zone_type contains "packing") ─
-                # Checks that workers' hands stay in motion while packing.
-                if "packing" in zone_name:
+                # ── Packing monitor — hand-motion check ───────────────────────
+                # Triggers if zone_type is packing OR a packing polygon is painted.
+                if active_zones & {"packing"}:
                     try:
                         from services import packing_monitor
                         packing_monitor.process_packing_frame(
@@ -395,9 +427,10 @@ class _ManagedCamera:
                     except Exception as pm_exc:
                         log.debug(f"[CamMgr] packing_monitor error (cam={self.camera_id}): {pm_exc}")
 
-                # ── Lift monitor (cameras whose zone_type contains "lift") ────────
-                # Tracks person entry/exit through lift zones on all 3 floors.
-                if "lift" in zone_name:
+                # ── Lift monitor — person + item tracking across floors ────────
+                # Triggers if zone_type is "lift" OR a "lift" polygon is painted
+                # (glass_door cameras also track lift movement).
+                if active_zones & {"lift", "glass_door"}:
                     try:
                         from services import lift_monitor
                         lift_monitor.process_lift_frame(
@@ -405,21 +438,31 @@ class _ManagedCamera:
                             camera_id=self.camera_id,
                             floor=self.floor,
                             persons=persons,
-                            lift_polygon=(zones or {}).get("lift"),
+                            lift_polygon=(
+                                (zones or {}).get("lift")
+                                or (zones or {}).get("glass_door")
+                            ),
                         )
                     except Exception as lm_exc:
                         log.debug(f"[CamMgr] lift_monitor error (cam={self.camera_id}): {lm_exc}")
 
-                # ── Cash + stock monitor (shop floor cameras only) ─────────────
-                # Alerts on unauthorized cashbox access and exposed stock items.
-                if self.floor == "shop":
+                # ── Cash + stock monitor ───────────────────────────────────────
+                # Triggers on shop floor OR when a cashbox/stock polygon is painted
+                # on ANY floor (e.g. a dedicated cash-counter camera on ground floor).
+                _has_cash_zone = self.floor == "shop" or bool(
+                    active_zones & {"cashbox", "cash_counter", "vendor_desk", "payment_desk", "shop_counter"}
+                )
+                if _has_cash_zone:
                     try:
                         from services import cash_monitor
                         cash_monitor.check_cash_zone(
                             db=db,
                             camera_id=self.camera_id,
                             detections=raw_dets,
-                            cashbox_polygon=(zones or {}).get("cashbox"),
+                            cashbox_polygon=(
+                                (zones or {}).get("cashbox")
+                                or (zones or {}).get("cash_counter")
+                            ),
                         )
                         cash_monitor.check_stock_zone(
                             db=db,
@@ -429,6 +472,32 @@ class _ManagedCamera:
                         )
                     except Exception as cm_exc:
                         log.debug(f"[CamMgr] cash_monitor error (cam={self.camera_id}): {cm_exc}")
+
+                # ── Vendor payment snapshot (shop / vendor_desk cameras) ───────
+                # Captures a photo of the payee when a vendor payment is detected.
+                if self.floor == "shop" or active_zones & {"vendor_desk", "payment_desk"}:
+                    rule_engine.trigger_vendor_snapshot(
+                        self.camera_id, self.floor, persons, frame,
+                        zones or {}, db
+                    )
+
+                # ── Dough / cutting-machine post-job idle check ────────────────
+                # After dough mixing or cutting finishes the worker must move.
+                # Machinery zone check handles this: machine idle = no motion near machine.
+                if active_zones & {"dough_table", "cutting_machine", "machine"}:
+                    rule_engine.check_machinery_zone(
+                        self.camera_id, self.floor, raw_dets, persons,
+                        zones or {}, db
+                    )
+
+                # ── Window-throw alert ────────────────────────────────────────
+                # Detects objects/items near window zones (stealing / throwing).
+                if active_zones & {"window", "window_throw"}:
+                    rule_engine.check_stock_zone(
+                        self.camera_id, self.floor, raw_dets,
+                        {k: v for k, v in (zones or {}).items() if "window" in k},
+                        db
+                    )
 
                 # ── Face recognition → Auto attendance (rate-limited 1× per 2s) ─
                 # Runs at 0.5 fps to keep CPU load low while still catching

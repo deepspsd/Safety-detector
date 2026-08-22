@@ -2,14 +2,14 @@
 zone_service.py — Zone polygon helpers for per-camera spatial gating
 =====================================================================
 Provides:
-  • point_in_zone(cx, cy, polygon)   — cv2.pointPolygonTest wrapper
-  • bbox_center(bbox)                — [x1,y1,x2,y2] → (cx, cy)
+  • point_in_zone(cx, cy, polygon)    — cv2.pointPolygonTest wrapper
+  • bbox_center(bbox)                 — [x1,y1,x2,y2] → (cx, cy)
   • load_zones_for_camera(cam_id, db) — cached dict of zone_name → polygon
   • invalidate_zone_cache(cam_id)     — call after zone create/delete
 
 Design
 ──────
-Zones are stored in `zone_configs` (ZoneConfig model, Block 1).
+Zones are stored in `zone_configs` (ZoneConfig model).
 polygon_json is a JSON string of [[x,y], ...] pixel coordinates in the
 camera's frame space.
 
@@ -17,12 +17,50 @@ An in-process cache avoids hitting the DB on every ~5 fps detection tick.
 Cache is busted by invalidate_zone_cache(), called from the zone CRUD
 endpoints whenever a polygon is created or deleted.
 
-Zone names used by the pipeline
-────────────────────────────────
-  "entrance"    — gates the OCR pipeline (Document-in-hand class)
-  "cashbox"     — gates cash-monitoring alerts (person near cashbox zone)
-  "window"      — gates window-throw trajectory alert (Phase 4, stub)
-  any other     — available for idle_service zone_name lookup
+Zone names → Pipeline functions (from req.md)
+──────────────────────────────────────────────
+ENTRANCES & MOVEMENT
+  "entrance"          → OCR gate (inward invoices + face attendance)
+  "entrance_outward"  → OCR gate (outward order forms + person snapshot)
+  "glass_door"        → Face attendance (glassdoor) + lift item tracking
+  "loading"           → Loading/unloading + OCR gate + stock check
+
+GROUND FLOOR PRODUCTION
+  "packing"           → packing_monitor (hand-motion idle alert, >5 min)
+  "oven" / "stove" / "oven_stove"
+                      → gas_idle_update (boil/oil idle >10 min alert)
+  "dough_table" / "dough_mixing"
+                      → check_machinery_zone (shift check + post-job idle)
+  "cutting_machine" / "machine"
+                      → check_machinery_zone (machine-on → worker must work;
+                         after finish → must move to packing)
+
+STOCK & GOODS (ALL FLOORS)
+  "stock" / "stock_area" / "raw_material"
+                      → check_stock_zone (exposure + dirty floor)
+  "finished_goods"    → check_stock_zone (dispatch check)
+  "cylinder_area"     → process_cylinder_detections (count + usage days)
+
+WINDOWS (ALL FLOORS)
+  "window" / "window_throw"
+                      → check_stock_zone restricted to window polygon
+                         (stealing / throwing goods alert — immediate)
+
+LIFT (ALL FLOORS)
+  "lift"              → lift_monitor (person + item tracking across floors)
+
+SHOP FLOOR
+  "cashbox" / "cash_counter"
+                      → cash_monitor.check_cash_zone (pocket vs cashbox)
+  "shop_counter"      → check_shop_absence (alert if no person >1 min)
+  "vendor_desk" / "payment_desk"
+                      → trigger_vendor_snapshot (payee photo)
+
+ALL CAMERAS
+  "camera_standing"   → check_camera_blocking (person blocks cam >1 min)
+  "cleaning_area"     → check_dirty_floor (baseline zone)
+  any zone polygon    → active_zones set — painting a polygon IS sufficient
+                        to activate the matching rule without changing zone_type
 """
 
 from __future__ import annotations

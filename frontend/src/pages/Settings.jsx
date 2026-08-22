@@ -229,32 +229,95 @@ export default function Settings() {
   ]
 
   return (
-    <div className="page-container">
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Settings</h1>
-          <p className="page-subtitle">Configure detection, appearance, and notification preferences</p>
-        </div>
+    <div className="page-container" style={{ paddingBottom: 48 }}>
+
+      {/* ── Page header ── */}
+      <div style={{ marginBottom: 32 }}>
+        <h1 style={{ fontSize: '1.75rem', fontWeight: 800, margin: 0, letterSpacing: '-0.02em', background: 'linear-gradient(135deg, var(--text-primary) 60%, var(--accent-purple, #8b5cf6))', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+          Settings
+        </h1>
+        <p style={{ color: 'var(--text-secondary)', marginTop: 6, fontSize: '0.88rem' }}>
+          Configure detection, appearance, notifications and camera zones
+        </p>
       </div>
 
-      <div className="tab-bar" style={{ maxWidth: 600, marginBottom: 24 }}>
-        {tabs.map(t => (
-          <button key={t.id} className={`tab ${activeTab === t.id ? 'active' : ''}`}
-            onClick={() => setActiveTab(t.id)}>
-            {t.label}
-          </button>
-        ))}
-      </div>
+      {/* ── Sidebar + content layout ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 28, alignItems: 'start' }}>
+
+        {/* ── LEFT SIDEBAR ── */}
+        <nav style={{ display: 'flex', flexDirection: 'column', gap: 4, position: 'sticky', top: 24 }}>
+          {[
+            { id: 'appearance',    icon: '🎨', label: 'Appearance',    sub: 'Theme & PPE' },
+            { id: 'safety_rules',  icon: '🛡️', label: 'Safety Rules',  sub: 'PPE monitoring' },
+            { id: 'phone',         icon: '📱', label: 'Phone',         sub: 'Phone detection' },
+            { id: 'camera',        icon: '📷', label: 'Camera',        sub: 'Single cam config' },
+            { id: 'cameras_mgmt',  icon: '🎥', label: 'Cameras',       sub: 'Manage & calibrate' },
+            { id: 'notifications', icon: '🔔', label: 'Alerts',        sub: 'Sound & UI alerts' },
+            { id: 'profile',       icon: '👤', label: 'Profile',       sub: 'Name & role' },
+            { id: 'faces',         icon: '🔍', label: 'Face IDs',      sub: 'Access control' },
+          ].map(t => {
+            const active = activeTab === t.id
+            return (
+              <button
+                key={t.id}
+                onClick={() => setActiveTab(t.id)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 12,
+                  padding: '11px 14px', borderRadius: 12, border: 'none', cursor: 'pointer',
+                  textAlign: 'left', transition: 'all 0.18s',
+                  background: active
+                    ? 'linear-gradient(135deg, rgba(139,92,246,0.18), rgba(99,102,241,0.1))'
+                    : 'transparent',
+                  boxShadow: active ? 'inset 0 0 0 1px rgba(139,92,246,0.35)' : 'none',
+                }}
+                onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'rgba(255,255,255,0.05)' }}
+                onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent' }}
+              >
+                <span style={{
+                  fontSize: '1.25rem', width: 36, height: 36, display: 'flex',
+                  alignItems: 'center', justifyContent: 'center', borderRadius: 10, flexShrink: 0,
+                  background: active ? 'rgba(139,92,246,0.25)' : 'rgba(255,255,255,0.06)',
+                  boxShadow: active ? '0 0 12px rgba(139,92,246,0.3)' : 'none',
+                  transition: 'all 0.18s',
+                }}>{t.icon}</span>
+                <div>
+                  <div style={{
+                    fontSize: '0.875rem', fontWeight: active ? 700 : 500,
+                    color: active ? 'var(--accent-purple, #a78bfa)' : 'var(--text-primary)',
+                    lineHeight: 1.2,
+                  }}>{t.label}</div>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: 2, lineHeight: 1 }}>{t.sub}</div>
+                </div>
+                {active && (
+                  <div style={{
+                    marginLeft: 'auto', width: 4, height: 32, borderRadius: 2,
+                    background: 'linear-gradient(180deg, #8b5cf6, #6366f1)',
+                    boxShadow: '0 0 8px rgba(139,92,246,0.6)',
+                  }} />
+                )}
+              </button>
+            )
+          })}
+        </nav>
+
+        {/* ── RIGHT CONTENT PANEL ── */}
+        <div style={{ minWidth: 0 }}>
 
       {/* ── Appearance Tab ── */}
       {activeTab === 'appearance' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 600 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
 
           {/* Theme toggle card */}
-          <div className="card card-p">
-            <h3 style={{ fontSize: '1rem', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Palette size={18} /> Theme & Display
-            </h3>
+          <div className="card card-p" style={{ background: 'linear-gradient(135deg, var(--bg-card) 0%, rgba(139,92,246,0.04) 100%)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20, paddingBottom: 16, borderBottom: '1px solid var(--border)' }}>
+              <div style={{ width: 36, height: 36, borderRadius: 10, background: 'linear-gradient(135deg,#8b5cf6,#6366f1)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 12px rgba(139,92,246,0.35)' }}>
+                <Palette size={18} color="#fff" />
+              </div>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: '1rem' }}>Theme & Display</div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: 1 }}>Choose your visual mode</div>
+              </div>
+            </div>
 
             <div style={{
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -326,11 +389,16 @@ export default function Settings() {
           </div>
 
           {/* PPE Requirements info card */}
-          <div className="card card-p">
-            <h3 style={{ fontSize: '1rem', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <HardHat size={18} color="var(--accent-construction)" />
-              PPE Requirements — {user?.role || 'No role set'}
-            </h3>
+          <div className="card card-p" style={{ background: 'linear-gradient(135deg, var(--bg-card) 0%, rgba(245,158,11,0.04) 100%)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, paddingBottom: 16, borderBottom: '1px solid var(--border)' }}>
+              <div style={{ width: 36, height: 36, borderRadius: 10, background: 'linear-gradient(135deg,#f59e0b,#ef4444)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 12px rgba(245,158,11,0.3)' }}>
+                <HardHat size={18} color="#fff" />
+              </div>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: '1rem' }}>PPE Requirements</div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: 1 }}>{user?.role || 'Set role in Profile tab'}</div>
+              </div>
+            </div>
             {user?.role && ROLE_PPE[user.role] ? (
               <div className="ppe-grid">
                 {ROLE_PPE[user.role].map(item => (
@@ -372,10 +440,16 @@ export default function Settings() {
           prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
         )
         return (
-          <div className="card card-p" style={{ maxWidth: 600 }}>
-            <h3 style={{ fontSize: '1rem', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Shield size={18} color="var(--accent-green)" /> Custom Safety Rules
-            </h3>
+          <div className="card card-p" style={{ background: 'linear-gradient(135deg, var(--bg-card) 0%, rgba(16,185,129,0.04) 100%)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, paddingBottom: 16, borderBottom: '1px solid var(--border)' }}>
+            <div style={{ width: 36, height: 36, borderRadius: 10, background: 'linear-gradient(135deg,#10b981,#059669)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 12px rgba(16,185,129,0.3)' }}>
+              <Shield size={18} color="#fff" />
+            </div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: '1rem' }}>Custom Safety Rules</div>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: 1 }}>Select PPE items to monitor</div>
+            </div>
+          </div>
             <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 20 }}>
               Select which PPE items to monitor. These rules apply when you're in <strong>Live Monitor</strong>.
               {user?.role === 'None'
@@ -445,10 +519,16 @@ export default function Settings() {
 
       {/* ── Camera Tab ── */}
       {activeTab === 'camera' && (
-        <div className="card card-p" style={{ maxWidth: 600 }}>
-          <h3 style={{ fontSize: '1rem', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Camera size={18} /> Camera Configuration
-          </h3>
+        <div className="card card-p" style={{ background: 'linear-gradient(135deg, var(--bg-card) 0%, rgba(59,130,246,0.04) 100%)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20, paddingBottom: 16, borderBottom: '1px solid var(--border)' }}>
+            <div style={{ width: 36, height: 36, borderRadius: 10, background: 'linear-gradient(135deg,#3b82f6,#6366f1)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 12px rgba(59,130,246,0.3)' }}>
+              <Camera size={18} color="#fff" />
+            </div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: '1rem' }}>Camera Configuration</div>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: 1 }}>Source type and sensitivity</div>
+            </div>
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20 }}>
             {CAMERA_TYPES.map(t => (
               <label key={t.id} style={{
@@ -492,10 +572,16 @@ export default function Settings() {
 
       {/* ── Notifications Tab ── */}
       {activeTab === 'notifications' && (
-        <div className="card card-p" style={{ maxWidth: 600 }}>
-          <h3 style={{ fontSize: '1rem', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Bell size={18} /> Alert Preferences
-          </h3>
+        <div className="card card-p" style={{ background: 'linear-gradient(135deg, var(--bg-card) 0%, rgba(239,68,68,0.04) 100%)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20, paddingBottom: 16, borderBottom: '1px solid var(--border)' }}>
+            <div style={{ width: 36, height: 36, borderRadius: 10, background: 'linear-gradient(135deg,#ef4444,#dc2626)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 12px rgba(239,68,68,0.3)' }}>
+              <Bell size={18} color="#fff" />
+            </div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: '1rem' }}>Alert Preferences</div>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: 1 }}>Sound and UI notifications</div>
+            </div>
+          </div>
           <div style={{ borderRadius: 10, overflow: 'hidden', border: '1px solid var(--border)' }}>
             <div className="toggle-wrap" style={{ padding: '14px 18px', borderBottom: '1px solid var(--border)' }}>
               <div>
@@ -522,10 +608,16 @@ export default function Settings() {
 
       {/* ── Profile Tab ── */}
       {activeTab === 'profile' && (
-        <div className="card card-p" style={{ maxWidth: 600 }}>
-          <h3 style={{ fontSize: '1rem', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <User size={18} /> Profile Details
-          </h3>
+        <div className="card card-p" style={{ background: 'linear-gradient(135deg, var(--bg-card) 0%, rgba(99,102,241,0.04) 100%)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20, paddingBottom: 16, borderBottom: '1px solid var(--border)' }}>
+            <div style={{ width: 36, height: 36, borderRadius: 10, background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 12px rgba(99,102,241,0.3)' }}>
+              <User size={18} color="#fff" />
+            </div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: '1rem' }}>Profile Details</div>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: 1 }}>Your name, role and location</div>
+            </div>
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
             <div className="form-group">
               <label className="form-label">Full Name</label>
@@ -593,13 +685,17 @@ export default function Settings() {
 
       {/* ── Phone Tab ── */}
       {activeTab === 'phone' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 600 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
 
           {/* No-Phone Zone Toggle Card */}
           <div className="card card-p">
-            <h3 style={{ fontSize: '1rem', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
-              📱 Phone Detection Settings
-            </h3>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, paddingBottom: 16, borderBottom: '1px solid var(--border)' }}>
+              <div style={{ width: 36, height: 36, borderRadius: 10, background: 'linear-gradient(135deg,#8b5cf6,#ec4899)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 12px rgba(139,92,246,0.3)', fontSize: '1rem' }}>📱</div>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: '1rem' }}>Phone Detection Settings</div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: 1 }}>Configure phone usage monitoring</div>
+              </div>
+            </div>
             <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: 24 }}>
               Configure how the system handles phone usage during live monitoring.
             </p>
@@ -684,7 +780,7 @@ export default function Settings() {
 
       {/* ── Faces Tab — Smart Access Control ── */}
       {activeTab === 'faces' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 700 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
 
           {/* Header */}
           <div className="card card-p" style={{ background: 'linear-gradient(135deg,rgba(99,102,241,0.12),rgba(139,92,246,0.08))', border: '1px solid rgba(99,102,241,0.25)' }}>
@@ -917,6 +1013,9 @@ export default function Settings() {
       {activeTab === 'cameras_mgmt' && (
         <CamerasTab addToast={addToast} />
       )}
+
+        </div>{/* end content panel */}
+      </div>{/* end sidebar grid */}
     </div>
   )
 }
@@ -1021,12 +1120,19 @@ function CamerasTab({ addToast }) {
   const STATUS_COLOUR = { online: '#4caf50', offline: '#9e9e9e', error: '#f44336' }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 24, maxWidth: 860 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
 
       {/* ── Header row ── */}
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-        <h2 style={{ fontSize: '1.1rem', fontWeight: 700, margin: 0 }}>🎥 Camera Management</h2>
-        <button className="btn btn-ghost" style={{ marginLeft: 'auto' }} onClick={loadCameras}>↻ Refresh</button>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ width: 42, height: 42, borderRadius: 12, background: 'linear-gradient(135deg,#3b82f6,#8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 16px rgba(59,130,246,0.35)', fontSize: '1.2rem' }}>🎥</div>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: '1.1rem' }}>Camera Management</div>
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: 1 }}>{cameras.length} camera{cameras.length !== 1 ? 's' : ''} configured</div>
+          </div>
+        </div>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          <button className="btn btn-ghost" onClick={loadCameras}>↻ Refresh</button>
         <button
           className="btn btn-secondary"
           onClick={discover}
@@ -1039,6 +1145,7 @@ function CamerasTab({ addToast }) {
         <button className="btn btn-primary" onClick={() => setShowAddForm(v => !v)}>
           {showAddForm ? '✕ Cancel' : '+ Add Camera'}
         </button>
+        </div>
       </div>
 
       {/* ── LAN discovery results ── */}
@@ -1101,8 +1208,46 @@ function CamerasTab({ addToast }) {
                   <input className="input" value={addForm.rtsp_url} onChange={e => setAddForm(f => ({ ...f, rtsp_url: e.target.value }))} placeholder="rtsp://user:pass@192.168.1.x:554/Streaming/Channels/101" />
                 </div>
                 <div>
-                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Zone Type (for idle limit)</label>
-                  <input className="input" value={addForm.zone_type} onChange={e => setAddForm(f => ({ ...f, zone_type: e.target.value }))} placeholder="shop / default / cashbox…" />
+                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                    Zone Type
+                    <span title="Sets the camera's primary purpose. Paint zone polygons for precise spatial detection — polygon names override this." style={{ marginLeft: 4, cursor: 'help', opacity: 0.6 }}>ⓘ</span>
+                  </label>
+                  <select className="input" value={addForm.zone_type} onChange={e => setAddForm(f => ({ ...f, zone_type: e.target.value }))}>
+                    <option value="">— select —</option>
+                    <optgroup label="Entrances &amp; Movement">
+                      <option value="entrance">entrance — inward invoice OCR</option>
+                      <option value="entrance_outward">entrance_outward — outward OCR + person snap</option>
+                      <option value="glass_door">glass_door — attendance + lift tracking</option>
+                      <option value="loading">loading — loading/unloading monitor</option>
+                    </optgroup>
+                    <optgroup label="Ground Floor Production">
+                      <option value="packing">packing — hand-motion idle alert</option>
+                      <option value="oven">oven — gas/oil idle alert</option>
+                      <option value="dough_table">dough_table — post-job idle alert</option>
+                      <option value="cutting_machine">cutting_machine — machine-on worker alert</option>
+                    </optgroup>
+                    <optgroup label="Stock &amp; Goods">
+                      <option value="stock">stock — item exposure + dirty floor</option>
+                      <option value="raw_material">raw_material — raw stock monitor</option>
+                      <option value="finished_goods">finished_goods — dispatch check</option>
+                      <option value="cylinder_area">cylinder_area — cylinder count + usage</option>
+                    </optgroup>
+                    <optgroup label="Windows">
+                      <option value="window">window — throwing/stealing alert</option>
+                    </optgroup>
+                    <optgroup label="Lift">
+                      <option value="lift">lift — person + item tracking (all floors)</option>
+                    </optgroup>
+                    <optgroup label="Shop Floor">
+                      <option value="cashbox">cashbox — cash pocket vs box alert</option>
+                      <option value="shop_counter">shop_counter — absence alert</option>
+                      <option value="vendor_desk">vendor_desk — payee snapshot</option>
+                    </optgroup>
+                    <optgroup label="General">
+                      <option value="camera_standing">camera_standing — blocking alert</option>
+                      <option value="default">default — idle monitor only</option>
+                    </optgroup>
+                  </select>
                 </div>
                 <div>
                   <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Camera ID</label>
@@ -1182,40 +1327,116 @@ function CamerasTab({ addToast }) {
         </div>
       )}
 
-      {/* ── Camera list ── */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        {cameras.length === 0 && <div style={{ color: 'var(--text-secondary)', textAlign: 'center', padding: 24 }}>No cameras configured yet.</div>}
-        {cameras.map(cam => (
-          <div key={cam.id} className="card card-p" style={{ cursor: 'pointer', border: selectedCamera?.id === cam.id ? '1px solid var(--accent)' : undefined }}>
-            <div style={{ display: 'flex', gap: 12, alignItems: 'center' }} onClick={() => setSelectedCamera(selectedCamera?.id === cam.id ? null : cam)}>
-              <div style={{ width: 12, height: 12, borderRadius: '50%', background: STATUS_COLOUR[cam.status] || '#9e9e9e', flexShrink: 0 }} />
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 700 }}>{cam.name}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                  {cam.floor} floor • {cam.zone_type || 'general'} • {cam.status}
-                  {cam.rtsp_url && <span> &bull; <code style={{ fontSize: 10 }}>{cam.rtsp_url.replace(/\/\/[^@]+@/, '//***@')}</code></span>}
-                </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {cameras.length === 0 && (
+          <div style={{ textAlign: 'center', padding: '48px 24px', borderRadius: 16, border: '2px dashed var(--border)', background: 'rgba(255,255,255,0.02)' }}>
+            <div style={{ fontSize: '3rem', marginBottom: 12 }}>📷</div>
+            <div style={{ fontWeight: 700, fontSize: '1rem', marginBottom: 6 }}>No cameras configured yet</div>
+            <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginBottom: 16 }}>Add your first camera to start monitoring</div>
+            <button className="btn btn-primary" onClick={() => setShowAddForm(true)}>+ Add Camera</button>
+          </div>
+        )}
+        {cameras.map(cam => {
+          const isSelected = selectedCamera?.id === cam.id
+          const statusColor = STATUS_COLOUR[cam.status] || '#9e9e9e'
+          const statusBg = cam.status === 'online' ? 'rgba(76,175,80,0.12)' : cam.status === 'error' ? 'rgba(244,67,54,0.12)' : 'rgba(158,158,158,0.1)'
+          return (
+          <div
+            key={cam.id}
+            className="card card-p"
+            style={{
+              cursor: 'pointer',
+              border: isSelected ? '1px solid rgba(139,92,246,0.5)' : '1px solid var(--border)',
+              background: isSelected ? 'linear-gradient(135deg, var(--bg-card), rgba(139,92,246,0.05))' : undefined,
+              boxShadow: isSelected ? '0 0 0 3px rgba(139,92,246,0.12), 0 4px 20px rgba(0,0,0,0.15)' : undefined,
+              transition: 'all 0.2s',
+            }}
+            onMouseEnter={e => { if (!isSelected) e.currentTarget.style.borderColor = 'rgba(139,92,246,0.3)' }}
+            onMouseLeave={e => { if (!isSelected) e.currentTarget.style.borderColor = 'var(--border)' }}
+          >
+            <div
+              style={{ display: 'flex', gap: 14, alignItems: 'center' }}
+              onClick={() => setSelectedCamera(isSelected ? null : cam)}
+            >
+              {/* Camera icon with status ring */}
+              <div style={{ position: 'relative', flexShrink: 0 }}>
+                <div style={{
+                  width: 44, height: 44, borderRadius: 12,
+                  background: isSelected ? 'linear-gradient(135deg,#8b5cf6,#6366f1)' : 'rgba(255,255,255,0.07)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.3rem',
+                  boxShadow: isSelected ? '0 4px 12px rgba(139,92,246,0.35)' : 'none',
+                  transition: 'all 0.2s',
+                }}>🎥</div>
+                <div style={{
+                  position: 'absolute', bottom: -2, right: -2, width: 12, height: 12,
+                  borderRadius: '50%', background: statusColor,
+                  border: '2px solid var(--bg-card)',
+                  boxShadow: cam.status === 'online' ? '0 0 6px rgba(76,175,80,0.6)' : 'none',
+                }} />
               </div>
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{selectedCamera?.id === cam.id ? '▲ Calibrate' : '▼ Calibrate'}</div>
-              <button 
+
+              {/* Info */}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: '0.95rem', color: isSelected ? '#a78bfa' : 'var(--text-primary)' }}>{cam.name}</div>
+                <div style={{ display: 'flex', gap: 6, marginTop: 5, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: 99, background: 'rgba(59,130,246,0.1)', color: '#60a5fa', border: '1px solid rgba(59,130,246,0.2)' }}>
+                    {cam.floor} floor
+                  </span>
+                  {cam.zone_type && (
+                    <span style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: 99, background: 'rgba(139,92,246,0.1)', color: '#a78bfa', border: '1px solid rgba(139,92,246,0.2)' }}>
+                      {cam.zone_type}
+                    </span>
+                  )}
+                  <span style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: 99, background: statusBg, color: statusColor, border: `1px solid ${statusColor}44` }}>
+                    ● {cam.status}
+                  </span>
+                </div>
+                {cam.rtsp_url && (
+                  <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', marginTop: 4, fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 380 }}>
+                    {cam.rtsp_url.replace(/\/\/[^@]+@/, '//***@')}
+                  </div>
+                )}
+              </div>
+
+              {/* Calibrate toggle */}
+              <button
+                onClick={e => { e.stopPropagation(); setSelectedCamera(isSelected ? null : cam) }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 5, padding: '6px 14px', borderRadius: 8,
+                  border: '1px solid var(--border)', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 600,
+                  background: isSelected ? 'rgba(139,92,246,0.15)' : 'transparent',
+                  color: isSelected ? '#a78bfa' : 'var(--text-secondary)',
+                  transition: 'all 0.15s',
+                }}
+              >
+                🗺 {isSelected ? 'Close' : 'Calibrate'}
+              </button>
+
+              {/* Delete */}
+              <button
                 className="btn btn-ghost btn-sm btn-icon"
                 onClick={(e) => deleteCamera(e, cam.id)}
                 title="Remove Camera"
-                style={{ color: '#ef4444', padding: 6 }}
+                style={{ color: '#ef4444', padding: 6, flexShrink: 0 }}
               >
                 <Trash2 size={16} />
               </button>
             </div>
 
-            {/* Zone calibration panel (inline) */}
-            {selectedCamera?.id === cam.id && (
+            {/* Zone calibration panel */}
+            {isSelected && (
               <div style={{ marginTop: 20, paddingTop: 20, borderTop: '1px solid var(--border)' }}>
-                <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 14 }}>🗺 Zone Calibration — {cam.name}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+                  <div style={{ width: 28, height: 28, borderRadius: 8, background: 'linear-gradient(135deg,#8b5cf6,#6366f1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.85rem' }}>🗺</div>
+                  <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>Zone Calibration — {cam.name}</div>
+                </div>
                 <ZonePainter cameraId={cam.id} onSaved={loadCameras} />
               </div>
             )}
           </div>
-        ))}
+          )
+        })}
+
       </div>
 
     </div>
