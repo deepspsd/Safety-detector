@@ -1043,8 +1043,8 @@ function CamerasTab({ addToast }) {
     setDiscovering(true)
     setDiscoveryResults(null)
     try {
-      const res = await camerasApi.discover()
-      setDiscoveryResults(res.data)
+      const res = await camerasApi.discover({ timeout_seconds: 5, retries: 1 })
+      setDiscoveryResults(res.data.devices || res.data)
     } catch {
       addToast('Discovery failed', 'Check network access', 'danger')
     } finally {
@@ -1102,8 +1102,13 @@ function CamerasTab({ addToast }) {
   }
 
   const prefillFromDiscovery = (host) => {
-    const guess = host.rtsp_guesses?.[0] || ''
-    setAddForm(f => ({ ...f, name: host.hostname || host.ip, rtsp_url: guess }))
+    const ip = host.ip_address || ''
+    setAddMode('hikvision')
+    setHikForm(f => ({ 
+      ...f, 
+      name: host.name || host.model || host.manufacturer || ip, 
+      ip: ip 
+    }))
     setShowAddForm(true)
     setDiscoveryResults(null)
   }
@@ -1143,21 +1148,20 @@ function CamerasTab({ addToast }) {
       {discoveryResults && (
         <div className="card card-p">
           <div style={{ fontWeight: 700, marginBottom: 10 }}>
-            🌐 {discoveryResults.cameras_found.length} device(s) found on {discoveryResults.subnet}
+            🌐 {discoveryResults.length} device(s) found on LAN
           </div>
-          {discoveryResults.cameras_found.length === 0
+          {discoveryResults.length === 0
             ? <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>No cameras found. Check that cameras are powered and on the same subnet.</div>
             : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {discoveryResults.cameras_found.map(h => (
-                  <div key={h.ip} style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--bg-card)' }}>
+                {discoveryResults.map(h => (
+                  <div key={h.device_id || h.ip_address} style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--bg-card)' }}>
                     <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 600, fontSize: 14 }}>{h.ip}</div>
-                      {h.hostname && <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{h.hostname}</div>}
-                      <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 2 }}>Port {h.open_port} open</div>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>{h.ip_address}</div>
+                      {(h.manufacturer || h.model) && <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{h.manufacturer} {h.model}</div>}
                     </div>
-                    <div style={{ fontSize: 11, color: '#888', flex: 1 }}>
-                      {h.rtsp_guesses?.[0] && <code style={{ fontSize: 10 }}>{h.rtsp_guesses[0].replace('<user>:<pass>@', '')}</code>}
+                    <div style={{ fontSize: 11, color: '#888', flex: 1, wordBreak: 'break-all' }}>
+                      <code style={{ fontSize: 10 }}>{h.onvif_endpoint}</code>
                     </div>
                     <button className="btn btn-primary" style={{ fontSize: 12, padding: '5px 14px' }} onClick={() => prefillFromDiscovery(h)}>Add</button>
                   </div>
