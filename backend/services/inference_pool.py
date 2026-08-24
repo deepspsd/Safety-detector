@@ -14,6 +14,14 @@ One background inference worker thread processes frames from ALL cameras in
 sequence.  Each camera submits its latest frame to a shared queue and reads
 back the most recent result — no model duplication, bounded CPU load.
 
+Watchdog (added v3.1)
+---------------------
+A second daemon thread checks the worker every 30 s.  If it is not alive
+(unhandled exception / OOM crash), the watchdog:
+  1. Restarts the worker thread.
+  2. Sends a Telegram alert so the admin knows a restart happened.
+  3. Increments _restart_count (visible on GET /health).
+
 Performance on 16 GB RAM server (single camera = baseline)
 -----------------------------------------------------------
   Cameras   YOLO fps/cam   Rule-engine fps/cam   RAM saved
@@ -32,6 +40,8 @@ Public API
 ----------
   put_frame(camera_id, frame)  → submit a frame for inference (non-blocking)
   get_result(camera_id)        → latest inference result dict | None
+  is_healthy()                 → True if worker thread is alive
+  restart_count                → int — number of automatic restarts since startup
   start()                      → called once at FastAPI startup
   stop()                       → called once at FastAPI shutdown
 """
@@ -79,11 +89,14 @@ class _InferencePool:
 
     Lifecycle
     ---------
-    1. start() — loads the YOLO model once, spawns one daemon thread.
+    1. start() — loads the YOLO model once, spawns worker + watchdog threads.
     2. put_frame(camera_id, frame) — camera detection loops call this.
     3. get_result(camera_id) — camera detection loops read the latest result.
-    4. stop() — signals the worker thread to exit cleanly.
+    4. stop() — signals both threads to exit cleanly.
     """
+
+    # How often the watchdog checks worker liveness (seconds).
+    _WATCHDOG_INTERVAL = 30
 
     def __init__(self) -> None:
         # { camera_id: queue.Queue(maxsize=_MAX_QUEUE_DEPTH) }
@@ -93,26 +106,32 @@ class _InferencePool:
         self._lock     = threading.Lock()
         self._running  = False
         self._thread:  Optional[threading.Thread] = None
+        self._watchdog: Optional[threading.Thread] = None
+        self.restart_count: int = 0   # public — exposed on /health
 
     # ── Public ────────────────────────────────────────────────────────────────
 
     def start(self) -> None:
-        """Spawn the inference worker thread.  Safe to call multiple times."""
+        """Spawn the inference worker and watchdog threads.  Safe to call multiple times."""
         if self._running:
             return
         self._running = True
-        self._thread = threading.Thread(
-            target=self._worker_loop,
-            name="inference-pool-worker",
-            daemon=True,
-        )
-        self._thread.start()
-        log.info("[InferencePool] Worker thread started — shared YOLO model active")
+        self._spawn_worker()
+        self._spawn_watchdog()
+        log.info("[InferencePool] Worker and watchdog started")
 
     def stop(self) -> None:
-        """Signal the worker to exit.  Called from FastAPI shutdown."""
+        """Signal both threads to exit.  Called from FastAPI shutdown."""
         self._running = False
         log.info("[InferencePool] Shutting down")
+
+    def is_healthy(self) -> bool:
+        """Return True if the inference worker thread is alive."""
+        return (
+            self._running
+            and self._thread is not None
+            and self._thread.is_alive()
+        )
 
     def put_frame(self, camera_id: int, frame: np.ndarray) -> None:
         """
@@ -148,6 +167,67 @@ class _InferencePool:
         with self._lock:
             self._queues.pop(camera_id, None)
             self._results.pop(camera_id, None)
+
+    # ── Internal: thread management ───────────────────────────────────────────
+
+    def _spawn_worker(self) -> None:
+        """Create and start the inference worker daemon thread."""
+        self._thread = threading.Thread(
+            target=self._worker_loop,
+            name="inference-pool-worker",
+            daemon=True,
+        )
+        self._thread.start()
+        log.info("[InferencePool] Worker thread started — shared YOLO model active")
+
+    def _spawn_watchdog(self) -> None:
+        """Create and start the watchdog daemon thread."""
+        self._watchdog = threading.Thread(
+            target=self._watchdog_loop,
+            name="inference-pool-watchdog",
+            daemon=True,
+        )
+        self._watchdog.start()
+        log.info("[InferencePool] Watchdog thread started (interval=%ds)", self._WATCHDOG_INTERVAL)
+
+    def _watchdog_loop(self) -> None:
+        """
+        Periodically checks whether the inference worker is still alive.
+        If not, restarts it and fires a Telegram alert so the admin is notified.
+        """
+        while self._running:
+            time.sleep(self._WATCHDOG_INTERVAL)
+            if not self._running:
+                break
+            if self._thread is not None and not self._thread.is_alive():
+                self.restart_count += 1
+                log.error(
+                    "[InferencePool] Worker thread died (restart #%d) — restarting",
+                    self.restart_count,
+                )
+                self._spawn_worker()
+                self._notify_restart(self.restart_count)
+
+    @staticmethod
+    def _notify_restart(restart_count: int) -> None:
+        """
+        Send a Telegram/ntfy alert informing the admin that the inference
+        pool crashed and was automatically restarted.
+        Failures are silently swallowed — never block the watchdog loop.
+        """
+        try:
+            from services.notification_service import send_push_alert
+            send_push_alert(
+                message=(
+                    f"⚠️ OccuSafe: YOLO inference pool crashed and was auto-restarted "
+                    f"(restart #{restart_count}). Detection was paused briefly. "
+                    "Check server logs for the root cause."
+                ),
+                severity="high",
+                detected_issue="Inference pool restart",
+            )
+        except Exception as exc:
+            log.debug("[InferencePool] Watchdog notify failed: %s", exc)
 
     # ── Worker ────────────────────────────────────────────────────────────────
 

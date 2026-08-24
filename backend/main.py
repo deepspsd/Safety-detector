@@ -93,7 +93,65 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    """
+    Real liveness check — verifies all critical runtime components.
+
+    Returns HTTP 200 when all components are healthy.
+    Returns HTTP 503 when any critical component is down so monitoring tools,
+    uptime bots, systemd watchdogs, and Nginx can detect real failures.
+
+    Components checked
+    ------------------
+    inference_pool : YOLO worker thread alive (detection pipeline operational)
+    cameras        : number of server-managed camera readers running
+    database       : SQLite connectivity (simple SELECT 1)
+    """
+    from services.inference_pool import inference_pool
+    from services import camera_manager
+    from database import engine
+    from sqlalchemy import text as _text
+
+    issues: list[str] = []
+
+    # ── 1. Inference pool ────────────────────────────────────────────────────
+    pool_healthy = inference_pool.is_healthy()
+    if not pool_healthy:
+        issues.append("inference_pool: worker thread not running")
+
+    # ── 2. Camera manager ────────────────────────────────────────────────────
+    cam_statuses = camera_manager.list_status()
+    active_cams  = sum(1 for c in cam_statuses if c.get("status") == "online")
+
+    # ── 3. Database connectivity ─────────────────────────────────────────────
+    db_ok = True
+    try:
+        with engine.connect() as conn:
+            conn.execute(_text("SELECT 1"))
+    except Exception as db_exc:
+        db_ok = False
+        issues.append(f"database: {db_exc}")
+
+    # ── Response ─────────────────────────────────────────────────────────────
+    payload = {
+        "status":          "ok" if not issues else "degraded",
+        "inference_pool":  {
+            "healthy":       pool_healthy,
+            "restart_count": inference_pool.restart_count,
+        },
+        "cameras": {
+            "total":  len(cam_statuses),
+            "online": active_cams,
+        },
+        "database": {
+            "ok": db_ok,
+        },
+    }
+    if issues:
+        payload["issues"] = issues
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=503, content=payload)
+
+    return payload
 
 
 # ── Serve built frontend in production ───────────────────────────────────────
@@ -366,6 +424,53 @@ def startup():
     )
     _clockout_thread.start()
     print("✅ Nightly auto clock-out scheduler started (19:00 IST)")
+
+    # ── Weekly WAL checkpoint + VACUUM (P1 fix) ───────────────────────────────
+    # SQLite in WAL mode never auto-checkpoints while writers are active.
+    # On Windows, the .db-shm / .db-wal files can grow unbounded and slow reads.
+    # This scheduler runs PRAGMA wal_checkpoint(TRUNCATE) + VACUUM every Sunday
+    # at 02:00 IST (low-traffic window) to compact the WAL back to the main file.
+    def _wal_checkpoint_scheduler():
+        """Background daemon: weekly SQLite WAL checkpoint at 02:00 IST Sunday."""
+        import datetime as _dt
+        import time as _time
+        from sqlalchemy import text as _text
+        from database import engine as _engine
+        _log = logging.getLogger("wal_checkpoint")
+        _IST_wal = ZoneInfo("Asia/Kolkata")
+
+        while True:
+            now = _dt.datetime.now(tz=_IST_wal)
+            # Next Sunday 02:00 IST
+            days_until_sunday = (6 - now.weekday()) % 7  # Monday=0 … Sunday=6
+            if days_until_sunday == 0 and now.hour >= 2:
+                days_until_sunday = 7  # already past the window today
+            next_run = (now + _dt.timedelta(days=days_until_sunday)).replace(
+                hour=2, minute=0, second=0, microsecond=0
+            )
+            sleep_secs = (next_run - now).total_seconds()
+            _log.info(
+                "[WAL] Next checkpoint in %.1fh at %s IST",
+                sleep_secs / 3600,
+                next_run.strftime("%Y-%m-%d %H:%M"),
+            )
+            _time.sleep(max(sleep_secs, 1))
+            try:
+                with _engine.connect() as conn:
+                    conn.execute(_text("PRAGMA wal_checkpoint(TRUNCATE)"))
+                    conn.execute(_text("VACUUM"))
+                    conn.commit()
+                _log.info("[WAL] Checkpoint + VACUUM complete")
+            except Exception as exc:
+                _log.error("[WAL] Checkpoint failed: %s", exc)
+
+    _wal_thread = threading.Thread(
+        target=_wal_checkpoint_scheduler,
+        name="wal-checkpoint-scheduler",
+        daemon=True,
+    )
+    _wal_thread.start()
+    print("✅ Weekly WAL checkpoint scheduler started (Sunday 02:00 IST)")
 
     print("✅ Safety Monitor API v4.0 started (factory monitoring schema)")
 

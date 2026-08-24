@@ -1,5 +1,5 @@
 """
-alert_service.py — v3.1
+alert_service.py — v3.2
 ========================
 Persists factory compliance alerts with:
   • Confidence-tier routing: high-confidence detectors → status="confirmed";
@@ -8,7 +8,7 @@ Persists factory compliance alerts with:
     send_push_alert() — tries ntfy.sh first, Telegram as fallback.
     "pending_review" alerts stay in-app only until an admin reviews them.
   • Full backward compatibility: all existing callers work with zero changes
-    (confidence_tier defaults to "high" so old code paths save as "confirmed").
+    (confidence_tier defaults to "auto" so old code paths auto-detect tier).
 
 Confidence tiers
 ────────────────
@@ -26,11 +26,17 @@ Confidence tiers
   Admins promote them via PATCH /alerts/{id}/confirm which then fires push notification.
   Admins dismiss false positives via PATCH /alerts/{id}/dismiss.
 
-Snapshot storage
+Snapshot storage  (v3.2 — file-only, no DB blob)
 ────────────────
   Saves annotated JPEG to: uploads/snapshots/<YYYYMMDD_HHMMSS>_u<user_id>.jpg
-  Served at: /uploads/snapshots/<filename>
-  Also kept in DB (snapshot_b64) for immediate modal display.
+  Served at:               /uploads/snapshots/<filename>
+
+  snapshot_b64 is NEVER persisted to the DB (prevents unbounded table growth:
+  ~100 KB/row × 500 alerts/day = 50 MB/day → 18 GB/year in one SQLite table).
+  The in-flight b64 string is kept alive only for the Telegram push and then
+  discarded.  The frontend uses snapshot_url (served from disk) for display.
+  The Alert.snapshot_b64 column remains in the schema for backward-compat with
+  existing rows but is always written as NULL from v3.2 onwards.
 """
 
 import os
@@ -129,6 +135,24 @@ def _get_camera_name(camera_id: int | None, db: Session) -> str | None:
         return None
 
 
+def _load_snapshot_b64(snapshot_path: str | None) -> str | None:
+    """
+    Read a saved snapshot from disk and return a base64-encoded JPEG string.
+
+    Used when a pending_review alert is later confirmed and we need to attach
+    the image to the Telegram push (the DB row no longer stores snapshot_b64).
+    Returns None on any error — never raises.
+    """
+    if not snapshot_path:
+        return None
+    try:
+        abs_path = os.path.join("uploads", snapshot_path)
+        with open(abs_path, "rb") as fh:
+            return base64.b64encode(fh.read()).decode("ascii")
+    except Exception as exc:
+        log.debug("_load_snapshot_b64: could not read %s: %s", snapshot_path, exc)
+        return None
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def save_alert(
@@ -162,12 +186,14 @@ def save_alert(
     # Resolve confidence tier → DB status
     status = _resolve_status(detected_issue or "", confidence_tier)
 
-    # Save snapshot to disk
-    snapshot_path = None
+    # Save snapshot to disk; keep raw b64 in a local var for Telegram push only —
+    # it is deliberately NOT written to the DB row (see module docstring).
+    snapshot_path    = None
+    push_snapshot_b64 = None   # used only for Telegram, never stored
     if snapshot_b64:
-        snapshot_path, snapshot_b64 = _save_snapshot_to_disk(snapshot_b64, user_id)
+        snapshot_path, push_snapshot_b64 = _save_snapshot_to_disk(snapshot_b64, user_id)
 
-    # Persist to DB
+    # Persist to DB — snapshot_b64 column always NULL from v3.2 onwards.
     alert = Alert(
         user_id        = user_id,
         message        = message,
@@ -175,9 +201,9 @@ def save_alert(
         severity       = severity,
         detected_issue = detected_issue,
         confidence     = confidence,
-        snapshot_b64   = snapshot_b64,
+        snapshot_b64   = None,          # intentionally not stored — use snapshot_path
         snapshot_path  = snapshot_path,
-        timestamp      = datetime.datetime.utcnow(),   # stored as naive UTC — serialised with Z suffix
+        timestamp      = datetime.datetime.utcnow(),
         camera_id      = camera_id,
         floor          = floor,
         employee_id    = employee_id,
@@ -188,13 +214,13 @@ def save_alert(
     db.refresh(alert)
 
     log.info(
-        f"Alert saved: id={alert.id} user={user_id} severity={severity} "
-        f"status={status} issue={detected_issue} cam={camera_id} floor={floor} "
-        f"snapshot={'✅' if snapshot_path else '—'}"
+        "Alert saved: id=%d user=%d severity=%s status=%s issue=%s cam=%s floor=%s snapshot=%s",
+        alert.id, user_id, severity, status, detected_issue, camera_id, floor,
+        "✅" if snapshot_path else "—",
     )
 
     # Fire push notification for confirmed alerts only.
-    # send_push_alert() auto-selects: ntfy.sh (urgent for high) → Telegram fallback.
+    # ntfy.sh (urgent for high) → Telegram fallback.
     if status == "confirmed":
         camera_name = _get_camera_name(camera_id, db)
         _fire_push(
@@ -203,9 +229,8 @@ def save_alert(
             floor          = floor,
             camera_name    = camera_name,
             detected_issue = detected_issue,
-            snapshot_b64   = snapshot_b64,
+            snapshot_b64   = push_snapshot_b64,   # in-flight only, not from DB
         )
-        # Trigger local server alarm for high-severity alerts
         if severity in ("high", "critical"):
             try:
                 from routers.alarm import _play_beep
@@ -234,17 +259,19 @@ def confirm_alert(alert_id: int, db: Session) -> Alert:
     db.commit()
     db.refresh(alert)
 
-    log.info(f"Alert {alert_id} promoted to 'confirmed' by admin")
+    log.info("Alert %d promoted to 'confirmed' by admin", alert_id)
 
-    # Now fire push notification (was deliberately skipped when first saved)
-    camera_name = _get_camera_name(alert.camera_id, db)
+    # Fire push notification (was skipped when first saved as pending_review).
+    # snapshot_b64 is not in the DB row (v3.2); load the image from disk instead.
+    camera_name   = _get_camera_name(alert.camera_id, db)
+    push_snapshot = _load_snapshot_b64(alert.snapshot_path)
     _fire_push(
         message        = alert.message,
         severity       = alert.severity,
         floor          = alert.floor,
         camera_name    = camera_name,
         detected_issue = alert.detected_issue,
-        snapshot_b64   = alert.snapshot_b64,
+        snapshot_b64   = push_snapshot,
     )
     return alert
 
