@@ -29,6 +29,7 @@ Performance
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -289,6 +290,188 @@ def cleanup_camera(camera_id: int) -> None:
             _face_meshes.pop(camera_id).close()
         except Exception:
             pass
+    # Clean up eating-from-store state
+    eating_keys = [k for k in _eating_state if k[0] == camera_id]
+    for k in eating_keys:
+        _eating_state.pop(k, None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Eating from Store Detection (REQ-SF-06)
+# ─────────────────────────────────────────────────────────────────────────────
+# Detects hand-to-mouth gestures near stock/storage zones that indicate
+# an employee eating items from the store.
+#
+# Algorithm:
+#   1. Use MediaPipe Pose to track wrist-to-mouth distance over time.
+#   2. If a hand repeatedly moves to the mouth area (distance < threshold)
+#      while the person is in or near a stock/storage zone, fire a
+#      low-confidence alert for admin review.
+#   3. Rate-limited to avoid spam.
+#
+# Accuracy: ~55-65% (bakery_cv_plan.md §12). Hand-to-mouth is a common
+# gesture (scratching, adjusting mask) — expect false positives.
+# ─────────────────────────────────────────────────────────────────────────────
+
+EATING_CHECK_INTERVAL_SEC = 15     # check once per 15s per person
+EATING_MOUTH_PROXIMITY_PX = 30     # max distance (px) wrist-to-mouth to count
+EATING_MIN_REPEATS = 3             # hand must reach mouth ≥ this many times
+EATING_WINDOW_SEC = 10.0           # look-back window for repeat detection
+
+_eating_state: Dict[Tuple[int, int], dict] = {}
+_eating_last_check: Dict[Tuple[int, int], float] = {}
+
+# MediaPipe Pose instances per camera (lazy-created)
+_poses: Dict[int, object] = {}
+_pose_unavailable = False
+
+# Landmark indices for Pose model (33-point)
+_NOSE = 0
+_LEFT_WRIST = 15
+_RIGHT_WRIST = 16
+
+
+def _get_pose(camera_id: int):
+    """Return (or lazily create) a Pose instance for this camera."""
+    global _pose_unavailable
+    if _pose_unavailable or not settings.MEDIAPIPE_ENABLED:
+        return None
+    if camera_id in _poses:
+        return _poses[camera_id]
+    try:
+        import mediapipe as mp
+        pose = mp.solutions.pose.Pose(
+            static_image_mode=False,
+            model_complexity=0,  # lite model for performance
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+        _poses[camera_id] = pose
+        return pose
+    except ImportError:
+        _pose_unavailable = True
+        log.warning(
+            "[ChewMonitor] mediapipe not installed — eating detection disabled. "
+            "Install with: pip install mediapipe>=0.10.0"
+        )
+        return None
+    except Exception as exc:
+        _pose_unavailable = True
+        log.warning("[ChewMonitor] MediaPipe Pose init failed: %s", exc)
+        return None
+
+
+def _check_eating_gesture(
+    pose,
+    crop: np.ndarray,
+    key: Tuple[int, int],
+    now: float,
+) -> bool:
+    """
+    Detect repeated hand-to-mouth gestures using MediaPipe Pose.
+    Returns True if eating pattern detected.
+    """
+    try:
+        import mediapipe as mp
+        rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+        results = pose.process(rgb)
+        if not results.pose_landmarks:
+            return False
+
+        lm = results.pose_landmarks.landmark
+        h, w = crop.shape[:2]
+
+        nose_y = lm[_NOSE].y * h
+        nose_x = lm[_NOSE].x * w
+
+        # Check both wrists
+        for wrist_idx in (_LEFT_WRIST, _RIGHT_WRIST):
+            wx = lm[wrist_idx].x * w
+            wy = lm[wrist_idx].y * h
+            dist = math.hypot(wx - nose_x, wy - nose_y)
+
+            state = _eating_state.setdefault(key, {"mouth_events": []})
+            if dist < EATING_MOUTH_PROXIMITY_PX:
+                state["mouth_events"].append(now)
+                # Prune old events
+                state["mouth_events"] = [
+                    t for t in state["mouth_events"] if now - t <= EATING_WINDOW_SEC
+                ]
+                if len(state["mouth_events"]) >= EATING_MIN_REPEATS:
+                    state["mouth_events"] = []
+                    return True
+
+        return False
+    except Exception as exc:
+        log.debug("[ChewMonitor] eating check error: %s", exc)
+        return False
+
+
+def check_eating_from_store(
+    db,
+    camera_id: int,
+    frame: np.ndarray,
+    persons: List[dict],
+) -> None:
+    """
+    Detect eating from store items via hand-to-mouth gesture detection.
+
+    Call from camera_manager._detection_loop() for cameras near stock/storage
+    zones. Uses MediaPipe Pose to track wrist-nose proximity over time.
+    """
+    if not settings.MEDIAPIPE_ENABLED:
+        return
+
+    pose = _get_pose(camera_id)
+    if pose is None:
+        return
+
+    now = time.monotonic()
+
+    for person in persons:
+        track_id = person.get("track_id")
+        bbox = person.get("bbox")
+        if track_id is None or not bbox:
+            continue
+
+        key = (camera_id, int(track_id))
+        if now - _eating_last_check.get(key, 0) < EATING_CHECK_INTERVAL_SEC:
+            continue
+        _eating_last_check[key] = now
+
+        crop = _crop_person(frame, bbox)
+        if crop is None:
+            continue
+
+        if _check_eating_gesture(pose, crop, key, now):
+            _fire_eating_alert(
+                db=db,
+                camera_id=camera_id,
+                track_id=int(track_id),
+            )
+
+
+def _fire_eating_alert(db, camera_id: int, track_id: int):
+    from services.alert_service import save_alert
+    from services.rule_engine import _get_rule_engine_user_id
+    try:
+        save_alert(
+            db=db,
+            user_id=_get_rule_engine_user_id(db),
+            message=(
+                f"Eating from store detected on camera {camera_id} "
+                f"(track {track_id}). Repeated hand-to-mouth gesture "
+                f"near stock area. Admin review required."
+            ),
+            role="Hygiene Monitor",
+            severity="medium",
+            detected_issue="Eating at workstation",
+            camera_id=camera_id,
+            confidence_tier="low",
+        )
+        log.info("[ChewMonitor] Eating-from-store alert cam=%d track=%d", camera_id, track_id)
+    except Exception as exc:
+        log.error("[ChewMonitor] eating alert save failed: %s", exc)
 
 
 # ── Internal ──────────────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 """
-routers/workflow.py — Cash, Stock, Lift, Packing, Idle, Dress-code, Oven workflow events API
-========================================================================
+routers/workflow.py — Cash, Stock, Lift, Packing, Idle, Dress-code, Oven, Window, Eating, Dispatch, Cylinder workflow events API
+==========================================================================================
 Endpoints
 ---------
   GET /workflow/cash-events         Recent unauthorized cash zone access alerts
@@ -10,6 +10,10 @@ Endpoints
   GET /workflow/idle-events         Recent idle alerts (all floors / by floor)
   GET /workflow/dress-code-events   Head-cap / uniform / dress-code violations
   GET /workflow/oven-events         Floor-2 oven/fire/gas-waste alerts
+  GET /workflow/window-events       Window throwing/stealing alerts
+  GET /workflow/eating-events       Eating from store alerts
+  GET /workflow/dispatch-events     Finished goods dispatch alerts
+  GET /workflow/cylinder-events     Cylinder monitoring events
   GET /workflow/summary             Combined summary for the workflow dashboard
 """
 
@@ -252,6 +256,159 @@ def get_oven_events(
     return [_alert_to_dict(r) for r in rows]
 
 
+# ── Window throwing/stealing events ────────────────────────────────────────────
+
+@router.get("/window-events")
+def get_window_events(
+    limit:        int     = Query(50, le=200),
+    db:           Session = Depends(get_db),
+    current_user           = Depends(get_current_user),
+):
+    """Recent window throwing/stealing alerts — immediate alerts only."""
+    _WINDOW_ISSUES = [
+        "Window throwing detected",
+        "Window theft detected",
+        "Items thrown from window",
+        "Stealing through window",
+    ]
+    query = db.query(Alert).filter(
+        Alert.detected_issue.in_(_WINDOW_ISSUES)
+    )
+    rows = query.order_by(Alert.timestamp.desc()).limit(limit).all()
+
+    # Fuzzy fallback
+    if len(rows) < 5:
+        for keyword in ["window", "throw", "steal"]:
+            fuzzy = (
+                db.query(Alert)
+                .filter(Alert.detected_issue.ilike(f"%{keyword}%"))
+                .order_by(Alert.timestamp.desc())
+                .limit(limit)
+                .all()
+            )
+            seen_ids = {r.id for r in rows}
+            for r in fuzzy:
+                if r.id not in seen_ids:
+                    rows.append(r)
+        rows = sorted(rows, key=lambda x: x.timestamp, reverse=True)[:limit]
+
+    return [_alert_to_dict(r) for r in rows]
+
+
+# ── Eating from store events ───────────────────────────────────────────────────
+
+@router.get("/eating-events")
+def get_eating_events(
+    limit:        int     = Query(50, le=200),
+    db:           Session = Depends(get_db),
+    current_user           = Depends(get_current_user),
+):
+    """Recent eating-from-store alerts (MediaPipe pose wrist-to-nose)."""
+    _EATING_ISSUES = [
+        "Eating from store",
+        "Eating detected",
+        "Chewing detected",
+    ]
+    query = db.query(Alert).filter(
+        Alert.detected_issue.in_(_EATING_ISSUES)
+    )
+    rows = query.order_by(Alert.timestamp.desc()).limit(limit).all()
+
+    # Fuzzy fallback
+    if len(rows) < 5:
+        for keyword in ["eating", "chewing", "store"]:
+            fuzzy = (
+                db.query(Alert)
+                .filter(Alert.detected_issue.ilike(f"%{keyword}%"))
+                .order_by(Alert.timestamp.desc())
+                .limit(limit)
+                .all()
+            )
+            seen_ids = {r.id for r in rows}
+            for r in fuzzy:
+                if r.id not in seen_ids:
+                    rows.append(r)
+        rows = sorted(rows, key=lambda x: x.timestamp, reverse=True)[:limit]
+
+    return [_alert_to_dict(r) for r in rows]
+
+
+# ── Finished goods dispatch events ─────────────────────────────────────────────
+
+@router.get("/dispatch-events")
+def get_dispatch_events(
+    limit:        int     = Query(50, le=200),
+    db:           Session = Depends(get_db),
+    current_user           = Depends(get_current_user),
+):
+    """Recent finished goods dispatch alerts — items moved to dispatch without vehicle."""
+    _DISPATCH_ISSUES = [
+        "Dispatch without vehicle",
+        "Finished goods not loaded",
+        "FG dispatch alert",
+    ]
+    query = db.query(Alert).filter(
+        Alert.detected_issue.in_(_DISPATCH_ISSUES)
+    )
+    rows = query.order_by(Alert.timestamp.desc()).limit(limit).all()
+
+    # Fuzzy fallback
+    if len(rows) < 5:
+        for keyword in ["dispatch", "finished goods", "vehicle"]:
+            fuzzy = (
+                db.query(Alert)
+                .filter(Alert.detected_issue.ilike(f"%{keyword}%"))
+                .order_by(Alert.timestamp.desc())
+                .limit(limit)
+                .all()
+            )
+            seen_ids = {r.id for r in rows}
+            for r in fuzzy:
+                if r.id not in seen_ids:
+                    rows.append(r)
+        rows = sorted(rows, key=lambda x: x.timestamp, reverse=True)[:limit]
+
+    return [_alert_to_dict(r) for r in rows]
+
+
+# ── Cylinder monitoring events ─────────────────────────────────────────────────
+
+@router.get("/cylinder-events")
+def get_cylinder_events(
+    limit:        int     = Query(50, le=200),
+    db:           Session = Depends(get_db),
+    current_user           = Depends(get_current_user),
+):
+    """Recent cylinder monitoring events — count changes, usage-day alerts."""
+    _CYLINDER_ISSUES = [
+        "Cylinder count change",
+        "Cylinder usage alert",
+        "Cylinder low count",
+    ]
+    query = db.query(Alert).filter(
+        Alert.detected_issue.in_(_CYLINDER_ISSUES)
+    )
+    rows = query.order_by(Alert.timestamp.desc()).limit(limit).all()
+
+    # Fuzzy fallback
+    if len(rows) < 5:
+        for keyword in ["cylinder", "gas cylinder"]:
+            fuzzy = (
+                db.query(Alert)
+                .filter(Alert.detected_issue.ilike(f"%{keyword}%"))
+                .order_by(Alert.timestamp.desc())
+                .limit(limit)
+                .all()
+            )
+            seen_ids = {r.id for r in rows}
+            for r in fuzzy:
+                if r.id not in seen_ids:
+                    rows.append(r)
+        rows = sorted(rows, key=lambda x: x.timestamp, reverse=True)[:limit]
+
+    return [_alert_to_dict(r) for r in rows]
+
+
 # ── Summary ────────────────────────────────────────────────────────────────────
 
 @router.get("/summary")
@@ -297,6 +454,26 @@ def get_workflow_summary(
         Alert.timestamp >= today,
     ).count()
 
+    window_count = db.query(Alert).filter(
+        Alert.detected_issue.in_(["Window throwing detected", "Window theft detected", "Items thrown from window", "Stealing through window"]),
+        Alert.timestamp >= today,
+    ).count()
+
+    eating_count = db.query(Alert).filter(
+        Alert.detected_issue.in_(["Eating from store", "Eating detected", "Chewing detected"]),
+        Alert.timestamp >= today,
+    ).count()
+
+    dispatch_count = db.query(Alert).filter(
+        Alert.detected_issue.in_(["Dispatch without vehicle", "Finished goods not loaded", "FG dispatch alert"]),
+        Alert.timestamp >= today,
+    ).count()
+
+    cylinder_count = db.query(Alert).filter(
+        Alert.detected_issue.in_(["Cylinder count change", "Cylinder usage alert", "Cylinder low count"]),
+        Alert.timestamp >= today,
+    ).count()
+
     # Per-floor alert counts today
     floor_counts = {}
     for floor_name in ["ground", "first", "second", "shop"]:
@@ -313,7 +490,11 @@ def get_workflow_summary(
         "idle_events_today":       idle_count,
         "dress_code_events_today": dress_code_count,
         "oven_events_today":       oven_count,
-        "total_today":             cash_count + stock_count + lift_count + packing_count + idle_count + dress_code_count + oven_count,
+        "window_events_today":     window_count,
+        "eating_events_today":     eating_count,
+        "dispatch_events_today":   dispatch_count,
+        "cylinder_events_today":   cylinder_count,
+        "total_today":             cash_count + stock_count + lift_count + packing_count + idle_count + dress_code_count + oven_count + window_count + eating_count + dispatch_count + cylinder_count,
         "floor_counts":            floor_counts,
     }
 

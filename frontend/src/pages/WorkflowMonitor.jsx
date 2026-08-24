@@ -4,7 +4,8 @@ import { useToast } from '../context/ToastContext'
 import {
   Briefcase, DollarSign, Package, ArrowUpDown,
   RefreshCw, AlertTriangle, Clock, Wrench,
-  HardHat, Flame, UserX, Timer
+  HardHat, Flame, UserX, Timer,
+  ShieldAlert, Utensils, Truck, CircleDot
 } from 'lucide-react'
 
 // ── API helpers ─────────────────────────────────────────────────────────────
@@ -17,6 +18,10 @@ const workflowApi = {
   idle:       () => api.get('/workflow/idle-events'),
   dressCode:  () => api.get('/workflow/dress-code-events'),
   oven:       () => api.get('/workflow/oven-events'),
+  window:     () => api.get('/workflow/window-events'),
+  eating:     () => api.get('/workflow/eating-events'),
+  dispatch:   () => api.get('/workflow/dispatch-events'),
+  cylinder:   () => api.get('/workflow/cylinder-events'),
 }
 
 const TABS = [
@@ -25,6 +30,10 @@ const TABS = [
   { id: 'cash',      label: 'Cash Zone',    icon: DollarSign, color: '#10b981',           desc: 'Alerts when person in cashbox zone unauthorised' },
   { id: 'stock',     label: 'Stock Flow',   icon: Package,    color: '#8b5cf6',           desc: 'Exposed goods detected in stock zone' },
   { id: 'oven',      label: 'Oven / Gas',   icon: Flame,      color: '#f97316',           desc: 'Floor 2 · Unattended fire · Gas waste · Oil idle' },
+  { id: 'window',    label: 'Window/Theft', icon: ShieldAlert,color: '#dc2626',           desc: 'Items thrown/stolen through windows · Immediate alert' },
+  { id: 'eating',    label: 'Eating',       icon: Utensils,   color: '#d97706',           desc: 'Eating from store · Pose-based detection' },
+  { id: 'dispatch',  label: 'Dispatch',     icon: Truck,      color: '#0891b2',           desc: 'Finished goods · Dispatch without vehicle' },
+  { id: 'cylinder',  label: 'Cylinders',    icon: CircleDot,  color: '#7c3aed',           desc: 'Cylinder count · Usage-day tracking' },
   { id: 'lift',      label: 'Lift Events',  icon: ArrowUpDown,color: 'var(--accent-blue)',desc: 'Entry/exit tracking across all 3 floors' },
   { id: 'packing',   label: 'Packing',      icon: Wrench,     color: 'var(--accent-green)',desc: 'Packing section hand movement monitoring' },
 ]
@@ -225,6 +234,10 @@ export default function WorkflowMonitor() {
     { label: 'Cash Events',  value: summary?.cash_events_today,       icon: DollarSign, color: '#10b981' },
     { label: 'Stock Events', value: summary?.stock_events_today,      icon: Package,    color: '#8b5cf6' },
     { label: 'Oven/Gas',     value: summary?.oven_events_today,       icon: Flame,      color: '#f97316' },
+    { label: 'Window/Theft', value: summary?.window_events_today,     icon: ShieldAlert,color: '#dc2626' },
+    { label: 'Eating',       value: summary?.eating_events_today,     icon: Utensils,   color: '#d97706' },
+    { label: 'Dispatch',     value: summary?.dispatch_events_today,   icon: Truck,      color: '#0891b2' },
+    { label: 'Cylinders',    value: summary?.cylinder_events_today,   icon: CircleDot,  color: '#7c3aed' },
     { label: 'Lift Events',  value: summary?.lift_events_today,       icon: ArrowUpDown,color: 'var(--accent-blue)' },
   ]
 
@@ -238,7 +251,7 @@ export default function WorkflowMonitor() {
             Workflow Monitor
           </h1>
           <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: 3 }}>
-            Idle · Dress Code · Cash · Stock · Oven/Gas · Lift · Packing
+            Idle · Dress Code · Cash · Stock · Oven/Gas · Window · Eating · Dispatch · Cylinders · Lift · Packing
           </div>
         </div>
         <button className="btn btn-ghost" onClick={() => { loadSummary(); loadTab(activeTab) }}>

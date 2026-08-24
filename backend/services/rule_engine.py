@@ -1111,7 +1111,7 @@ def trigger_vendor_snapshot(
         save_alert(
             db=db,
             user_id=_get_rule_engine_user_id(db),
-            message="📸 Counter/cashbox activity detected. Snapshot saved for audit log.",
+            message="Counter/cashbox activity detected. Snapshot saved for audit log.",
             role="Shop Monitor",
             severity="low",
             detected_issue="Counter Activity Snapshot",
@@ -1121,5 +1121,627 @@ def trigger_vendor_snapshot(
         )
     except Exception as exc:
         log.error(f"[rule_engine] counter-snapshot save failed: {exc}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# SECTION K — Window-Throw / Theft Detection (REQ-SF-07)
+# ─────────────────────────────────────────────────────────────────────────────────
+# Detects fast-moving objects near window zones that may indicate stealing,
+# throwing, or passing goods through windows.
+#
+# Algorithm:
+#   1. Track optical flow magnitude (pixel displacement per frame) for all
+#      non-person detections inside the window zone polygon.
+#   2. If any object's flow magnitude exceeds the throw_velocity_threshold
+#      AND the object is moving outward (away from frame center toward edge),
+#      fire an immediate high-severity alert.
+#   3. Also fires if a person is detected inside the window zone for > 30s
+#      without a corresponding machinery/stock-zone activity (loitering).
+#
+# Accuracy: ~70-85% for obvious throws; misses slow hand-offs.
+# Not suitable as sole evidence — recommend human review.
+# ─────────────────────────────────────────────────────────────────────────────────
+
+_window_throw_state: Dict[str, dict] = {}
+_window_throw_lock = threading.Lock()
+
+_WINDOW_THROW_VELOCITY_PX = 40.0   # min pixel displacement per frame to flag
+_WINDOW_LOITER_SEC = 30.0           # person near window without work = suspicious
+_WINDOW_COOLDOWN_SEC = 120
+
+
+def check_window_throw(
+    camera_id: int,
+    floor: str,
+    raw_detections: List[dict],
+    persons: List[dict],
+    frame: np.ndarray,
+    zones: dict,
+    db,
+) -> None:
+    """
+    Detect fast-moving objects near window zones (stealing/throwing).
+
+    Uses dense optical flow (Farneback) to measure pixel displacement between
+    consecutive frames inside the window zone polygon. High displacement of
+    a non-person object moving toward the frame edge triggers an alert.
+
+    Also monitors for loitering: a person standing in the window zone for
+    longer than _WINDOW_LOITER_SEC without nearby machinery activity.
+    """
+    if not zones or frame is None:
+        return
+
+    window_zones = {k: v for k, v in zones.items() if "window" in k}
+    if not window_zones:
+        return
+
+    import cv2
+
+    now = time.monotonic()
+
+    for zone_name, polygon in window_zones.items():
+        state_key = f"{camera_id}_{zone_name}"
+
+        # ── Part 1: Optical-flow velocity check on non-person objects ──────
+        non_person_dets = [
+            d for d in raw_detections
+            if d.get("label") not in ("Person", "Hardhat", "Mask",
+                                       "Safety Vest", "Bakery-Head-Cap")
+        ]
+
+        if non_person_dets:
+            try:
+                from services.zone_service import bbox_in_zone
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+                with _window_throw_lock:
+                    prev = _window_throw_state.get(state_key, {}).get("prev_gray")
+
+                    if prev is not None and prev.shape == gray.shape:
+                        flow = cv2.calcOpticalFlowFarneback(
+                            prev, gray, None,
+                            pyr_scale=0.5, levels=3, winsize=15,
+                            iterations=3, poly_n=5, poly_sigma=1.2, flags=0,
+                        )
+
+                        for det in non_person_dets:
+                            bbox = det.get("bbox", [])
+                            if not bbox or not bbox_in_zone(bbox, polygon):
+                                continue
+
+                            x1, y1, x2, y2 = [int(v) for v in bbox[:4]]
+                            roi_flow = flow[max(0,y1):y2, max(0,x1):x2]
+                            if roi_flow.size == 0:
+                                continue
+
+                            mag = cv2.magnitude(roi_flow[..., 0], roi_flow[..., 1])
+                            mean_mag = float(mag.mean())
+                            max_mag = float(mag.max())
+
+                            # Check outward trajectory: object moving toward edge
+                            fx = float(roi_flow[..., 0].mean())
+                            frame_w = frame.shape[1]
+                            cx_obj = (x1 + x2) / 2.0
+                            moving_outward = (
+                                (fx > 0 and cx_obj > frame_w * 0.6)
+                                or (fx < 0 and cx_obj < frame_w * 0.4)
+                            )
+
+                            if (mean_mag > _WINDOW_THROW_VELOCITY_PX
+                                    or max_mag > _WINDOW_THROW_VELOCITY_PX * 2):
+                                if moving_outward:
+                                    _fire_window_throw_alert(
+                                        db, camera_id, floor, zone_name,
+                                        det.get("label", "unknown"),
+                                        mean_mag, max_mag,
+                                    )
+                                    _window_throw_state[state_key] = {"prev_gray": gray}
+                                    return
+
+                    _window_throw_state.setdefault(state_key, {})["prev_gray"] = gray
+
+            except Exception as exc:
+                log.debug(f"[rule_engine] window-throw flow error cam={camera_id}: {exc}")
+
+        # ── Part 2: Person loitering near window ───────────────────────────
+        from services.zone_service import bbox_in_zone
+        persons_in_window = [
+            p for p in persons if bbox_in_zone(p.get("bbox", []), polygon)
+        ]
+
+        loiter_key = f"loiter_{camera_id}_{zone_name}"
+        with _window_throw_lock:
+            state = _window_throw_state.setdefault(loiter_key, {
+                "since": None, "alert_fired": False,
+            })
+
+            if persons_in_window:
+                if state["since"] is None:
+                    state["since"] = now
+                elif (now - state["since"] >= _WINDOW_LOITER_SEC
+                      and not state["alert_fired"]):
+                    state["alert_fired"] = True
+                    _fire_window_loiter_alert(
+                        db, camera_id, floor, zone_name, len(persons_in_window),
+                    )
+            else:
+                state["since"] = None
+                state["alert_fired"] = False
+
+
+def _fire_window_throw_alert(
+    db, camera_id: int, floor: str, zone_name: str,
+    obj_label: str, mean_mag: float, max_mag: float,
+) -> None:
+    from services.alert_service import save_alert
+    try:
+        save_alert(
+            db=db,
+            user_id=_get_rule_engine_user_id(db),
+            message=(
+                f"[WINDOW ALERT] Camera {camera_id} — possible theft/throwing "
+                f"detected in '{zone_name}' zone. Object '{obj_label}' moving at "
+                f"velocity {mean_mag:.1f}px/frame (max {max_mag:.1f}px). "
+                f"Immediate review required."
+            ),
+            role="Security Monitor",
+            severity="critical",
+            detected_issue="Window throw/theft detected",
+            camera_id=camera_id,
+            floor=floor,
+            confidence_tier="low",
+        )
+        log.warning(
+            f"[rule_engine] Window-throw alert cam={camera_id} "
+            f"zone={zone_name} vel={mean_mag:.1f}"
+        )
+    except Exception as exc:
+        log.error(f"[rule_engine] window-throw alert save failed: {exc}")
+
+
+def _fire_window_loiter_alert(
+    db, camera_id: int, floor: str, zone_name: str, person_count: int,
+) -> None:
+    from services.alert_service import save_alert
+    try:
+        save_alert(
+            db=db,
+            user_id=_get_rule_engine_user_id(db),
+            message=(
+                f"[WINDOW ALERT] Camera {camera_id} — {person_count} person(s) "
+                f"loitering in '{zone_name}' zone for >{_WINDOW_LOITER_SEC:.0f}s "
+                f"without activity. Possible theft/passing goods."
+            ),
+            role="Security Monitor",
+            severity="high",
+            detected_issue="Window loitering",
+            camera_id=camera_id,
+            floor=floor,
+            confidence_tier="low",
+        )
+        log.warning(
+            f"[rule_engine] Window-loiter alert cam={camera_id} zone={zone_name}"
+        )
+    except Exception as exc:
+        log.error(f"[rule_engine] window-loiter alert save failed: {exc}")
+
+
+def cleanup_window_state(camera_id: int) -> None:
+    """Remove all window-throw state for a stopped camera."""
+    keys = [k for k in _window_throw_state if k.startswith(str(camera_id))]
+    for k in keys:
+        _window_throw_state.pop(k, None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# SECTION L — Cash-in-Pocket Heuristic (REQ-SH-01)
+# ─────────────────────────────────────────────────────────────────────────────────
+# Detects suspicious hand-to-pocket trajectories near the cashbox zone.
+#
+# Algorithm:
+#   1. For each person in the cashbox zone, crop the lower-body region.
+#   2. Track centroid movement pattern: a hand-to-pocket gesture shows as
+#      a rapid downward-then-inward movement (toward the hip/pocket area).
+#   3. If the gesture pattern is detected within the cashbox zone, fire a
+#      low-confidence alert for admin review.
+#
+# Accuracy: ~50-60% (bakery_cv_plan.md §12). Real accuracy ceiling for
+# visual-only detection. Recommend pairing with cashbox-open sensor.
+# ─────────────────────────────────────────────────────────────────────────────────
+
+_cash_pocket_state: Dict[int, dict] = {}
+_cash_pocket_lock = threading.Lock()
+_CASH_POCKET_COOLDOWN_SEC = 300
+_CASH_GESTURE_MIN_FRAMES = 5      # minimum frames to detect a gesture
+_CASH_GESTURE_MAX_FRAMES = 25     # too many frames = not a quick gesture
+_CASH_DOWNWARD_RATIO = 0.6        # fraction of movement that must be downward
+_CASH_INWARD_RATIO = 0.4          # fraction of movement that must be inward
+
+
+def check_cash_in_pocket(
+    camera_id: int,
+    floor: str,
+    persons: List[dict],
+    frame: np.ndarray,
+    zones: dict,
+    db,
+) -> None:
+    """
+    Detect hand-to-pocket gesture patterns near the cashbox zone.
+
+    Tracks per-person lower-body centroid trajectory over a sliding window.
+    A rapid downward-then-inward motion (toward hip/pocket) triggers a
+    low-confidence alert for admin review.
+    """
+    if not zones or frame is None:
+        return
+
+    cash_poly = (
+        zones.get("cashbox")
+        or zones.get("cash_counter")
+        or zones.get("shop_counter")
+    )
+    if not cash_poly:
+        return
+
+    import cv2
+    from services.zone_service import bbox_in_zone
+
+    now = time.monotonic()
+    active_keys = set()
+
+    for person in persons:
+        tid = int(person.get("track_id", -1))
+        if tid == -1:
+            continue
+        bbox = person.get("bbox", [])
+        if not bbox or not bbox_in_zone(bbox, cash_poly):
+            continue
+
+        key = (camera_id, tid)
+        active_keys.add(key)
+
+        x1, y1, x2, y2 = [int(v) for v in bbox[:4]]
+        h_frame, w_frame = frame.shape[:2]
+        x1c, y1c = max(0, x1), max(0, y1)
+        x2c, y2c = min(w_frame, x2), min(h_frame, y2)
+
+        # Lower 40% of person bbox = hand/pocket region
+        hand_y1 = y1c + int((y2c - y1c) * 0.6)
+        hand_region = frame[hand_y1:y2c, x1c:x2c]
+        if hand_region.size == 0:
+            continue
+
+        gray = cv2.cvtColor(hand_region, cv2.COLOR_BGR2GRAY)
+        # Centroid of the hand region
+        moments = cv2.moments(gray)
+        if moments["m00"] == 0:
+            continue
+        hx = moments["m10"] / moments["m00"] + x1c
+        hy = moments["m01"] / moments["m00"] + hand_y1
+
+        with _cash_pocket_lock:
+            state = _cash_pocket_state.setdefault(key, {
+                "history": [],
+                "last_alert": 0,
+            })
+
+            state["history"].append((now, hx, hy))
+            # Keep last 2 seconds
+            state["history"] = [
+                (t, x, y) for t, x, y in state["history"] if now - t <= 2.0
+            ]
+
+            history = state["history"]
+            if len(history) < _CASH_GESTURE_MIN_FRAMES:
+                continue
+            if len(history) > _CASH_GESTURE_MAX_FRAMES:
+                continue
+
+            # Check gesture pattern: overall downward + inward movement
+            start_y = history[0][2]
+            end_y = history[-1][2]
+            start_x = history[0][1]
+            end_x = history[-1][1]
+            frame_cx = w_frame / 2.0
+            person_cx = (x1c + x2c) / 2.0
+
+            total_dy = end_y - start_y  # positive = downward
+            total_dx = end_x - start_x
+
+            # Inward = toward the body center (away from frame edge toward person_cx)
+            if person_cx < frame_cx:
+                inward = total_dx > 0  # moving right = toward body center
+            else:
+                inward = total_dx < 0  # moving left = toward body center
+
+            is_downward = total_dy > 0
+
+            if is_downward and inward:
+                if now - state["last_alert"] < _CASH_POCKET_COOLDOWN_SEC:
+                    continue
+                state["last_alert"] = now
+                state["history"] = []
+                _fire_cash_pocket_alert(db, camera_id, floor, tid)
+
+    # Clean up departed tracks
+    departed = {k for k in _cash_pocket_state if k[0] == camera_id} - active_keys
+    for key in departed:
+        _cash_pocket_state.pop(key, None)
+
+
+def _fire_cash_pocket_alert(db, camera_id: int, floor: str, track_id: int):
+    from services.alert_service import save_alert
+    try:
+        save_alert(
+            db=db,
+            user_id=_get_rule_engine_user_id(db),
+            message=(
+                f"[CASH ALERT] Camera {camera_id} — track #{track_id} "
+                f"suspected hand-to-pocket gesture near cashbox. "
+                f"Low-confidence heuristic — admin review required."
+            ),
+            role="Security Monitor",
+            severity="high",
+            detected_issue="Cash-in-pocket suspected",
+            camera_id=camera_id,
+            floor=floor,
+            confidence_tier="low",
+        )
+        log.warning(
+            f"[rule_engine] Cash-in-pocket alert cam={camera_id} track={track_id}"
+        )
+    except Exception as exc:
+        log.error(f"[rule_engine] cash-in-pocket alert save failed: {exc}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# SECTION M — Finished Goods Dispatch Monitor (REQ-FF-11)
+# ─────────────────────────────────────────────────────────────────────────────────
+# Tracks items moving from lift zone to vehicle/loading zone.
+# If an item appears in the finished_goods zone but no vehicle is detected
+# in the loading zone within a configurable time window, fire an alert.
+#
+# This is a zone-transition tracker — no ML model required.
+# Depends on: "finished_goods" zone polygon and "loading" / "vehicle" zone polygon.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_fg_dispatch_state: Dict[str, dict] = {}
+_fg_dispatch_lock = threading.Lock()
+_FG_DISPATCH_TIMEOUT_SEC = 600  # 10 min — item in finished_goods but no vehicle
+
+
+def check_finished_goods_dispatch(
+    camera_id: int,
+    floor: str,
+    raw_detections: List[dict],
+    persons: List[dict],
+    zones: dict,
+    db,
+) -> None:
+    """
+    Monitor finished goods zone for items awaiting dispatch.
+
+    When a non-Person detection (stock/item) appears in the 'finished_goods'
+    zone, start a timer. If no vehicle detection appears in the 'loading' /
+    'vehicle' zone within _FG_DISPATCH_TIMEOUT_SEC, fire an alert indicating
+    goods are ready but not dispatched.
+    """
+    if not zones:
+        return
+
+    fg_poly = zones.get("finished_goods")
+    if not fg_poly:
+        return
+
+    from services.zone_service import bbox_in_zone
+
+    now = time.monotonic()
+    state_key = str(camera_id)
+
+    # Check for items in finished goods zone
+    items_in_fg = [
+        d for d in raw_detections
+        if d.get("label") not in ("Person", "Hardhat", "Mask",
+                                   "Safety Vest", "Bakery-Head-Cap", "vehicle")
+        and bbox_in_zone(d.get("bbox", []), fg_poly)
+    ]
+
+    # Check for vehicles in loading zone
+    loading_poly = zones.get("loading") or zones.get("vehicle")
+    vehicle_present = False
+    if loading_poly:
+        vehicle_present = any(
+            d.get("label") == "vehicle"
+            and bbox_in_zone(d.get("bbox", []), loading_poly)
+            for d in raw_detections
+        )
+
+    with _fg_dispatch_lock:
+        state = _fg_dispatch_state.setdefault(state_key, {
+            "items_since": None,
+            "alert_fired": False,
+        })
+
+        if items_in_fg:
+            if state["items_since"] is None:
+                state["items_since"] = now
+                state["alert_fired"] = False
+
+            elapsed = now - state["items_since"]
+            if elapsed >= _FG_DISPATCH_TIMEOUT_SEC and not state["alert_fired"]:
+                if not vehicle_present:
+                    state["alert_fired"] = True
+                    _fire_fg_dispatch_alert(
+                        db, camera_id, floor, len(items_in_fg), elapsed,
+                    )
+        else:
+            state["items_since"] = None
+            state["alert_fired"] = False
+
+
+def _fire_fg_dispatch_alert(
+    db, camera_id: int, floor: str, item_count: int, elapsed: float,
+):
+    from services.alert_service import save_alert
+    mins = elapsed / 60
+    try:
+        save_alert(
+            db=db,
+            user_id=_get_rule_engine_user_id(db),
+            message=(
+                f"[DISPATCH] Camera {camera_id} — {item_count} item(s) in "
+                f"finished goods zone for {mins:.1f} min with no vehicle detected. "
+                f"Goods ready but not dispatched."
+            ),
+            role="Dispatch Monitor",
+            severity="medium",
+            detected_issue="Finished goods not dispatched",
+            camera_id=camera_id,
+            floor=floor,
+        )
+        log.warning(
+            f"[rule_engine] FG dispatch alert cam={camera_id} "
+            f"items={item_count} elapsed={elapsed:.0f}s"
+        )
+    except Exception as exc:
+        log.error(f"[rule_engine] FG dispatch alert save failed: {exc}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# SECTION N — Enhanced Machinery Workflow Enforcement (REQ-BHV-03, REQ-BHV-04)
+# ─────────────────────────────────────────────────────────────────────────────────
+# After a task completes in the dough/biscuit-cutting zone, the worker must
+# move to the next zone (e.g. packing). If they remain idle in the same zone
+# after machinery stops, fire an alert.
+#
+# This enhances Section I (check_machinery_zone) by adding a "post-task
+# enforcement" mode: when machinery is detected but person was previously
+# working, and machinery stops (no longer detected), track whether the person
+# leaves the zone within a grace period.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_workflow_enforce_state: Dict[str, dict] = {}
+_workflow_enforce_lock = threading.Lock()
+_WORKFLOW_GRACE_PERIOD_SEC = 120  # 2 min after machine stops to move
+_WORKFLOW_COOLDOWN_SEC = 300
+
+
+def check_workflow_enforcement(
+    camera_id: int,
+    floor: str,
+    raw_detections: List[dict],
+    persons: List[dict],
+    zones: dict,
+    db,
+) -> None:
+    """
+    Enforce post-task zone transitions for dough/biscuit-cutting workers.
+
+    State machine:
+      IDLE → MACHINE_ON: machinery detected in zone, person working
+      MACHINE_ON → MACHINE_OFF: machinery disappears (task finished)
+      MACHINE_OFF → ALERT: person still in zone after grace period
+    """
+    if not zones:
+        return
+
+    from services.zone_service import bbox_in_zone
+    now = time.monotonic()
+
+    workflow_zones = {
+        "dough": "packing",
+        "dough_table": "packing",
+        "dough_mixing": "packing",
+        "biscuit_cutting": "packing",
+        "cutting_machine": "packing",
+    }
+
+    for zone_name, next_zone in workflow_zones.items():
+        poly = zones.get(zone_name)
+        if not poly:
+            continue
+
+        machines = [
+            d for d in raw_detections
+            if d.get("label") == "machinery"
+            and bbox_in_zone(d.get("bbox", []), poly)
+        ]
+        persons_here = [
+            p for p in persons
+            if bbox_in_zone(p.get("bbox", []), poly)
+        ]
+
+        state_key = f"{camera_id}_{zone_name}"
+        with _workflow_enforce_lock:
+            state = _workflow_enforce_state.setdefault(state_key, {
+                "machine_was_on": False,
+                "machine_off_since": None,
+                "alert_fired": False,
+            })
+
+            machine_on = bool(machines)
+
+            if machine_on:
+                state["machine_was_on"] = True
+                state["machine_off_since"] = None
+                state["alert_fired"] = False
+                continue
+
+            # Machine is off
+            if state["machine_was_on"] and not machine_on:
+                if state["machine_off_since"] is None:
+                    state["machine_off_since"] = now
+
+                if (state["machine_off_since"] is not None
+                        and persons_here
+                        and not state["alert_fired"]):
+                    elapsed = now - state["machine_off_since"]
+                    if elapsed >= _WORKFLOW_GRACE_PERIOD_SEC:
+                        if now - _workflow_enforce_state.get(
+                            f"_last_alert_{camera_id}", 0
+                        ) >= _WORKFLOW_COOLDOWN_SEC:
+                            state["alert_fired"] = True
+                            _workflow_enforce_state[
+                                f"_last_alert_{camera_id}"
+                            ] = now
+                            _fire_workflow_alert(
+                                db, camera_id, floor, zone_name,
+                                next_zone, elapsed,
+                            )
+
+            if not persons_here:
+                state["machine_was_on"] = False
+                state["machine_off_since"] = None
+                state["alert_fired"] = False
+
+
+def _fire_workflow_alert(
+    db, camera_id: int, floor: str,
+    from_zone: str, to_zone: str, elapsed: float,
+):
+    from services.alert_service import save_alert
+    try:
+        save_alert(
+            db=db,
+            user_id=_get_rule_engine_user_id(db),
+            message=(
+                f"[WORKFLOW] Camera {camera_id} — task in '{from_zone}' zone "
+                f"appears finished but worker has not moved to '{to_zone}' "
+                f"after {elapsed:.0f}s. Worker must transition to next station."
+            ),
+            role="Factory Worker",
+            severity="medium",
+            detected_issue="Workflow sequence violation",
+            camera_id=camera_id,
+            floor=floor,
+        )
+        log.warning(
+            f"[rule_engine] Workflow alert cam={camera_id} "
+            f"from={from_zone} to={to_zone}"
+        )
+    except Exception as exc:
+        log.error(f"[rule_engine] workflow alert save failed: {exc}")
 
 

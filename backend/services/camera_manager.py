@@ -473,6 +473,16 @@ class _ManagedCamera:
                     except Exception as cm_exc:
                         log.debug(f"[CamMgr] cash_monitor error (cam={self.camera_id}): {cm_exc}")
 
+                # ── Cash-in-pocket heuristic (hand-to-pocket near cashbox) ───────
+                if _has_cash_zone:
+                    try:
+                        rule_engine.check_cash_in_pocket(
+                            self.camera_id, self.floor, persons,
+                            frame, zones or {}, db,
+                        )
+                    except Exception as cp_exc:
+                        log.debug(f"[CamMgr] cash-in-pocket error (cam={self.camera_id}): {cp_exc}")
+
                 # ── Vendor payment snapshot (shop / vendor_desk cameras) ───────
                 # Captures a photo of the payee when a vendor payment is detected.
                 if self.floor == "shop" or active_zones & {"vendor_desk", "payment_desk"}:
@@ -490,13 +500,31 @@ class _ManagedCamera:
                         zones or {}, db
                     )
 
-                # ── Window-throw alert ────────────────────────────────────────
-                # Detects objects/items near window zones (stealing / throwing).
+                # ── Window-throw / theft detection (optical flow) ────────────────
+                # Detects fast-moving objects near window zones (stealing / throwing).
+                # Uses dense optical flow for velocity analysis, plus loiter detection.
                 if active_zones & {"window", "window_throw"}:
-                    rule_engine.check_stock_zone(
-                        self.camera_id, self.floor, raw_dets,
-                        {k: v for k, v in (zones or {}).items() if "window" in k},
-                        db
+                    rule_engine.check_window_throw(
+                        self.camera_id, self.floor, raw_dets, persons,
+                        frame, zones or {}, db,
+                    )
+
+                # ── Finished goods dispatch monitor ─────────────────────────────
+                # Tracks items in finished_goods zone; alerts if no vehicle in
+                # loading zone within timeout.
+                if active_zones & {"finished_goods", "loading", "vehicle"}:
+                    rule_engine.check_finished_goods_dispatch(
+                        self.camera_id, self.floor, raw_dets, persons,
+                        zones or {}, db,
+                    )
+
+                # ── Workflow enforcement (dough/biscuit → packing) ──────────────
+                # After machinery stops, worker must move to next zone within grace.
+                if active_zones & {"dough_table", "dough_mixing", "dough",
+                                    "cutting_machine", "biscuit_cutting", "machine"}:
+                    rule_engine.check_workflow_enforcement(
+                        self.camera_id, self.floor, raw_dets, persons,
+                        zones or {}, db,
                     )
 
                 # ── Face recognition → Auto attendance (rate-limited 1× per 2s) ─
@@ -535,6 +563,25 @@ class _ManagedCamera:
                     )
                 except Exception as chew_exc:
                     log.debug(f"[CamMgr] chew_monitor error (cam={self.camera_id}): {chew_exc}")
+
+                # ── Eating from store detection (stock/storage zones) ────────────
+                # Detects hand-to-mouth gestures near stock areas — employees
+                # eating items from the store (REQ-SF-06).
+                _has_stock_zone = bool(
+                    active_zones & {"stock", "stock_area", "raw_material",
+                                    "store", "storage"}
+                )
+                if _has_stock_zone:
+                    try:
+                        from services import chew_monitor as _cm
+                        _cm.check_eating_from_store(
+                            db=db,
+                            camera_id=self.camera_id,
+                            frame=frame,
+                            persons=persons,
+                        )
+                    except Exception as eat_exc:
+                        log.debug(f"[CamMgr] eating_from_store error (cam={self.camera_id}): {eat_exc}")
 
             except Exception as exc:
                 log.error(f"[CamMgr] Detection loop error (cam={self.camera_id}): {exc}")
@@ -659,6 +706,12 @@ def stop_camera(camera_id: int):
         try:
             from services import chew_monitor
             chew_monitor.cleanup_camera(camera_id)
+        except Exception:
+            pass
+
+        try:
+            from services.rule_engine import cleanup_window_state
+            cleanup_window_state(camera_id)
         except Exception:
             pass
         log.info(f"[CamMgr] camera {camera_id} removed from registry")

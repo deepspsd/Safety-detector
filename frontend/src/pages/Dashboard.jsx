@@ -318,6 +318,10 @@ export default function Dashboard() {
               { label: 'Cash Zone',      value: summary.cash_events_today,       icon: '💰', color: '#10b981', to: '/workflow' },
               { label: 'Oven/Gas',       value: summary.oven_events_today,       icon: '🔥', color: '#f97316', to: '/workflow' },
               { label: 'Stock Flow',     value: summary.stock_events_today,      icon: '📦', color: '#8b5cf6', to: '/workflow' },
+              { label: 'Window/Theft',   value: summary.window_events_today,     icon: '🛡️', color: '#dc2626', to: '/workflow' },
+              { label: 'Eating',         value: summary.eating_events_today,     icon: '🍽️', color: '#d97706', to: '/workflow' },
+              { label: 'Dispatch',       value: summary.dispatch_events_today,   icon: '🚛', color: '#0891b2', to: '/workflow' },
+              { label: 'Cylinders',      value: summary.cylinder_events_today,   icon: '⭕', color: '#7c3aed', to: '/workflow' },
               { label: 'Lift Events',    value: summary.lift_events_today,       icon: '🛗', color: '#3b82f6', to: '/workflow' },
             ].map(({ label, value, icon, color, to }) => (
               <Link key={label} to={to} style={{ textDecoration: 'none', flex: 1, minWidth: 120 }}>

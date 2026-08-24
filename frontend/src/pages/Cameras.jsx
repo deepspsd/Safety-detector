@@ -10,7 +10,14 @@ import {
 
 const FLOORS = ['ground', 'first', 'second', 'shop']
 const FLOOR_LABELS = { ground: 'Ground Floor', first: 'First Floor', second: 'Second Floor', shop: 'Shop Floor' }
-const ZONE_TYPES = ['general', 'restricted', 'bakery', 'cashbox', 'entrance', 'corridor', '']
+const ZONE_TYPES = [
+  'entrance', 'entrance_outward', 'glass_door', 'loading',
+  'packing', 'oven', 'dough_table', 'cutting_machine',
+  'stock', 'raw_material', 'finished_goods', 'cylinder_area',
+  'window', 'lift',
+  'cashbox', 'shop_counter', 'vendor_desk',
+  'camera_standing', 'default', '',
+]
 
 const STATUS_CFG = {
   online:  { icon: Wifi,     color: '#34d399', bg: 'rgba(16,185,129,0.12)'  },
@@ -100,7 +107,39 @@ function CameraDrawer({ camera, onClose, onSaved }) {
               <label className="form-label">Zone Type</label>
               <select className="form-select" value={form.zone_type || ''} onChange={e => set('zone_type', e.target.value)}>
                 <option value="">— none —</option>
-                {ZONE_TYPES.filter(Boolean).map(z => <option key={z} value={z}>{z}</option>)}
+                <optgroup label="Entrances & Movement">
+                  <option value="entrance">entrance — inward invoice OCR</option>
+                  <option value="entrance_outward">entrance_outward — outward OCR + person snap</option>
+                  <option value="glass_door">glass_door — attendance + lift tracking</option>
+                  <option value="loading">loading — loading/unloading monitor</option>
+                </optgroup>
+                <optgroup label="Ground Floor Production">
+                  <option value="packing">packing — hand-motion idle alert</option>
+                  <option value="oven">oven — gas/oil idle alert</option>
+                  <option value="dough_table">dough_table — post-job idle alert</option>
+                  <option value="cutting_machine">cutting_machine — machine-on worker alert</option>
+                </optgroup>
+                <optgroup label="Stock & Goods">
+                  <option value="stock">stock — item exposure + dirty floor</option>
+                  <option value="raw_material">raw_material — raw stock monitor</option>
+                  <option value="finished_goods">finished_goods — dispatch check</option>
+                  <option value="cylinder_area">cylinder_area — cylinder count + usage</option>
+                </optgroup>
+                <optgroup label="Windows">
+                  <option value="window">window — throwing/stealing alert</option>
+                </optgroup>
+                <optgroup label="Lift">
+                  <option value="lift">lift — person + item tracking (all floors)</option>
+                </optgroup>
+                <optgroup label="Shop Floor">
+                  <option value="cashbox">cashbox — cash pocket vs box alert</option>
+                  <option value="shop_counter">shop_counter — absence alert</option>
+                  <option value="vendor_desk">vendor_desk — payee snapshot</option>
+                </optgroup>
+                <optgroup label="General">
+                  <option value="camera_standing">camera_standing — blocking alert</option>
+                  <option value="default">default — idle monitor only</option>
+                </optgroup>
               </select>
             </div>
           </div>
