@@ -4,10 +4,12 @@ No alert, workflow, zone, OCR or policy decision belongs here.  The module is
 intentionally a small adapter over the already-loaded YOLO model so existing
 weights and startup behaviour remain unchanged.
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import Dict, List, Optional
+
 import numpy as np
 
 
@@ -27,6 +29,7 @@ class YoloDetectionAdapter:
 
     def detect(self, frame: np.ndarray) -> List[Detection]:
         from services import yolo_service
+
         model = getattr(yolo_service, "_model", None)
         if model is None:
             return []
@@ -45,11 +48,13 @@ class YoloDetectionAdapter:
                     label = labels[index] if index < len(labels) else f"class_{index}"
                 else:
                     label = str(model.names[index])
-                output.append(Detection(
-                    label=label,
-                    confidence=round(float(box.conf[0]), 4),
-                    bbox=[int(v) for v in box.xyxy[0]],
-                ))
+                output.append(
+                    Detection(
+                        label=label,
+                        confidence=round(float(box.conf[0]), 4),
+                        bbox=[int(v) for v in box.xyxy[0]],
+                    )
+                )
         return output
 
 

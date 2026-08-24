@@ -14,6 +14,7 @@ AFTER inference completed, meaning filter-update messages sat unread in the
 OS socket buffer for 200-400ms (one inference cycle) and were often lost
 when the user stopped the stream before the next cycle.
 """
+
 import asyncio
 import json
 import time
@@ -22,12 +23,13 @@ from functools import partial
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
-from database import get_db, User, UserConfig
+
 from auth_utils import decode_token
-from services import yolo_service, face_service
-from services.alert_service import save_alert
 from config import settings
+from database import User, UserConfig, get_db
 from routers.users import _parse_custom_ppe
+from services import face_service, yolo_service
+from services.alert_service import save_alert
 
 router = APIRouter(tags=["detection"])
 
@@ -36,8 +38,8 @@ router = APIRouter(tags=["detection"])
 _inference_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="yolo")
 
 # Per-user cooldown: dict[user_id → last_alert_timestamp]
-_last_alert_time:       dict = {}
-_last_phone_alert_time: dict = {}   # separate cooldown for phone alerts
+_last_alert_time: dict = {}
+_last_phone_alert_time: dict = {}  # separate cooldown for phone alerts
 
 
 def _fire_attendance(face_result: dict, camera_id) -> None:
@@ -50,11 +52,12 @@ def _fire_attendance(face_result: dict, camera_id) -> None:
         return
     try:
         from services.attendance_service import handle_face_match
+
         for emp_id, conf in recognized.items():
             handle_face_match(
-                camera_id   = camera_id,
-                employee_id = emp_id,
-                confidence  = conf,
+                camera_id=camera_id,
+                employee_id=emp_id,
+                confidence=conf,
             )
     except Exception as exc:
         print(f"[Attendance] _fire_attendance error: {exc}")
@@ -74,9 +77,9 @@ async def detection_websocket(websocket: WebSocket):
 
     try:
         # ── Auth handshake ──────────────────────────────────────
-        auth_raw  = await websocket.receive_text()
+        auth_raw = await websocket.receive_text()
         auth_data = json.loads(auth_raw)
-        user      = await _get_user(auth_data.get("token", ""), db)
+        user = await _get_user(auth_data.get("token", ""), db)
 
         if not user:
             await websocket.send_json({"error": "Unauthorized"})
@@ -92,30 +95,34 @@ async def detection_websocket(websocket: WebSocket):
         # as the INITIAL filter list; the frontend can still override mid-stream.
         handshake_filters = list(auth_data.get("filters", []))
         if role == "None" and not handshake_filters:
-            db_config = db.query(UserConfig).filter(UserConfig.user_id == user.id).first()
+            db_config = (
+                db.query(UserConfig).filter(UserConfig.user_id == user.id).first()
+            )
             if db_config:
                 handshake_filters = _parse_custom_ppe(db_config)
                 print(f"[WS] Loaded custom PPE from DB: {handshake_filters}")
 
         # ── Shared mutable state (safe: both coroutines on same event-loop thread) ──
         state = {
-            "filters":       handshake_filters,
+            "filters": handshake_filters,
             "no_phone_zone": bool(auth_data.get("no_phone_zone", True)),  # default ON
-            "frame_count":   0,
-            "alive":         True,
+            "frame_count": 0,
+            "alive": True,
         }
 
         print(f"[WS] Handshake filters ({len(state['filters'])}): {state['filters']}")
 
-        await websocket.send_json({
-            "status":         "connected",
-            "role":           role,
-            "user":           user.name,
-            "active_filters": state["filters"],
-        })
+        await websocket.send_json(
+            {
+                "status": "connected",
+                "role": role,
+                "user": user.name,
+                "active_filters": state["filters"],
+            }
+        )
 
-        loop        = asyncio.get_event_loop()
-        frame_queue = asyncio.Queue(maxsize=2)   # holds at most 2 unprocessed frames
+        loop = asyncio.get_event_loop()
+        frame_queue = asyncio.Queue(maxsize=2)  # holds at most 2 unprocessed frames
 
         # ────────────────────────────────────────────────────────
         # Coroutine 1 — Message reader
@@ -140,7 +147,9 @@ async def detection_websocket(websocket: WebSocket):
                 if "no_phone_zone" in msg:
                     npz = bool(msg["no_phone_zone"])
                     if npz != state["no_phone_zone"]:
-                        print(f"[WS] 📱 NO_PHONE_ZONE: {state['no_phone_zone']} → {npz}")
+                        print(
+                            f"[WS] 📱 NO_PHONE_ZONE: {state['no_phone_zone']} → {npz}"
+                        )
                         state["no_phone_zone"] = npz
 
                 if msg.get("frame"):
@@ -154,10 +163,12 @@ async def detection_websocket(websocket: WebSocket):
                 elif "filters" in msg:
                     # Standalone filter-update (no frame) — just acknowledge
                     try:
-                        await websocket.send_json({
-                            "status":         "filters_updated",
-                            "active_filters": state["filters"],
-                        })
+                        await websocket.send_json(
+                            {
+                                "status": "filters_updated",
+                                "active_filters": state["filters"],
+                            }
+                        )
                     except Exception:
                         pass
 
@@ -190,12 +201,16 @@ async def detection_websocket(websocket: WebSocket):
                 try:
                     if role == "Home":
                         result = face_service.process_face_frame(b64_frame, user.id, db)
-                        detections       = [
-                            {"label": f["label"], "confidence": f["confidence"], "bbox": f["bbox"]}
+                        detections = [
+                            {
+                                "label": f["label"],
+                                "confidence": f["confidence"],
+                                "bbox": f["bbox"],
+                            }
                             for f in result.get("faces", [])
                         ]
                         violations_count = 1 if not result.get("is_compliant") else 0
-                        persons_count    = len(result.get("faces", []))
+                        persons_count = len(result.get("faces", []))
 
                         # ── Attendance: clock-in any recognized employee ──
                         _fire_attendance(result, camera_id=None)
@@ -203,23 +218,28 @@ async def detection_websocket(websocket: WebSocket):
                     else:
                         inference_fn = partial(
                             yolo_service.process_frame,
-                            b64_frame, role,
+                            b64_frame,
+                            role,
                             detection_filters=det_filters,
                             no_phone_zone=state["no_phone_zone"],
                         )
                         # ← await releases event loop; read_messages() runs here
-                        result = await loop.run_in_executor(_inference_executor, inference_fn)
+                        result = await loop.run_in_executor(
+                            _inference_executor, inference_fn
+                        )
 
-                        detections       = result.get("detections", [])
+                        detections = result.get("detections", [])
                         violations_count = result.get("violations_count", 0)
-                        persons_count    = result.get("persons_count",    0)
+                        persons_count = result.get("persons_count", 0)
 
                         if frame_num % 20 == 1:
                             det_labels = [d["label"] for d in detections]
-                            missing    = result.get("missing_items", [])
-                            print(f"[YOLO] Frame#{frame_num} det={det_labels} "
-                                  f"missing={missing} filters_used={det_filters} "
-                                  f"compliant={result.get('is_compliant')}")
+                            missing = result.get("missing_items", [])
+                            print(
+                                f"[YOLO] Frame#{frame_num} det={det_labels} "
+                                f"missing={missing} filters_used={det_filters} "
+                                f"compliant={result.get('is_compliant')}"
+                            )
 
                         # ── Attendance: also run face recognition for non-Home roles ──
                         # Runs every 15 frames to avoid overloading CPU (doesn't affect PPE)
@@ -230,41 +250,47 @@ async def detection_websocket(websocket: WebSocket):
                                 )
                                 _fire_attendance(face_result_attn, camera_id=None)
                             except Exception:
-                                pass   # never let attendance failure break PPE flow
+                                pass  # never let attendance failure break PPE flow
 
-                     # ── Build response ──────────────────────────────
+                    # ── Build response ──────────────────────────────
                     response = {
-                        "annotated_frame":  result.get("annotated_frame"),
-                        "detections":       detections,
-                        "is_compliant":     result.get("is_compliant",  True),
-                        "missing_items":    result.get("missing_items", []),
+                        "annotated_frame": result.get("annotated_frame"),
+                        "detections": detections,
+                        "is_compliant": result.get("is_compliant", True),
+                        "missing_items": result.get("missing_items", []),
                         "violations_count": violations_count,
-                        "persons_count":    persons_count,
-                        "alert_message":    result.get("alert_message"),
-                        "severity":         result.get("severity"),
-                        "frame_count":      frame_num,
-                        "persons":          result.get("persons", []),
-                        "model_mode":       result.get("model_mode", "unknown"),
-                        "active_filters":   state["filters"],
+                        "persons_count": persons_count,
+                        "alert_message": result.get("alert_message"),
+                        "severity": result.get("severity"),
+                        "frame_count": frame_num,
+                        "persons": result.get("persons", []),
+                        "model_mode": result.get("model_mode", "unknown"),
+                        "active_filters": state["filters"],
                         # Phone detection fields
-                        "phone_status":     result.get("phone_status", "safe"),
-                        "phone_detected":   result.get("phone_detected", False),
-                        "phone_alert":      result.get("phone_alert"),
+                        "phone_status": result.get("phone_status", "safe"),
+                        "phone_detected": result.get("phone_detected", False),
+                        "phone_alert": result.get("phone_alert"),
                     }
 
                     # ── Save PPE alert (cooldown + confidence gate) ─────
                     if not result.get("is_compliant") and result.get("alert_message"):
-                        uid      = user.id
-                        now      = time.time()
+                        uid = user.id
+                        now = time.time()
                         # Use max confidence from persons (always present) then PPE detections.
                         # This ensures College/Gloves/Goggles violations (person-level conf)
                         # always pass the gate even when no PPE bbox detections exist.
-                        persons_conf = [p.get("confidence", 0) for p in result.get("persons", [])]
-                        dets_conf    = [d.get("confidence", 0) for d in detections]
+                        persons_conf = [
+                            p.get("confidence", 0) for p in result.get("persons", [])
+                        ]
+                        dets_conf = [d.get("confidence", 0) for d in detections]
                         top_conf = max(persons_conf + dets_conf, default=0.5)
                         conf_ok = top_conf >= settings.MIN_VIOLATION_CONF
 
-                        if conf_ok and now - _last_alert_time.get(uid, 0) > settings.ALERT_COOLDOWN:
+                        if (
+                            conf_ok
+                            and now - _last_alert_time.get(uid, 0)
+                            > settings.ALERT_COOLDOWN
+                        ):
                             _last_alert_time[uid] = now
                             missing = result.get("missing_items", [])
                             save_alert(
@@ -273,19 +299,22 @@ async def detection_websocket(websocket: WebSocket):
                                 message=result["alert_message"],
                                 role=role,
                                 severity=result["severity"],
-                                detected_issue=", ".join(missing) if missing else result["alert_message"],
+                                detected_issue=(
+                                    ", ".join(missing)
+                                    if missing
+                                    else result["alert_message"]
+                                ),
                                 confidence=round(top_conf, 3),
                                 snapshot_b64=result.get("snapshot_b64"),
                             )
                             response["alert_saved"] = True
 
-
                     # ── Save PHONE alert (separate cooldown — 15 s) ─────
                     phone_sev = result.get("phone_severity")
                     phone_msg = result.get("phone_alert")
                     if phone_sev == "high" and phone_msg:
-                        uid  = user.id
-                        now  = time.time()
+                        uid = user.id
+                        now = time.time()
                         if now - _last_phone_alert_time.get(uid, 0) > 15:
                             _last_phone_alert_time[uid] = now
                             save_alert(

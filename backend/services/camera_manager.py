@@ -57,6 +57,7 @@ _lock = threading.Lock()
 # Internal: per-camera wrapper
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class _ManagedCamera:
     """
     Owns one CameraReader + one heartbeat thread for a single camera row.
@@ -74,21 +75,22 @@ class _ManagedCamera:
     _OFFLINE_TIMEOUT = 30
 
     def __init__(self, camera_id: int, name: str, url: str, floor: str = "ground"):
-        self.camera_id   = camera_id
-        self.name        = name
-        self.url         = url
-        self.floor       = floor   # ground | first | second | shop
+        self.camera_id = camera_id
+        self.name = name
+        self.url = url
+        self.floor = floor  # ground | first | second | shop
 
         # Lazy-import CameraReader so this module can be imported before
         # routers.cctv without a circular import error.
         from routers.cctv import CameraReader
+
         self.reader = CameraReader(url)
 
         self._hb_thread: Optional[threading.Thread] = None
         self._hb_running = False
         self._det_thread: Optional[threading.Thread] = None
         self._det_running = False
-        self._last_frame_ts: float = 0.0   # epoch; 0 = no frame yet
+        self._last_frame_ts: float = 0.0  # epoch; 0 = no frame yet
         self._last_face_rec_ts: float = 0.0  # rate-limit face recognition to 1 call/2s
 
     # ── Public ────────────────────────────────────────────────────────────────
@@ -111,7 +113,9 @@ class _ManagedCamera:
         )
         self._det_thread.start()
 
-        log.info(f"[CamMgr] Started camera {self.camera_id} — '{self.name}' @ {self.url}")
+        log.info(
+            f"[CamMgr] Started camera {self.camera_id} — '{self.name}' @ {self.url}"
+        )
 
     def stop(self):
         self._hb_running = False
@@ -121,18 +125,21 @@ class _ManagedCamera:
         # Clean up tracker & idle state
         try:
             from services import idle_service
+
             idle_service.close_all_for_camera(self.camera_id)
         except Exception as e:
             log.error(f"[CamMgr] idle_service cleanup error: {e}")
 
         try:
             from services import yolo_service
+
             yolo_service.reset_tracker(self.camera_id)
         except Exception as e:
             log.error(f"[CamMgr] yolo_service tracker reset error: {e}")
 
         try:
             from services.enterprise_runtime import runtime
+
             runtime.reset_camera(self.camera_id)
         except Exception as e:
             log.error(f"[CamMgr] enterprise runtime reset error: {e}")
@@ -162,8 +169,8 @@ class _ManagedCamera:
         Opens its own DB session, writes status + last_seen_at, closes it.
         Never holds a connection between ticks.
         """
-        from database import SessionLocal
         from database import Camera as CameraModel  # avoid top-level circular import
+        from database import SessionLocal
 
         while self._hb_running:
             time.sleep(self._HB_INTERVAL)
@@ -171,8 +178,8 @@ class _ManagedCamera:
                 break
 
             # Determine current status
-            error  = self.reader.last_error()
-            frame  = self.reader.latest_frame()
+            error = self.reader.last_error()
+            frame = self.reader.latest_frame()
 
             if frame is not None:
                 self._last_frame_ts = time.time()
@@ -190,9 +197,11 @@ class _ManagedCamera:
             db = None
             try:
                 db = SessionLocal()
-                cam = db.query(CameraModel).filter(
-                    CameraModel.id == self.camera_id
-                ).first()
+                cam = (
+                    db.query(CameraModel)
+                    .filter(CameraModel.id == self.camera_id)
+                    .first()
+                )
                 if cam:
                     cam.status = status
                     if status == "online":
@@ -201,13 +210,29 @@ class _ManagedCamera:
                     cam.health_status = status
                     db.commit()
                     try:
-                        from services.health_monitor import collect_camera_health, record
+                        from services.health_monitor import (
+                            collect_camera_health,
+                            record,
+                        )
                         from services.platform_events import emit
-                        record("camera", str(self.camera_id), status,
-                               collect_camera_health(self.camera_id, self.fps(), error))
+
+                        record(
+                            "camera",
+                            str(self.camera_id),
+                            status,
+                            collect_camera_health(self.camera_id, self.fps(), error),
+                        )
                         if status in ("offline", "error"):
-                            emit("CAMERA_OFFLINE", camera_id=self.camera_id, source="health-monitor",
-                                 payload={"status": status, "error": error, "fps": self.fps()})
+                            emit(
+                                "CAMERA_OFFLINE",
+                                camera_id=self.camera_id,
+                                source="health-monitor",
+                                payload={
+                                    "status": status,
+                                    "error": error,
+                                    "fps": self.fps(),
+                                },
+                            )
                     except Exception:
                         pass
                     log.debug(
@@ -255,10 +280,10 @@ class _ManagedCamera:
         All rule-engine calls share one SQLAlchemy session opened per tick and
         closed in a finally block — no session is held between ticks.
         """
-        from services import idle_service
-        from services import zone_service, rule_engine
+        from database import Camera as CameraModel
+        from database import SessionLocal
+        from services import idle_service, rule_engine, zone_service
         from services.enterprise_runtime import runtime as enterprise_runtime
-        from database import SessionLocal, Camera as CameraModel
 
         # zone_type is the camera-level tag (e.g. "packing", "lift").
         # We also merge polygon zone names each tick so that painting a zone
@@ -268,7 +293,11 @@ class _ManagedCamera:
         db_init = None
         try:
             db_init = SessionLocal()
-            cam = db_init.query(CameraModel).filter(CameraModel.id == self.camera_id).first()
+            cam = (
+                db_init.query(CameraModel)
+                .filter(CameraModel.id == self.camera_id)
+                .first()
+            )
             if cam and cam.zone_type:
                 camera_zone_type = cam.zone_type
             # Seed settings defaults once per camera-start (safe: upsert only)
@@ -277,8 +306,10 @@ class _ManagedCamera:
             log.warning(f"[CamMgr] init DB read error (cam={self.camera_id}): {exc}")
         finally:
             if db_init:
-                try: db_init.close()
-                except Exception: pass
+                try:
+                    db_init.close()
+                except Exception:
+                    pass
 
         while self._det_running:
             time.sleep(0.2)
@@ -312,6 +343,7 @@ class _ManagedCamera:
                 # previous tick if the pool is busy) so the rule-engine loop
                 # is never blocked waiting for inference.
                 from services.inference_pool import inference_pool
+
                 inference_pool.put_frame(self.camera_id, frame)
                 pool_result = inference_pool.get_result(self.camera_id) or {}
 
@@ -319,7 +351,11 @@ class _ManagedCamera:
                 # state is preserved per-camera across ticks.
                 res = enterprise_runtime.process_frame(self.camera_id, frame, db)
                 persons = [
-                    {"bbox": track["bbox"], "confidence": track["confidence"], "track_id": int(track["track_id"])}
+                    {
+                        "bbox": track["bbox"],
+                        "confidence": track["confidence"],
+                        "track_id": int(track["track_id"]),
+                    }
                     for track in res.get("tracks", [])
                 ]
                 # Prefer pool detections (fresher class labels) if available,
@@ -385,22 +421,27 @@ class _ManagedCamera:
 
                 # ── Camera-blocking check (runs on ALL cameras) ───────────────
                 # Person standing in front of camera > 1 min → alert.
-                rule_engine.check_camera_blocking(self.camera_id, frame.shape, persons, db)
+                rule_engine.check_camera_blocking(
+                    self.camera_id, frame.shape, persons, db
+                )
 
                 # ── Stock zone check (ALL cameras — raw materials + items) ─────
                 # Zone-polygon-gated internally by rule_engine.check_stock_zone.
-                rule_engine.check_stock_zone(self.camera_id, self.floor, raw_dets, zones, db)
-
+                rule_engine.check_stock_zone(
+                    self.camera_id, self.floor, raw_dets, zones, db
+                )
 
                 # ── Rule engine — OCR gate (entrance cameras) ─────────────────────
                 # Triggers if zone_type contains "entrance" OR a polygon named
                 # "entrance" / "entrance_outward" / "glass_door" is painted.
                 _has_entrance = bool(
-                    active_zones & {"entrance", "entrance_outward", "glass_door", "loading"}
+                    active_zones
+                    & {"entrance", "entrance_outward", "glass_door", "loading"}
                 )
                 if _has_entrance:
                     try:
                         from services.yolo_service import run_ocr_gate_for_camera
+
                         # outward direction: explicit outward zone_type OR outward polygon present
                         direction = (
                             "outward"
@@ -408,15 +449,20 @@ class _ManagedCamera:
                             or "entrance_outward" in active_zones
                             else "inward"
                         )
-                        run_ocr_gate_for_camera(frame, raw_dets, zones, db, self.camera_id, direction)
+                        run_ocr_gate_for_camera(
+                            frame, raw_dets, zones, db, self.camera_id, direction
+                        )
                     except Exception as exc:
-                        log.debug(f"[CamMgr] ocr_gate error (cam={self.camera_id}): {exc}")
+                        log.debug(
+                            f"[CamMgr] ocr_gate error (cam={self.camera_id}): {exc}"
+                        )
 
                 # ── Packing monitor — hand-motion check ───────────────────────
                 # Triggers if zone_type is packing OR a packing polygon is painted.
                 if active_zones & {"packing"}:
                     try:
                         from services import packing_monitor
+
                         packing_monitor.process_packing_frame(
                             db=db,
                             camera_id=self.camera_id,
@@ -425,7 +471,9 @@ class _ManagedCamera:
                             packing_polygon=(zones or {}).get("packing"),
                         )
                     except Exception as pm_exc:
-                        log.debug(f"[CamMgr] packing_monitor error (cam={self.camera_id}): {pm_exc}")
+                        log.debug(
+                            f"[CamMgr] packing_monitor error (cam={self.camera_id}): {pm_exc}"
+                        )
 
                 # ── Lift monitor — person + item tracking across floors ────────
                 # Triggers if zone_type is "lift" OR a "lift" polygon is painted
@@ -433,6 +481,7 @@ class _ManagedCamera:
                 if active_zones & {"lift", "glass_door"}:
                     try:
                         from services import lift_monitor
+
                         lift_monitor.process_lift_frame(
                             db=db,
                             camera_id=self.camera_id,
@@ -444,17 +493,27 @@ class _ManagedCamera:
                             ),
                         )
                     except Exception as lm_exc:
-                        log.debug(f"[CamMgr] lift_monitor error (cam={self.camera_id}): {lm_exc}")
+                        log.debug(
+                            f"[CamMgr] lift_monitor error (cam={self.camera_id}): {lm_exc}"
+                        )
 
                 # ── Cash + stock monitor ───────────────────────────────────────
                 # Triggers on shop floor OR when a cashbox/stock polygon is painted
                 # on ANY floor (e.g. a dedicated cash-counter camera on ground floor).
                 _has_cash_zone = self.floor == "shop" or bool(
-                    active_zones & {"cashbox", "cash_counter", "vendor_desk", "payment_desk", "shop_counter"}
+                    active_zones
+                    & {
+                        "cashbox",
+                        "cash_counter",
+                        "vendor_desk",
+                        "payment_desk",
+                        "shop_counter",
+                    }
                 )
                 if _has_cash_zone:
                     try:
                         from services import cash_monitor
+
                         cash_monitor.check_cash_zone(
                             db=db,
                             camera_id=self.camera_id,
@@ -471,24 +530,34 @@ class _ManagedCamera:
                             stock_polygon=(zones or {}).get("stock"),
                         )
                     except Exception as cm_exc:
-                        log.debug(f"[CamMgr] cash_monitor error (cam={self.camera_id}): {cm_exc}")
+                        log.debug(
+                            f"[CamMgr] cash_monitor error (cam={self.camera_id}): {cm_exc}"
+                        )
 
                 # ── Cash-in-pocket heuristic (hand-to-pocket near cashbox) ───────
                 if _has_cash_zone:
                     try:
                         rule_engine.check_cash_in_pocket(
-                            self.camera_id, self.floor, persons,
-                            frame, zones or {}, db,
+                            self.camera_id,
+                            self.floor,
+                            persons,
+                            frame,
+                            zones or {},
+                            db,
                         )
                     except Exception as cp_exc:
-                        log.debug(f"[CamMgr] cash-in-pocket error (cam={self.camera_id}): {cp_exc}")
+                        log.debug(
+                            f"[CamMgr] cash-in-pocket error (cam={self.camera_id}): {cp_exc}"
+                        )
 
                 # ── Vendor payment snapshot (shop / vendor_desk cameras) ───────
                 # Captures a photo of the payee when a vendor payment is detected.
-                if self.floor == "shop" or active_zones & {"vendor_desk", "payment_desk"}:
+                if self.floor == "shop" or active_zones & {
+                    "vendor_desk",
+                    "payment_desk",
+                }:
                     rule_engine.trigger_vendor_snapshot(
-                        self.camera_id, self.floor, persons, frame,
-                        zones or {}, db
+                        self.camera_id, self.floor, persons, frame, zones or {}, db
                     )
 
                 # ── Dough / cutting-machine post-job idle check ────────────────
@@ -496,8 +565,7 @@ class _ManagedCamera:
                 # Machinery zone check handles this: machine idle = no motion near machine.
                 if active_zones & {"dough_table", "cutting_machine", "machine"}:
                     rule_engine.check_machinery_zone(
-                        self.camera_id, self.floor, raw_dets, persons,
-                        zones or {}, db
+                        self.camera_id, self.floor, raw_dets, persons, zones or {}, db
                     )
 
                 # ── Window-throw / theft detection (optical flow) ────────────────
@@ -505,8 +573,13 @@ class _ManagedCamera:
                 # Uses dense optical flow for velocity analysis, plus loiter detection.
                 if active_zones & {"window", "window_throw"}:
                     rule_engine.check_window_throw(
-                        self.camera_id, self.floor, raw_dets, persons,
-                        frame, zones or {}, db,
+                        self.camera_id,
+                        self.floor,
+                        raw_dets,
+                        persons,
+                        frame,
+                        zones or {},
+                        db,
                     )
 
                 # ── Finished goods dispatch monitor ─────────────────────────────
@@ -514,17 +587,31 @@ class _ManagedCamera:
                 # loading zone within timeout.
                 if active_zones & {"finished_goods", "loading", "vehicle"}:
                     rule_engine.check_finished_goods_dispatch(
-                        self.camera_id, self.floor, raw_dets, persons,
-                        zones or {}, db,
+                        self.camera_id,
+                        self.floor,
+                        raw_dets,
+                        persons,
+                        zones or {},
+                        db,
                     )
 
                 # ── Workflow enforcement (dough/biscuit → packing) ──────────────
                 # After machinery stops, worker must move to next zone within grace.
-                if active_zones & {"dough_table", "dough_mixing", "dough",
-                                    "cutting_machine", "biscuit_cutting", "machine"}:
+                if active_zones & {
+                    "dough_table",
+                    "dough_mixing",
+                    "dough",
+                    "cutting_machine",
+                    "biscuit_cutting",
+                    "machine",
+                }:
                     rule_engine.check_workflow_enforcement(
-                        self.camera_id, self.floor, raw_dets, persons,
-                        zones or {}, db,
+                        self.camera_id,
+                        self.floor,
+                        raw_dets,
+                        persons,
+                        zones or {},
+                        db,
                     )
 
                 # ── Face recognition → Auto attendance (rate-limited 1× per 2s) ─
@@ -534,27 +621,31 @@ class _ManagedCamera:
                 if now_ts - self._last_face_rec_ts >= 2.0:
                     self._last_face_rec_ts = now_ts
                     try:
-                        from services import face_service, attendance_service
+                        from services import attendance_service, face_service
+
                         face_result = face_service.process_face_numpy(
                             frame_bgr=frame,
-                            user_id=1,    # system user; encodings are shared across users
+                            user_id=1,  # system user; encodings are shared across users
                             db=db,
                         )
                         recognized = face_result.get("recognized_employees", {})
                         for emp_id, confidence in recognized.items():
                             # handle_face_match opens its own DB session internally
                             attendance_service.handle_face_match(
-                                camera_id   = self.camera_id,
-                                employee_id = emp_id,
-                                confidence  = confidence,
+                                camera_id=self.camera_id,
+                                employee_id=emp_id,
+                                confidence=confidence,
                             )
                     except Exception as face_exc:
-                        log.debug(f"[CamMgr] Face recognition error (cam={self.camera_id}): {face_exc}")
+                        log.debug(
+                            f"[CamMgr] Face recognition error (cam={self.camera_id}): {face_exc}"
+                        )
 
                 # ── Chewing + clean-shave detection (MediaPipe) ───────────────────
                 # Runs at low frequency internally; skips if MEDIAPIPE_ENABLED=false.
                 try:
                     from services import chew_monitor
+
                     chew_monitor.process_frame(
                         db=db,
                         camera_id=self.camera_id,
@@ -562,18 +653,21 @@ class _ManagedCamera:
                         persons=persons,
                     )
                 except Exception as chew_exc:
-                    log.debug(f"[CamMgr] chew_monitor error (cam={self.camera_id}): {chew_exc}")
+                    log.debug(
+                        f"[CamMgr] chew_monitor error (cam={self.camera_id}): {chew_exc}"
+                    )
 
                 # ── Eating from store detection (stock/storage zones) ────────────
                 # Detects hand-to-mouth gestures near stock areas — employees
                 # eating items from the store (REQ-SF-06).
                 _has_stock_zone = bool(
-                    active_zones & {"stock", "stock_area", "raw_material",
-                                    "store", "storage"}
+                    active_zones
+                    & {"stock", "stock_area", "raw_material", "store", "storage"}
                 )
                 if _has_stock_zone:
                     try:
                         from services import chew_monitor as _cm
+
                         _cm.check_eating_from_store(
                             db=db,
                             camera_id=self.camera_id,
@@ -581,19 +675,26 @@ class _ManagedCamera:
                             persons=persons,
                         )
                     except Exception as eat_exc:
-                        log.debug(f"[CamMgr] eating_from_store error (cam={self.camera_id}): {eat_exc}")
+                        log.debug(
+                            f"[CamMgr] eating_from_store error (cam={self.camera_id}): {eat_exc}"
+                        )
 
             except Exception as exc:
-                log.error(f"[CamMgr] Detection loop error (cam={self.camera_id}): {exc}")
+                log.error(
+                    f"[CamMgr] Detection loop error (cam={self.camera_id}): {exc}"
+                )
             finally:
                 if db:
-                    try: db.close()
-                    except Exception: pass
+                    try:
+                        db.close()
+                    except Exception:
+                        pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def start_all() -> int:
     """
@@ -602,8 +703,8 @@ def start_all() -> int:
 
     Returns the number of cameras started.
     """
-    from database import SessionLocal
-    from database import Camera as CameraModel, CameraStreamProfile
+    from database import Camera as CameraModel
+    from database import CameraStreamProfile, SessionLocal
     from services.camera_credentials import decrypt
 
     db = SessionLocal()
@@ -616,7 +717,9 @@ def start_all() -> int:
             .all()
         )
         for row in rows:
-            stream_url = row.rtsp_url.strip() if row.rtsp_url and row.rtsp_url.strip() else None
+            stream_url = (
+                row.rtsp_url.strip() if row.rtsp_url and row.rtsp_url.strip() else None
+            )
             if stream_url is None:
                 desired = row.preferred_stream or "sub"
                 profile = (
@@ -647,9 +750,13 @@ def start_all() -> int:
                         )
 
             if stream_url:
-                camera_configs.append((row.id, row.name, stream_url, row.floor or "ground"))
+                camera_configs.append(
+                    (row.id, row.name, stream_url, row.floor or "ground")
+                )
             else:
-                log.warning(f"[CamMgr] Skipping camera {row.id} '{row.name}' — no configured stream")
+                log.warning(
+                    f"[CamMgr] Skipping camera {row.id} '{row.name}' — no configured stream"
+                )
     finally:
         db.close()
 
@@ -705,12 +812,14 @@ def stop_camera(camera_id: int):
         mc.stop()
         try:
             from services import chew_monitor
+
             chew_monitor.cleanup_camera(camera_id)
         except Exception:
             pass
 
         try:
             from services.rule_engine import cleanup_window_state
+
             cleanup_window_state(camera_id)
         except Exception:
             pass
@@ -725,7 +834,7 @@ def restart_camera(camera_id: int, name: str, rtsp_url: str, floor: str = "groun
     Used by POST /cameras/{id}/restart.
     """
     stop_camera(camera_id)
-    time.sleep(0.5)   # brief pause to let the old thread exit cleanly
+    time.sleep(0.5)  # brief pause to let the old thread exit cleanly
     _launch(camera_id, name, rtsp_url, floor=floor)
     log.info(f"[CamMgr] camera {camera_id} restarted")
 
@@ -754,8 +863,12 @@ def get_metrics(camera_id: int) -> dict:
     with _lock:
         mc = _registry.get(camera_id)
     if not mc:
-        return {"fps": 0.0, "last_frame_at": None, "reconnect_count": 0,
-                "last_error": "Camera is not streaming"}
+        return {
+            "fps": 0.0,
+            "last_frame_at": None,
+            "reconnect_count": 0,
+            "last_error": "Camera is not streaming",
+        }
     return mc.metrics()
 
 
@@ -774,20 +887,23 @@ def list_status() -> List[dict]:
 
     result = []
     for cid, mc in snapshot:
-        result.append({
-            "camera_id":   cid,
-            "name":        mc.name,
-            "fps":         mc.fps(),
-            "error":       mc.last_error(),
-            "has_frame":   mc.reader.latest_frame() is not None,
-            **mc.metrics(),
-        })
+        result.append(
+            {
+                "camera_id": cid,
+                "name": mc.name,
+                "fps": mc.fps(),
+                "error": mc.last_error(),
+                "has_frame": mc.reader.latest_frame() is not None,
+                **mc.metrics(),
+            }
+        )
     return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Internal helper
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _launch(camera_id: int, name: str, url: str, floor: str = "ground"):
     """Create, register, and start a ManagedCamera.  Not lock-safe — callers manage."""

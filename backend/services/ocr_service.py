@@ -30,13 +30,14 @@ Approval heuristics (deliberately lenient v1 — see inline notes):
   edge cases where the OCR misfires.  Do not tighten without more data.
 """
 
-import re
 import base64
-import logging
 import datetime
+import logging
+import re
+from typing import Optional
+
 import cv2
 import numpy as np
-from typing import Optional
 
 log = logging.getLogger("ocr_service")
 
@@ -44,8 +45,9 @@ log = logging.getLogger("ocr_service")
 # Tesseract availability guard
 # ──────────────────────────────────────────────────────────────────────────────
 try:
-    import pytesseract
     import os
+
+    import pytesseract
 
     # ── Windows: set tesseract_cmd to the default UB-Mannheim install path ──────
     # winget / installer puts the binary here; PATH may not be refreshed yet
@@ -62,6 +64,7 @@ try:
         else:
             # Try to find via PATH anyway
             import shutil
+
             tess = shutil.which("tesseract")
             if tess:
                 pytesseract.pytesseract.tesseract_cmd = tess
@@ -89,15 +92,17 @@ except ImportError:
 # Inward (invoice): at least one sequence of ≥3 digits OR a date-like string
 # e.g. "INV-20240801", "123456", "01/08/2024", "2024-08-01", "₹1,200"
 _INVOICE_PATTERNS = [
-    re.compile(r"\b\d{3,}\b"),                     # ≥3 consecutive digits
+    re.compile(r"\b\d{3,}\b"),  # ≥3 consecutive digits
     re.compile(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}"),  # date: 01/08/2024 or 1-8-24
     re.compile(r"(?:INV|GST|PO|ORD|REF)[\/\-#]?\w+", re.IGNORECASE),  # common prefixes
-    re.compile(r"[₹\$]\s*[\d,]+"),                  # currency amount
+    re.compile(r"[₹\$]\s*[\d,]+"),  # currency amount
 ]
 
 # Outward (order form): same pragmatic approach — order refs look like invoices
 # A stricter check (e.g. "ORDER" keyword) risks false-rejects on handwritten forms.
-_ORDER_PATTERNS = _INVOICE_PATTERNS  # identical v1; differentiated in v2 with real samples
+_ORDER_PATTERNS = (
+    _INVOICE_PATTERNS  # identical v1; differentiated in v2 with real samples
+)
 
 
 def _text_looks_like_document(text: str, direction: str) -> bool:
@@ -110,7 +115,7 @@ def _text_looks_like_document(text: str, direction: str) -> bool:
     """
     patterns = _INVOICE_PATTERNS if direction == "inward" else _ORDER_PATTERNS
     stripped = text.strip()
-    if len(stripped) < 4:   # almost certainly a bad crop / OCR failure
+    if len(stripped) < 4:  # almost certainly a bad crop / OCR failure
         return False
     return any(p.search(stripped) for p in patterns)
 
@@ -119,7 +124,9 @@ def _text_looks_like_document(text: str, direction: str) -> bool:
 # Matches common invoice formats:
 #   "Qty: 48", "Quantity 24", "48 bags", "48 packs", "48 nos", "48 units", "48 pcs"
 _QTY_PATTERNS = [
-    re.compile(r"(?:qty|quantity|nos|pcs|packs|bags|units)\s*[:\-]?\s*(\d+)", re.IGNORECASE),
+    re.compile(
+        r"(?:qty|quantity|nos|pcs|packs|bags|units)\s*[:\-]?\s*(\d+)", re.IGNORECASE
+    ),
     re.compile(r"(\d+)\s*(?:qty|nos|pcs|packs|bags|units|pieces)", re.IGNORECASE),
     re.compile(r"\bqty\s+(\d+)\b", re.IGNORECASE),
 ]
@@ -136,7 +143,7 @@ def _extract_goods_count(text: str) -> Optional[int]:
         if m:
             try:
                 val = int(m.group(1))
-                if 1 <= val <= 100_000:   # sanity range — avoid OCR noise
+                if 1 <= val <= 100_000:  # sanity range — avoid OCR noise
                     return val
             except (IndexError, ValueError):
                 continue
@@ -146,6 +153,7 @@ def _extract_goods_count(text: str) -> Optional[int]:
 # ──────────────────────────────────────────────────────────────────────────────
 # Image pre-processing
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def _looks_like_camera_photo(img: np.ndarray) -> bool:
     """
@@ -157,12 +165,14 @@ def _looks_like_camera_photo(img: np.ndarray) -> bool:
     h, w = gray.shape[:2]
     mid_h, mid_w = h // 2, w // 2
     quads = [
-        gray[:mid_h, :mid_w], gray[:mid_h, mid_w:],
-        gray[mid_h:, :mid_w], gray[mid_h:, mid_w:],
+        gray[:mid_h, :mid_w],
+        gray[:mid_h, mid_w:],
+        gray[mid_h:, :mid_w],
+        gray[mid_h:, mid_w:],
     ]
     variances = [float(np.var(q)) for q in quads if q.size > 0]
     if not variances or min(variances) < 1:
-        return True   # near-zero variance in a quadrant = probably uneven photo
+        return True  # near-zero variance in a quadrant = probably uneven photo
     return (max(variances) / min(variances)) > 4.0
 
 
@@ -199,10 +209,12 @@ def _preprocess_for_camera(gray: np.ndarray) -> np.ndarray:
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(sharpened)
     binary = cv2.adaptiveThreshold(
-        enhanced, 255,
+        enhanced,
+        255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY,
-        blockSize=25, C=12,
+        blockSize=25,
+        C=12,
     )
     return _remove_noise_dots(binary)
 
@@ -242,13 +254,15 @@ def _clean_ocr_text(text: str) -> str:
         # Drop lines that are only 1 char OR pure punctuation/symbols
         if len(stripped) <= 1:
             continue
-        if re.match(r'^[^a-zA-Z0-9₹\$\.,%/\-]+$', stripped):
+        if re.match(r"^[^a-zA-Z0-9₹\$\.,%/\-]+$", stripped):
             continue
         cleaned.append(stripped)
-    return ' | '.join(cleaned) if cleaned else text.strip()
+    return " | ".join(cleaned) if cleaned else text.strip()
 
 
-def _crop_with_padding(frame: np.ndarray, bbox: list, pad_frac: float = 0.10) -> np.ndarray:
+def _crop_with_padding(
+    frame: np.ndarray, bbox: list, pad_frac: float = 0.10
+) -> np.ndarray:
     """
     Crop bbox from frame with 10% padding on each side.
     Matches the approach in bakery_cv_plan.md §9.5.
@@ -277,10 +291,11 @@ def _encode_crop(crop: np.ndarray) -> Optional[str]:
 # Public API
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def scan_document_in_frame(
     frame: np.ndarray,
     bbox: list,
-    direction: str,            # "inward" | "outward"
+    direction: str,  # "inward" | "outward"
 ) -> dict:
     """
     Main entry point — called by yolo_service when 'Document-in-hand' (class 13)
@@ -317,11 +332,11 @@ def scan_document_in_frame(
     if not _TESSERACT_OK:
         log.warning("OCR called but pytesseract not installed. Returning REVIEW alert.")
         return {
-            "approved":      False,
-            "raw_text":      "[OCR_UNAVAILABLE — install pytesseract + Tesseract binary]",
-            "timestamp":     ts,
-            "direction":     direction,
-            "snapshot_b64":  snapshot_b64,
+            "approved": False,
+            "raw_text": "[OCR_UNAVAILABLE — install pytesseract + Tesseract binary]",
+            "timestamp": ts,
+            "direction": direction,
+            "snapshot_b64": snapshot_b64,
             "ocr_available": False,
         }
 
@@ -350,7 +365,7 @@ def scan_document_in_frame(
                 if len(candidate) > len(best_text):
                     best_text = candidate
                     if len(best_text) > 60:
-                        break   # good enough — stop trying other modes
+                        break  # good enough — stop trying other modes
             except Exception:
                 continue
         raw_text = best_text
@@ -374,11 +389,11 @@ def scan_document_in_frame(
         log.info(f"[OCR] Document approved | direction={direction}")
 
     return {
-        "approved":      approved,
-        "raw_text":      raw_text,
-        "goods_count":   _extract_goods_count(raw_text),
-        "timestamp":     ts,
-        "direction":     direction,
-        "snapshot_b64":  snapshot_b64,
+        "approved": approved,
+        "raw_text": raw_text,
+        "goods_count": _extract_goods_count(raw_text),
+        "timestamp": ts,
+        "direction": direction,
+        "snapshot_b64": snapshot_b64,
         "ocr_available": True,
     }

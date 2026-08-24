@@ -26,6 +26,7 @@ Performance
   Checks are skipped if MEDIAPIPE_ENABLED=false in config or if mediapipe
   is not installed (degrades gracefully with a one-time warning log).
 """
+
 from __future__ import annotations
 
 import logging
@@ -42,14 +43,16 @@ log = logging.getLogger("chew_monitor")
 
 # ── Tuning constants ──────────────────────────────────────────────────────────
 # Chewing detection
-CHEW_CHECK_INTERVAL_SEC  = 10     # check at most once per 10s per person
-CHEW_WINDOW_SEC          = 5.0   # look back this many seconds for cycles
-CHEW_CYCLE_COUNT         = 3     # jaw must open+close ≥ this many times
-CHEW_OPEN_THRESHOLD_PX   = 6     # minimum jaw-gap (px in normalised frame) to count as "open"
+CHEW_CHECK_INTERVAL_SEC = 10  # check at most once per 10s per person
+CHEW_WINDOW_SEC = 5.0  # look back this many seconds for cycles
+CHEW_CYCLE_COUNT = 3  # jaw must open+close ≥ this many times
+CHEW_OPEN_THRESHOLD_PX = (
+    6  # minimum jaw-gap (px in normalised frame) to count as "open"
+)
 
 # Clean-shave detection
-SHAVE_CHECK_INTERVAL_SEC = 60    # check at most once per 60s per person
-BEARD_PIXEL_THRESHOLD    = 0.18  # dark pixel fraction that suggests facial hair
+SHAVE_CHECK_INTERVAL_SEC = 60  # check at most once per 60s per person
+BEARD_PIXEL_THRESHOLD = 0.18  # dark pixel fraction that suggests facial hair
 
 # MediaPipe landmark indices (FaceMesh 468-point model)
 _UPPER_LIP = 13
@@ -60,16 +63,17 @@ _JAW_LANDMARKS = [172, 136, 150, 149, 176, 148, 152, 377, 400, 378, 379, 365, 39
 # Per-person jaw history: (camera_id, track_id) → list[(timestamp, gap_px)]
 _jaw_history: Dict[Tuple[int, int], List[Tuple[float, float]]] = {}
 # Per-person last-check timestamps
-_chew_last_check:  Dict[Tuple[int, int], float] = {}
+_chew_last_check: Dict[Tuple[int, int], float] = {}
 _shave_last_check: Dict[Tuple[int, int], float] = {}
 
 # MediaPipe face-mesh instances per camera_id (lazy-created)
 _face_meshes: Dict[int, object] = {}
 
-_mediapipe_unavailable = False   # set to True on first import failure
+_mediapipe_unavailable = False  # set to True on first import failure
 
 
 # ── MediaPipe helper ──────────────────────────────────────────────────────────
+
 
 def _get_face_mesh(camera_id: int):
     """Return (or lazily create) a FaceMesh instance for this camera."""
@@ -80,6 +84,7 @@ def _get_face_mesh(camera_id: int):
         return _face_meshes[camera_id]
     try:
         import mediapipe as mp
+
         fm = mp.solutions.face_mesh.FaceMesh(
             static_image_mode=False,
             max_num_faces=1,
@@ -116,6 +121,7 @@ def _crop_person(frame: np.ndarray, bbox: List) -> Optional[np.ndarray]:
 
 # ── Chewing detection ─────────────────────────────────────────────────────────
 
+
 def _count_jaw_cycles(history: List[Tuple[float, float]], now: float) -> int:
     """Count open→close transitions in the recent jaw-gap history."""
     recent = [(t, g) for t, g in history if now - t <= CHEW_WINDOW_SEC]
@@ -140,6 +146,7 @@ def _check_chewing(
     """Return True if chewing pattern detected."""
     try:
         import mediapipe as mp
+
         rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
         results = face_mesh.process(rgb)
         if not results.multi_face_landmarks:
@@ -164,6 +171,7 @@ def _check_chewing(
 
 # ── Clean-shave detection ─────────────────────────────────────────────────────
 
+
 def _check_facial_hair(
     face_mesh,
     crop: np.ndarray,
@@ -174,6 +182,7 @@ def _check_facial_hair(
     """
     try:
         import mediapipe as mp
+
         rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
         results = face_mesh.process(rgb)
         if not results.multi_face_landmarks:
@@ -189,7 +198,7 @@ def _check_facial_hair(
         mask = np.zeros(crop.shape[:2], dtype=np.uint8)
         cv2.fillPoly(mask, [pts], 255)
         # Restrict to lower half of face (avoid chin-cup false positives)
-        mask[:h // 2, :] = 0
+        mask[: h // 2, :] = 0
 
         jaw_pixels = crop[mask == 255]
         if len(jaw_pixels) < 100:
@@ -206,6 +215,7 @@ def _check_facial_hair(
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
 
 def process_frame(
     db,
@@ -230,7 +240,7 @@ def process_frame(
 
     for person in persons:
         track_id = person.get("track_id")
-        bbox     = person.get("bbox")
+        bbox = person.get("bbox")
         if track_id is None or not bbox:
             continue
 
@@ -261,7 +271,7 @@ def process_frame(
             # Only check upper face crop (head area) for better accuracy
             x1, y1, x2, y2 = [int(v) for v in bbox[:4]]
             head_h = (y2 - y1) // 2
-            head_crop = frame[y1: y1 + head_h, max(0, x1): min(frame.shape[1], x2)]
+            head_crop = frame[y1 : y1 + head_h, max(0, x1) : min(frame.shape[1], x2)]
             if head_crop is not None and head_crop.size > 0:
                 if _check_facial_hair(face_mesh, head_crop):
                     _fire_alert(
@@ -313,10 +323,10 @@ def cleanup_camera(camera_id: int) -> None:
 # gesture (scratching, adjusting mask) — expect false positives.
 # ─────────────────────────────────────────────────────────────────────────────
 
-EATING_CHECK_INTERVAL_SEC = 15     # check once per 15s per person
-EATING_MOUTH_PROXIMITY_PX = 30     # max distance (px) wrist-to-mouth to count
-EATING_MIN_REPEATS = 3             # hand must reach mouth ≥ this many times
-EATING_WINDOW_SEC = 10.0           # look-back window for repeat detection
+EATING_CHECK_INTERVAL_SEC = 15  # check once per 15s per person
+EATING_MOUTH_PROXIMITY_PX = 30  # max distance (px) wrist-to-mouth to count
+EATING_MIN_REPEATS = 3  # hand must reach mouth ≥ this many times
+EATING_WINDOW_SEC = 10.0  # look-back window for repeat detection
 
 _eating_state: Dict[Tuple[int, int], dict] = {}
 _eating_last_check: Dict[Tuple[int, int], float] = {}
@@ -340,6 +350,7 @@ def _get_pose(camera_id: int):
         return _poses[camera_id]
     try:
         import mediapipe as mp
+
         pose = mp.solutions.pose.Pose(
             static_image_mode=False,
             model_complexity=0,  # lite model for performance
@@ -373,6 +384,7 @@ def _check_eating_gesture(
     """
     try:
         import mediapipe as mp
+
         rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
         results = pose.process(rgb)
         if not results.pose_landmarks:
@@ -454,6 +466,7 @@ def check_eating_from_store(
 def _fire_eating_alert(db, camera_id: int, track_id: int):
     from services.alert_service import save_alert
     from services.rule_engine import _get_rule_engine_user_id
+
     try:
         save_alert(
             db=db,
@@ -469,12 +482,15 @@ def _fire_eating_alert(db, camera_id: int, track_id: int):
             camera_id=camera_id,
             confidence_tier="low",
         )
-        log.info("[ChewMonitor] Eating-from-store alert cam=%d track=%d", camera_id, track_id)
+        log.info(
+            "[ChewMonitor] Eating-from-store alert cam=%d track=%d", camera_id, track_id
+        )
     except Exception as exc:
         log.error("[ChewMonitor] eating alert save failed: %s", exc)
 
 
 # ── Internal ──────────────────────────────────────────────────────────────────
+
 
 def _fire_alert(
     db,
@@ -487,6 +503,7 @@ def _fire_alert(
     try:
         from services.alert_service import save_alert
         from services.rule_engine import _get_rule_engine_user_id
+
         save_alert(
             db=db,
             user_id=_get_rule_engine_user_id(db),
@@ -497,6 +514,11 @@ def _fire_alert(
             camera_id=camera_id,
             confidence_tier=confidence_tier,
         )
-        log.info("[ChewMonitor] Alert fired: %s cam=%d track=%d", detected_issue, camera_id, track_id)
+        log.info(
+            "[ChewMonitor] Alert fired: %s cam=%d track=%d",
+            detected_issue,
+            camera_id,
+            track_id,
+        )
     except Exception as exc:
         log.error("[ChewMonitor] Alert save failed: %s", exc)

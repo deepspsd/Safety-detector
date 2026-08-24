@@ -59,7 +59,8 @@ log = logging.getLogger("idle_service")
 # Protected by _state_lock.  All public functions acquire the lock for their
 # entire duration (reads + writes are always atomic from the caller's POV).
 
-_StateKey  = Tuple[int, int]   # (camera_id, track_id)
+_StateKey = Tuple[int, int]  # (camera_id, track_id)
+
 
 class _TrackState:
     """
@@ -74,22 +75,26 @@ class _TrackState:
     idle_session_id:  DB row id of the currently-open IdleSession, or None
     alert_fired:      True once an alert has been sent for this idle window
     """
+
     __slots__ = (
-        "first_seen_at", "last_moved_at",
-        "centroid_history", "zone_name",
-        "idle_session_id", "alert_fired",
+        "first_seen_at",
+        "last_moved_at",
+        "centroid_history",
+        "zone_name",
+        "idle_session_id",
+        "alert_fired",
     )
 
     def __init__(self, cx: float, cy: float, zone_name: str):
         now = time.time()
-        self.first_seen_at   = now
-        self.last_moved_at   = now
+        self.first_seen_at = now
+        self.last_moved_at = now
         self.centroid_history: collections.deque = collections.deque(
             [(cx, cy)], maxlen=8
         )
-        self.zone_name        = zone_name
+        self.zone_name = zone_name
         self.idle_session_id: Optional[int] = None
-        self.alert_fired:     bool = False
+        self.alert_fired: bool = False
 
     @property
     def current_centroid(self) -> Tuple[float, float]:
@@ -99,13 +104,14 @@ class _TrackState:
         return time.time() - self.last_moved_at
 
 
-_state:      Dict[_StateKey, _TrackState] = {}
-_state_lock  = threading.Lock()
+_state: Dict[_StateKey, _TrackState] = {}
+_state_lock = threading.Lock()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Idle limit lookup
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _idle_limit(zone_name: str) -> int:
     """
@@ -120,6 +126,7 @@ def _idle_limit(zone_name: str) -> int:
 # Centroid helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _centroid(bbox: List[int]) -> Tuple[float, float]:
     x1, y1, x2, y2 = bbox
     return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
@@ -133,20 +140,22 @@ def _distance(a: Tuple[float, float], b: Tuple[float, float]) -> float:
 # DB helpers — each opens+closes its own short-lived session
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _open_idle_session(camera_id: int, track_id: int, zone_name: str) -> Optional[int]:
     """
     INSERT a new IdleSession row (end_time=NULL = open session).
     Returns the new row's id, or None on failure.
     """
-    from database import SessionLocal, IdleSession
+    from database import IdleSession, SessionLocal
+
     db = None
     try:
         db = SessionLocal()
         row = IdleSession(
-            camera_id  = camera_id,
-            track_id   = track_id,
-            zone_name  = zone_name,
-            start_time = datetime.datetime.utcnow(),
+            camera_id=camera_id,
+            track_id=track_id,
+            zone_name=zone_name,
+            start_time=datetime.datetime.utcnow(),
         )
         db.add(row)
         db.commit()
@@ -159,26 +168,31 @@ def _open_idle_session(camera_id: int, track_id: int, zone_name: str) -> Optiona
     except Exception as exc:
         log.error(f"[Idle] _open_idle_session failed: {exc}")
         if db:
-            try: db.rollback()
-            except Exception: pass
+            try:
+                db.rollback()
+            except Exception:
+                pass
         return None
     finally:
         if db:
-            try: db.close()
-            except Exception: pass
+            try:
+                db.close()
+            except Exception:
+                pass
 
 
 def _close_idle_session(session_id: int, idle_seconds: float):
     """
     UPDATE IdleSession row with end_time + duration_seconds.
     """
-    from database import SessionLocal, IdleSession
+    from database import IdleSession, SessionLocal
+
     db = None
     try:
         db = SessionLocal()
         row = db.query(IdleSession).filter(IdleSession.id == session_id).first()
         if row:
-            row.end_time         = datetime.datetime.utcnow()
+            row.end_time = datetime.datetime.utcnow()
             row.duration_seconds = round(idle_seconds, 1)
             db.commit()
             log.info(
@@ -188,12 +202,16 @@ def _close_idle_session(session_id: int, idle_seconds: float):
     except Exception as exc:
         log.error(f"[Idle] _close_idle_session failed (id={session_id}): {exc}")
         if db:
-            try: db.rollback()
-            except Exception: pass
+            try:
+                db.rollback()
+            except Exception:
+                pass
     finally:
         if db:
-            try: db.close()
-            except Exception: pass
+            try:
+                db.close()
+            except Exception:
+                pass
 
 
 def _fire_alert(camera_id: int, track_id: int, zone_name: str, idle_seconds: float):
@@ -203,13 +221,14 @@ def _fire_alert(camera_id: int, track_id: int, zone_name: str, idle_seconds: flo
     """
     from database import SessionLocal
     from services.alert_service import save_alert
+
     db = None
     try:
         db = SessionLocal()
         save_alert(
-            db           = db,
-            user_id      = 0,          # system alert — not from a user session
-            message      = (
+            db=db,
+            user_id=0,  # system alert — not from a user session
+            message=(
                 f"[IDLE PERSON] Camera {camera_id} — track #{track_id} has been "
                 f"stationary in zone '{zone_name}' for "
                 f"{int(idle_seconds)}s "
@@ -217,11 +236,11 @@ def _fire_alert(camera_id: int, track_id: int, zone_name: str, idle_seconds: flo
                 f"No browser session is required — this alert is from the "
                 f"persistent camera daemon."
             ),
-            role         = "Factory Worker",
-            severity     = "medium",
-            detected_issue = "Idle person",
-            confidence   = None,
-            snapshot_b64 = None,
+            role="Factory Worker",
+            severity="medium",
+            detected_issue="Idle person",
+            confidence=None,
+            snapshot_b64=None,
         )
         log.warning(
             f"[Idle] ALERT — cam={camera_id} track={track_id} "
@@ -230,21 +249,26 @@ def _fire_alert(camera_id: int, track_id: int, zone_name: str, idle_seconds: flo
     except Exception as exc:
         log.error(f"[Idle] _fire_alert failed: {exc}")
         if db:
-            try: db.rollback()
-            except Exception: pass
+            try:
+                db.rollback()
+            except Exception:
+                pass
     finally:
         if db:
-            try: db.close()
-            except Exception: pass
+            try:
+                db.close()
+            except Exception:
+                pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def process_frame(
     camera_id: int,
-    persons:   List[Dict],
+    persons: List[Dict],
     zone_name: str = "default",
 ) -> None:
     """
@@ -265,15 +289,15 @@ def process_frame(
     never holds a DB connection open across ticks.
     """
     threshold = getattr(settings, "IDLE_MOVEMENT_THRESHOLD_PX", 8)
-    limit     = _idle_limit(zone_name)
-    now       = time.time()
+    limit = _idle_limit(zone_name)
+    now = time.time()
 
     # Build set of active track_ids in this frame
     active_track_ids = set()
     for p in persons:
         tid = int(p.get("track_id", -1))
         if tid == -1:
-            continue   # untracked person — skip idle logic
+            continue  # untracked person — skip idle logic
         active_track_ids.add(tid)
 
     with _state_lock:
@@ -297,13 +321,15 @@ def process_frame(
             st.centroid_history.append((cx, cy))
 
             # ── Movement check ──────────────────────────────────────────────
-            prev_cx, prev_cy = st.centroid_history[-2] if len(st.centroid_history) > 1 else (cx, cy)
+            prev_cx, prev_cy = (
+                st.centroid_history[-2] if len(st.centroid_history) > 1 else (cx, cy)
+            )
             moved = _distance((cx, cy), (prev_cx, prev_cy)) >= threshold
 
             if moved:
                 # Person moved: reset timer, close any open idle session
                 st.last_moved_at = now
-                st.alert_fired   = False
+                st.alert_fired = False
                 if st.idle_session_id is not None:
                     _sid = st.idle_session_id
                     st.idle_session_id = None
@@ -314,7 +340,7 @@ def process_frame(
             # ── Idle check ──────────────────────────────────────────────────
             idle_secs = st.idle_seconds()
             if idle_secs < limit:
-                continue   # still within allowed idle window
+                continue  # still within allowed idle window
 
             # Person has been idle beyond the limit
             if st.idle_session_id is None:
@@ -329,8 +355,7 @@ def process_frame(
 
         # ── 2. Close sessions for tracks that left the frame ────────────────
         stale_keys = [
-            k for k in _state
-            if k[0] == camera_id and k[1] not in active_track_ids
+            k for k in _state if k[0] == camera_id and k[1] not in active_track_ids
         ]
         for key in stale_keys:
             st = _state.pop(key)

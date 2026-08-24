@@ -9,11 +9,13 @@ from services.camera_manager import get_latest_frame
 
 log = logging.getLogger("webrtc_streamer")
 
+
 class CameraStreamTrack(VideoStreamTrack):
     """
     A WebRTC VideoStreamTrack that yields the latest frame from the global camera_manager.
     This avoids making a second RTSP connection to the camera.
     """
+
     def __init__(self, camera_id: int):
         super().__init__()
         self.camera_id = camera_id
@@ -33,6 +35,7 @@ class CameraStreamTrack(VideoStreamTrack):
             # If no frame yet, just sleep and raise exception or return a blank frame.
             # Returning a dummy 640x480 black frame to keep the connection alive.
             import numpy as np
+
             frame = np.zeros((480, 640, 3), dtype=np.uint8)
 
         # Convert OpenCV BGR to PyAV VideoFrame
@@ -41,12 +44,15 @@ class CameraStreamTrack(VideoStreamTrack):
         video_frame.time_base = time_base
         return video_frame
 
+
 class WebRTCManager:
     def __init__(self):
         # Keep track of active connections so they don't get garbage collected
         self._pcs: Set[RTCPeerConnection] = set()
 
-    async def handle_offer(self, camera_id: int, offer_sdp: str, offer_type: str) -> dict:
+    async def handle_offer(
+        self, camera_id: int, offer_sdp: str, offer_type: str
+    ) -> dict:
         """
         Takes an SDP offer from the browser, creates a PeerConnection,
         adds our CameraStreamTrack, and returns the SDP answer.
@@ -72,10 +78,8 @@ class WebRTCManager:
         answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
 
-        return {
-            "sdp": pc.localDescription.sdp,
-            "type": pc.localDescription.type
-        }
+        return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+
 
 # Global singleton
 webrtc_manager = WebRTCManager()

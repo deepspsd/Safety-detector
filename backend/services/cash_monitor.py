@@ -20,7 +20,7 @@ Authorization model (v1):
 import datetime
 import logging
 import time
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
 
 log = logging.getLogger("cash_monitor")
 
@@ -28,7 +28,7 @@ log = logging.getLogger("cash_monitor")
 # Cooldown registry — prevent alert spam
 # ─────────────────────────────────────────────────────────────────────────────
 _last_alert_ts: Dict[str, float] = {}
-_COOLDOWN_SEC = 120   # 2 min between identical alerts per camera
+_COOLDOWN_SEC = 120  # 2 min between identical alerts per camera
 
 
 def _can_alert(key: str) -> bool:
@@ -44,6 +44,7 @@ def _can_alert(key: str) -> bool:
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _get_allowed_hours(db) -> tuple:
     """
     Return (start_h, end_h) from SystemSettings 'cashbox_allowed_hours'.
@@ -51,13 +52,16 @@ def _get_allowed_hours(db) -> tuple:
     """
     try:
         from database import SystemSettings
-        row = db.query(SystemSettings).filter(
-            SystemSettings.key == "cashbox_allowed_hours"
-        ).first()
+
+        row = (
+            db.query(SystemSettings)
+            .filter(SystemSettings.key == "cashbox_allowed_hours")
+            .first()
+        )
         if row:
             parts = row.value.split("-")
             start_h = int(parts[0].split(":")[0])
-            end_h   = int(parts[1].split(":")[0])
+            end_h = int(parts[1].split(":")[0])
             return start_h, end_h
     except Exception:
         pass
@@ -81,7 +85,9 @@ def _person_in_zone(person_bbox: List[int], zone_polygon: Optional[List]) -> boo
     for i in range(n):
         xi, yi = zone_polygon[i]
         xj, yj = zone_polygon[j]
-        if ((yi > cy) != (yj > cy)) and (cx < (xj - xi) * (cy - yi) / (yj - yi + 1e-9) + xi):
+        if ((yi > cy) != (yj > cy)) and (
+            cx < (xj - xi) * (cy - yi) / (yj - yi + 1e-9) + xi
+        ):
             inside = not inside
         j = i
     return inside
@@ -92,17 +98,18 @@ def _fire_alert(db, camera_id: int, message: str, severity: str, issue: str):
     try:
         from services.alert_service import save_alert
         from services.rule_engine import _get_rule_engine_user_id
+
         user_id = _get_rule_engine_user_id(db)
         save_alert(
-            db             = db,
-            user_id        = user_id,
-            message        = message,
-            role           = "System",
-            severity       = severity,
-            detected_issue = issue,
-            confidence     = None,
-            snapshot_b64   = None,
-            camera_id      = camera_id,
+            db=db,
+            user_id=user_id,
+            message=message,
+            role="System",
+            severity=severity,
+            detected_issue=issue,
+            confidence=None,
+            snapshot_b64=None,
+            camera_id=camera_id,
         )
     except Exception as exc:
         log.error(f"[CashMonitor] _fire_alert failed: {exc}")
@@ -112,10 +119,11 @@ def _fire_alert(db, camera_id: int, message: str, severity: str, issue: str):
 # CashMonitor
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def check_cash_zone(
     db,
-    camera_id:      int,
-    detections:     List[Dict],
+    camera_id: int,
+    detections: List[Dict],
     cashbox_polygon: Optional[List] = None,
 ) -> None:
     """
@@ -136,7 +144,8 @@ def check_cash_zone(
     unauthorized_hour = not (start_h <= now_h < end_h)
 
     persons_in_zone = [
-        d for d in detections
+        d
+        for d in detections
         if d.get("label") == "Person"
         and _person_in_zone(d.get("bbox", []), cashbox_polygon)
     ]
@@ -157,11 +166,12 @@ def check_cash_zone(
 # StockMonitor
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def check_stock_zone(
     db,
-    camera_id:       int,
-    detections:      List[Dict],
-    stock_polygon:   Optional[List] = None,
+    camera_id: int,
+    detections: List[Dict],
+    stock_polygon: Optional[List] = None,
 ) -> None:
     """
     Alert when Exposed-Item class is detected OR when Person loiters
@@ -169,10 +179,7 @@ def check_stock_zone(
 
     This function only handles the Exposed-Item YOLO class check.
     """
-    exposed_items = [
-        d for d in detections
-        if d.get("label") == "Exposed-Item"
-    ]
+    exposed_items = [d for d in detections if d.get("label") == "Exposed-Item"]
 
     if not exposed_items:
         return
@@ -180,7 +187,8 @@ def check_stock_zone(
     # If zone polygon is defined, filter to only items inside the zone
     if stock_polygon:
         exposed_items = [
-            d for d in exposed_items
+            d
+            for d in exposed_items
             if _person_in_zone(d.get("bbox", []), stock_polygon)
         ]
 

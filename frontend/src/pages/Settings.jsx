@@ -217,16 +217,7 @@ export default function Settings() {
     )
   }
 
-  const tabs = [
-    { id: 'appearance',    label: '🎨 Appearance'   },
-    { id: 'safety_rules',  label: '🛡️ Safety Rules'  },
-    { id: 'phone',         label: '📱 Phone'         },
-    { id: 'camera',        label: '📷 Camera'        },
-    { id: 'cameras_mgmt',  label: '🎥 Cameras'       },
-    { id: 'notifications', label: '🔔 Alerts'        },
-    { id: 'profile',       label: '👤 Profile'       },
-    { id: 'faces',         label: '🔍 Faces'         },
-  ]
+
 
   return (
     <div className="page-container" style={{ paddingBottom: 48 }}>

@@ -8,10 +8,13 @@ AttributeError on password hash/verify, leading to HTTP 500.
 Standard bcrypt hashes ($2b$...) are interoperable: any
 existing hashes created by passlib will still verify correctly.
 """
+
 from datetime import datetime, timedelta
 from typing import Optional
-from jose import JWTError, jwt
+
 import bcrypt
+from jose import JWTError, jwt
+
 from config import settings
 
 
@@ -43,8 +46,6 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 
 def decode_token(token: str) -> Optional[dict]:
     try:
-        return jwt.decode(
-            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
-        )
+        return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
     except JWTError:
         return None

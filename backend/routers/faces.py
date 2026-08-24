@@ -4,11 +4,14 @@ Faces router — Multi-Person Face Registration & Management
 • Saves thumbnail_b64 for UI preview
 • Supports rename endpoint
 """
+
 import json
+
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from database import get_db, User, FaceEncoding, Employee
+from sqlalchemy.orm import Session
+
+from database import Employee, FaceEncoding, User, get_db
 from routers.auth import get_current_user
 from services.face_service import encode_face_from_image
 
@@ -17,7 +20,7 @@ router = APIRouter(prefix="/faces", tags=["faces"])
 
 class FaceRegisterRequest(BaseModel):
     label: str
-    image_b64: str   # base64 data-URL
+    image_b64: str  # base64 data-URL
 
 
 class FaceRenameRequest(BaseModel):
@@ -37,16 +40,16 @@ def register_face(
     if result is None:
         raise HTTPException(
             status_code=400,
-            detail="No face detected in the image. Please use a clear, front-facing photo with good lighting."
+            detail="No face detected in the image. Please use a clear, front-facing photo with good lighting.",
         )
 
     # Try saving with thumbnail first; fall back without it if column doesn't exist yet
     try:
         face_record = FaceEncoding(
-            user_id       = current_user.id,
-            label         = data.label.strip(),
-            encoding_data = json.dumps(result["encoding"]),
-            thumbnail_b64 = result.get("thumbnail_b64"),
+            user_id=current_user.id,
+            label=data.label.strip(),
+            encoding_data=json.dumps(result["encoding"]),
+            thumbnail_b64=result.get("thumbnail_b64"),
         )
         db.add(face_record)
         db.commit()
@@ -55,9 +58,9 @@ def register_face(
         db.rollback()
         # Fallback: save without thumbnail (column might not be migrated yet)
         face_record = FaceEncoding(
-            user_id       = current_user.id,
-            label         = data.label.strip(),
-            encoding_data = json.dumps(result["encoding"]),
+            user_id=current_user.id,
+            label=data.label.strip(),
+            encoding_data=json.dumps(result["encoding"]),
         )
         db.add(face_record)
         db.commit()
@@ -80,12 +83,12 @@ def register_face(
     db.refresh(employee)
 
     return {
-        "message":       f"Face '{face_record.label}' registered successfully",
-        "id":            face_record.id,
-        "employee_id":   employee.id,
-        "label":         face_record.label,
+        "message": f"Face '{face_record.label}' registered successfully",
+        "id": face_record.id,
+        "employee_id": employee.id,
+        "label": face_record.label,
         "thumbnail_b64": getattr(face_record, "thumbnail_b64", None),
-        "created_at":    face_record.created_at.isoformat(),
+        "created_at": face_record.created_at.isoformat(),
     }
 
 
@@ -94,16 +97,19 @@ def list_faces(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    faces = db.query(FaceEncoding).filter(
-        FaceEncoding.user_id == current_user.id
-    ).order_by(FaceEncoding.created_at.desc()).all()
+    faces = (
+        db.query(FaceEncoding)
+        .filter(FaceEncoding.user_id == current_user.id)
+        .order_by(FaceEncoding.created_at.desc())
+        .all()
+    )
 
     return [
         {
-            "id":           f.id,
-            "label":        f.label,
+            "id": f.id,
+            "label": f.label,
             "thumbnail_b64": f.thumbnail_b64,
-            "created_at":   f.created_at.isoformat(),
+            "created_at": f.created_at.isoformat(),
         }
         for f in faces
     ]
@@ -116,10 +122,14 @@ def rename_face(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    face = db.query(FaceEncoding).filter(
-        FaceEncoding.id == face_id,
-        FaceEncoding.user_id == current_user.id,
-    ).first()
+    face = (
+        db.query(FaceEncoding)
+        .filter(
+            FaceEncoding.id == face_id,
+            FaceEncoding.user_id == current_user.id,
+        )
+        .first()
+    )
     if not face:
         raise HTTPException(status_code=404, detail="Face not found")
     if not data.label.strip():
@@ -137,10 +147,14 @@ def delete_face(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    face = db.query(FaceEncoding).filter(
-        FaceEncoding.id == face_id,
-        FaceEncoding.user_id == current_user.id,
-    ).first()
+    face = (
+        db.query(FaceEncoding)
+        .filter(
+            FaceEncoding.id == face_id,
+            FaceEncoding.user_id == current_user.id,
+        )
+        .first()
+    )
     if not face:
         raise HTTPException(status_code=404, detail="Face not found")
     for employee in face.employees:

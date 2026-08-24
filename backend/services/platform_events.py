@@ -4,13 +4,14 @@ The deployment currently runs as one FastAPI process, so this module provides
 the same publish/subscribe contract that can later be backed by Kafka, NATS or
 Redis Streams without changing any producer/consumer interfaces.
 """
+
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
-from datetime import datetime
 import json
 import logging
 import threading
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
 
@@ -71,22 +72,25 @@ class EventBus:
     def _persist(event: Event) -> None:
         try:
             from database import SessionLocal, SurveillanceEvent
+
             db = SessionLocal()
             try:
-                db.add(SurveillanceEvent(
-                    event_id=event.event_id,
-                    event_type=event.event_type,
-                    occurred_at=event.occurred_at,
-                    camera_id=event.camera_id,
-                    zone_id=event.zone_id,
-                    track_id=event.track_id,
-                    employee_id=event.employee_id,
-                    calibration_version=event.calibration_version,
-                    confidence=event.confidence,
-                    correlation_id=event.correlation_id,
-                    source=event.source,
-                    payload_json=json.dumps(event.payload, default=str),
-                ))
+                db.add(
+                    SurveillanceEvent(
+                        event_id=event.event_id,
+                        event_type=event.event_type,
+                        occurred_at=event.occurred_at,
+                        camera_id=event.camera_id,
+                        zone_id=event.zone_id,
+                        track_id=event.track_id,
+                        employee_id=event.employee_id,
+                        calibration_version=event.calibration_version,
+                        confidence=event.confidence,
+                        correlation_id=event.correlation_id,
+                        source=event.source,
+                        payload_json=json.dumps(event.payload, default=str),
+                    )
+                )
                 db.commit()
             finally:
                 db.close()

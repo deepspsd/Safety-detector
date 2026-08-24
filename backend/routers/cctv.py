@@ -17,27 +17,27 @@ Key improvements over v1:
 """
 
 import asyncio
-import json
-import time
 import base64
-import threading
 import datetime
-from concurrent.futures import ThreadPoolExecutor
+import json
 import ssl
-from typing import Optional, List, Dict
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Optional
 
 import cv2
 import numpy as np
-
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
-from database import get_db, User, UserConfig
+
 from auth_utils import decode_token
-from services import yolo_service, face_service
-from services.alert_service import save_alert
-from services import camera_manager          # server-managed stream registry
 from config import settings
+from database import User, UserConfig, get_db
 from routers.users import _parse_custom_ppe
+from services import camera_manager  # server-managed stream registry
+from services import face_service, yolo_service
+from services.alert_service import save_alert
 
 router = APIRouter(tags=["cctv"])
 
@@ -45,18 +45,19 @@ router = APIRouter(tags=["cctv"])
 _yolo_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="cctv-yolo")
 _face_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cctv-face")
 
-_last_alert_time:       dict = {}
+_last_alert_time: dict = {}
 _last_phone_alert_time: dict = {}
 
 # ── Inference resolution: accuracy vs speed  ──────────────────────────────────
 # 960×720 = high accuracy (recommended) | 640×480 = balanced | 480×360 = fastest
-INFER_WIDTH  = 960
+INFER_WIDTH = 960
 INFER_HEIGHT = 720
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Camera Reader — high-speed, always-fresh frame
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class CameraReader:
     """
@@ -72,29 +73,31 @@ class CameraReader:
 
     # Minimum time between consecutive cap.read() calls when the camera itself
     # is the bottleneck (avoids a tight spin that wastes CPU).
-    _READ_INTERVAL = 0.03   # 30 ms → headroom for 30 fps cameras
+    _READ_INTERVAL = 0.03  # 30 ms → headroom for 30 fps cameras
 
     def __init__(self, url: str):
-        self.url           = url
-        self._frame        = None
-        self._lock         = threading.Lock()
-        self._running      = False
-        self._thread       = None
+        self.url = url
+        self._frame = None
+        self._lock = threading.Lock()
+        self._running = False
+        self._thread = None
         self._error: Optional[str] = None
-        self._fps          = 0.0
-        self._frame_count  = 0
+        self._fps = 0.0
+        self._frame_count = 0
         self._last_frame_ts = 0.0
         self._reconnect_count = 0
         u = url.lower()
-        self._is_shot    = any(k in u for k in ("shot.jpg", "photo.jpg", "snap", "capture"))
-        self._is_http    = u.startswith("http://") or u.startswith("https://")
-        self._is_rtsp    = u.startswith("rtsp://") or u.startswith("rtsps://")
+        self._is_shot = any(
+            k in u for k in ("shot.jpg", "photo.jpg", "snap", "capture")
+        )
+        self._is_http = u.startswith("http://") or u.startswith("https://")
+        self._is_rtsp = u.startswith("rtsp://") or u.startswith("rtsps://")
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def start(self):
         self._running = True
-        self._thread  = threading.Thread(target=self._run_with_reconnect, daemon=True)
+        self._thread = threading.Thread(target=self._run_with_reconnect, daemon=True)
         self._thread.start()
 
     def stop(self):
@@ -113,7 +116,12 @@ class CameraReader:
     def metrics(self) -> dict:
         return {
             "fps": self.fps(),
-            "last_frame_at": datetime.datetime.utcfromtimestamp(self._last_frame_ts).isoformat() + "Z" if self._last_frame_ts else None,
+            "last_frame_at": (
+                datetime.datetime.utcfromtimestamp(self._last_frame_ts).isoformat()
+                + "Z"
+                if self._last_frame_ts
+                else None
+            ),
             "reconnect_count": self._reconnect_count,
             "last_error": self._error,
         }
@@ -124,9 +132,9 @@ class CameraReader:
         if self._is_shot:
             self._poll_jpeg_loop()
         elif self._is_rtsp:
-            self._rtsp_loop()          # OpenCV/FFmpeg handles RTSP well
+            self._rtsp_loop()  # OpenCV/FFmpeg handles RTSP well
         else:
-            self._mjpeg_http_loop()    # urllib handles HTTP MJPEG reliably
+            self._mjpeg_http_loop()  # urllib handles HTTP MJPEG reliably
 
     def _run_with_reconnect(self):
         """One reader lifecycle with no concurrent reconnect workers."""
@@ -150,28 +158,27 @@ class CameraReader:
           - Content-Length aware: reads exact frame bytes when header present
           - Non-multipart fallback polls /shot.jpg equivalent
         """
-        import urllib.request
         import urllib.error
+        import urllib.request
 
         print(f"[CCTV] Connecting to HTTP stream: {self.url}")
-        failures   = 0
-        MAX_FAIL   = 8
-        CHUNK      = 65536          # 64 KB per read — covers most MJPEG frames in 1–3 reads
-        t_fps      = time.time()
+        failures = 0
+        MAX_FAIL = 8
+        CHUNK = 65536  # 64 KB per read — covers most MJPEG frames in 1–3 reads
+        t_fps = time.time()
         fps_frames = 0
 
         while self._running:
             try:
                 req = urllib.request.Request(
-                    self.url,
-                    headers={"User-Agent": "Mozilla/5.0"}
+                    self.url, headers={"User-Agent": "Mozilla/5.0"}
                 )
-                
+
                 # Bypass SSL validation for local cameras with self-signed certs
                 ctx = ssl.create_default_context()
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
-                
+
                 with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
                     ct = resp.headers.get("Content-Type", "")
                     print(f"[CCTV] Connected — Content-Type: {ct}")
@@ -187,7 +194,7 @@ class CameraReader:
 
                             # Extract ALL complete JPEGs from the current buffer
                             while self._running:
-                                soi = buf.find(b"\xff\xd8")   # JPEG Start-Of-Image
+                                soi = buf.find(b"\xff\xd8")  # JPEG Start-Of-Image
                                 if soi == -1:
                                     # No JPEG started yet — discard everything before
                                     # but keep last 3 bytes in case SOI is split
@@ -195,31 +202,35 @@ class CameraReader:
                                         buf = buf[-3:]
                                     break
 
-                                eoi = buf.find(b"\xff\xd9", soi + 2)  # JPEG End-Of-Image
+                                eoi = buf.find(
+                                    b"\xff\xd9", soi + 2
+                                )  # JPEG End-Of-Image
                                 if eoi == -1:
                                     # JPEG started but not finished yet —
                                     # Keep everything from SOI onward, read more data
                                     if soi > 0:
-                                        buf = buf[soi:]   # discard pre-SOI garbage ONLY
+                                        buf = buf[soi:]  # discard pre-SOI garbage ONLY
                                     break
 
                                 # We have a complete JPEG: [soi .. eoi+2)
-                                jpg_data = buf[soi: eoi + 2]
-                                buf = buf[eoi + 2:]     # continue AFTER this JPEG
+                                jpg_data = buf[soi : eoi + 2]
+                                buf = buf[eoi + 2 :]  # continue AFTER this JPEG
 
-                                arr   = np.frombuffer(jpg_data, np.uint8)
+                                arr = np.frombuffer(jpg_data, np.uint8)
                                 frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                                 if frame is not None:
-                                    frame = cv2.resize(frame, (INFER_WIDTH, INFER_HEIGHT))
+                                    frame = cv2.resize(
+                                        frame, (INFER_WIDTH, INFER_HEIGHT)
+                                    )
                                     with self._lock:
-                                        self._frame       = frame
+                                        self._frame = frame
                                         self._frame_count += 1
                                     fps_frames += 1
                                     elapsed = time.time() - t_fps
                                     if elapsed >= 2.0:
-                                        self._fps  = fps_frames / elapsed
+                                        self._fps = fps_frames / elapsed
                                         fps_frames = 0
-                                        t_fps      = time.time()
+                                        t_fps = time.time()
                                     failures = 0  # reset on any good frame
                         # end of stream from server — loop outer while to reconnect
                         failures += 1
@@ -233,13 +244,13 @@ class CameraReader:
 
                     elif "image/jpeg" in ct or "image/jpg" in ct:
                         # Single-shot JPEG endpoint — read one image and return
-                        data  = resp.read()
-                        arr   = np.frombuffer(data, np.uint8)
+                        data = resp.read()
+                        arr = np.frombuffer(data, np.uint8)
                         frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                         if frame is not None:
                             frame = cv2.resize(frame, (INFER_WIDTH, INFER_HEIGHT))
                             with self._lock:
-                                self._frame       = frame
+                                self._frame = frame
                                 self._frame_count += 1
                         # Poll: loop outer while to reconnect and fetch next frame
                         time.sleep(self._READ_INTERVAL)
@@ -248,17 +259,19 @@ class CameraReader:
                         # Unknown content type — log and try JPEG polling fallback
                         print(f"[CCTV] Unknown Content-Type '{ct}' — polling as JPEG")
                         # Try reading raw bytes and decoding as JPEG
-                        data = resp.read(1 * 1024 * 1024)   # max 1 MB
+                        data = resp.read(1 * 1024 * 1024)  # max 1 MB
                         if data:
                             soi = data.find(b"\xff\xd8")
                             eoi = data.rfind(b"\xff\xd9")
                             if soi != -1 and eoi > soi:
-                                arr   = np.frombuffer(data[soi: eoi + 2], np.uint8)
+                                arr = np.frombuffer(data[soi : eoi + 2], np.uint8)
                                 frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                                 if frame is not None:
-                                    frame = cv2.resize(frame, (INFER_WIDTH, INFER_HEIGHT))
+                                    frame = cv2.resize(
+                                        frame, (INFER_WIDTH, INFER_HEIGHT)
+                                    )
                                     with self._lock:
-                                        self._frame       = frame
+                                        self._frame = frame
                                         self._frame_count += 1
                                     failures = 0
                         time.sleep(self._READ_INTERVAL)
@@ -279,7 +292,9 @@ class CameraReader:
                 time.sleep(1.5)
             except Exception as e:
                 failures += 1
-                print(f"[CCTV] Unexpected error ({failures}/{MAX_FAIL}): {type(e).__name__}: {e}")
+                print(
+                    f"[CCTV] Unexpected error ({failures}/{MAX_FAIL}): {type(e).__name__}: {e}"
+                )
                 if failures >= MAX_FAIL:
                     self._error = f"Stream error after {MAX_FAIL} retries: {e}"
                     return
@@ -308,9 +323,9 @@ class CameraReader:
             )
             return
 
-        failures   = 0
-        MAX_FAIL   = 60
-        t_fps      = time.time()
+        failures = 0
+        MAX_FAIL = 60
+        t_fps = time.time()
         fps_frames = 0
 
         while self._running:
@@ -351,8 +366,9 @@ class CameraReader:
 
     def _poll_jpeg_loop(self):
         """Polling loop for single-frame endpoints like /shot.jpg."""
-        import urllib.request
         import ssl
+        import urllib.request
+
         failures = 0
         MAX_FAIL = 20
 
@@ -361,7 +377,7 @@ class CameraReader:
                 ctx = ssl.create_default_context()
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
-                
+
                 with urllib.request.urlopen(self.url, timeout=3, context=ctx) as resp:
                     data = resp.read()
                 arr = np.frombuffer(data, np.uint8)
@@ -384,6 +400,7 @@ class CameraReader:
 # Dual inference: PPE + Face combined annotation
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _run_combined_inference(
     frame: np.ndarray,
     role: str,
@@ -398,13 +415,14 @@ def _run_combined_inference(
     Run PPE detection and optional face recognition simultaneously.
     Returns a merged result dict with a single annotated_frame.
     """
-    ppe_result  = {}
+    ppe_result = {}
     face_result = {}
 
     # --- PPE / YOLO detection ------------------------------------------------
     if role != "Home":
         ppe_result = yolo_service.process_frame_numpy(
-            frame, role,
+            frame,
+            role,
             det_filters,
             no_phone_zone,
             frame_idx,
@@ -412,8 +430,9 @@ def _run_combined_inference(
     else:
         # Home role → PPE pipeline still runs (for phone detection)
         ppe_result = yolo_service.process_frame_numpy(
-            frame, "Home",
-            [],          # no PPE requirements
+            frame,
+            "Home",
+            [],  # no PPE requirements
             no_phone_zone,
             frame_idx,
         )
@@ -442,28 +461,34 @@ def _run_combined_inference(
         ann_b64 = face_result.get("annotated_frame")
 
     # --- Merge compliance / alerts -------------------------------------------
-    is_compliant   = ppe_result.get("is_compliant", True)
-    alert_message  = ppe_result.get("alert_message")
-    severity       = ppe_result.get("severity")
+    is_compliant = ppe_result.get("is_compliant", True)
+    alert_message = ppe_result.get("alert_message")
+    severity = ppe_result.get("severity")
 
     face_unknown = face_result.get("unknown_detected", False)
     if enable_face and face_unknown:
-        is_compliant  = False
-        face_alert    = face_result.get("alert_message", "⚠️ Unknown person detected!")
-        alert_message = f"{alert_message} | {face_alert}" if alert_message else face_alert
-        severity      = "critical"
+        is_compliant = False
+        face_alert = face_result.get("alert_message", "⚠️ Unknown person detected!")
+        alert_message = (
+            f"{alert_message} | {face_alert}" if alert_message else face_alert
+        )
+        severity = "critical"
 
     merged = {**ppe_result}
     merged["annotated_frame"] = ann_b64
-    merged["is_compliant"]    = is_compliant
-    merged["alert_message"]   = alert_message if not is_compliant else None
-    merged["severity"]        = severity if not is_compliant else None
-    merged["face_result"]     = {
-        "faces":                face_result.get("faces", []),
-        "unknown_detected":     face_unknown,
-        "face_count":           len(face_result.get("faces", [])),
-        "recognized_employees": face_result.get("recognized_employees", {}),
-    } if enable_face else None
+    merged["is_compliant"] = is_compliant
+    merged["alert_message"] = alert_message if not is_compliant else None
+    merged["severity"] = severity if not is_compliant else None
+    merged["face_result"] = (
+        {
+            "faces": face_result.get("faces", []),
+            "unknown_detected": face_unknown,
+            "face_count": len(face_result.get("faces", [])),
+            "recognized_employees": face_result.get("recognized_employees", {}),
+        }
+        if enable_face
+        else None
+    )
     merged["source"] = "cctv"
     return merged
 
@@ -483,30 +508,36 @@ def _overlay_faces(frame: np.ndarray, face_result: Dict) -> np.ndarray:
         cv2.rectangle(annotated, (x1, y1), (x2, y2), color, thick)
 
         # Identity label pill
-        name     = face["label"]
+        name = face["label"]
         conf_pct = f"{face['confidence']:.0%}"
-        label    = f"{'❌ UNKNOWN' if is_unknown else '✓ ' + name}  {conf_pct}"
-        font     = cv2.FONT_HERSHEY_SIMPLEX
-        scale    = 0.55
+        label = f"{'❌ UNKNOWN' if is_unknown else '✓ ' + name}  {conf_pct}"
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale = 0.55
         (lw, lh), _ = cv2.getTextSize(label, font, scale, 2)
         # Background pill above face box
         cv2.rectangle(annotated, (x1, y1 - lh - 10), (x1 + lw + 8, y1), (0, 0, 0), -1)
-        cv2.putText(annotated, label, (x1 + 4, y1 - 4), font, scale, color, 2, cv2.LINE_AA)
+        cv2.putText(
+            annotated, label, (x1 + 4, y1 - 4), font, scale, color, 2, cv2.LINE_AA
+        )
 
     if face_result.get("unknown_detected"):
         # Red banner for unknown person (below the existing PPE banner)
         cv2.rectangle(annotated, (0, 46), (w, 84), (0, 0, 180), -1)
         cv2.addWeighted(
-            annotated[46:84].copy(), 0.0,
-            annotated[46:84], 1.0, 0, annotated[46:84]
+            annotated[46:84].copy(), 0.0, annotated[46:84], 1.0, 0, annotated[46:84]
         )
         overlay = annotated.copy()
         cv2.rectangle(overlay, (0, 46), (w, 84), (30, 0, 160), -1)
         cv2.addWeighted(overlay, 0.6, annotated, 0.4, 0, annotated)
         cv2.putText(
-            annotated, "  🔴 FACE ALERT: UNKNOWN PERSON DETECTED",
-            (8, 72), cv2.FONT_HERSHEY_SIMPLEX, 0.60,
-            (255, 220, 220), 2, cv2.LINE_AA,
+            annotated,
+            "  🔴 FACE ALERT: UNKNOWN PERSON DETECTED",
+            (8, 72),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.60,
+            (255, 220, 220),
+            2,
+            cv2.LINE_AA,
         )
 
     return annotated
@@ -515,6 +546,7 @@ def _overlay_faces(frame: np.ndarray, face_result: Dict) -> np.ndarray:
 # ─────────────────────────────────────────────────────────────────────────────
 # Auth helper
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 async def _get_user(token: str, db: Session) -> Optional[User]:
     payload = decode_token(token)
@@ -526,6 +558,7 @@ async def _get_user(token: str, db: Session) -> Optional[User]:
 # ─────────────────────────────────────────────────────────────────────────────
 # WebSocket endpoint
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @router.websocket("/ws/detect-cctv")
 async def cctv_detection_websocket(websocket: WebSocket):
@@ -553,13 +586,13 @@ async def cctv_detection_websocket(websocket: WebSocket):
     # `camera` is only set in legacy (camera_url) mode.
     # In managed (camera_id) mode all frame reads go through camera_manager.
     camera: Optional[CameraReader] = None
-    managed_camera_id: Optional[int] = None   # set when using camera_manager
+    managed_camera_id: Optional[int] = None  # set when using camera_manager
 
     try:
         # ── Handshake ────────────────────────────────────────────────────────
-        raw       = await websocket.receive_text()
+        raw = await websocket.receive_text()
         auth_data = json.loads(raw)
-        user      = await _get_user(auth_data.get("token", ""), db)
+        user = await _get_user(auth_data.get("token", ""), db)
 
         if not user:
             await websocket.send_json({"error": "Unauthorized"})
@@ -571,24 +604,28 @@ async def cctv_detection_websocket(websocket: WebSocket):
         # ── Resolve camera source ─────────────────────────────────────────────
         # Prefer camera_id (managed mode) over camera_url (legacy mode)
         _cam_id_raw = auth_data.get("camera_id")
-        camera_url  = auth_data.get("camera_url", "").strip()
+        camera_url = auth_data.get("camera_url", "").strip()
 
         if _cam_id_raw is not None:
             # ── MANAGED MODE: subscriber reads from camera_manager ───────────
             managed_camera_id = int(_cam_id_raw)
             if not camera_manager.is_running(managed_camera_id):
-                await websocket.send_json({
-                    "error": (
-                        f"Camera {managed_camera_id} is not currently streaming. "
-                        f"Start it via POST /cameras/{managed_camera_id}/restart or "
-                        f"check that the camera is registered and online."
-                    )
-                })
+                await websocket.send_json(
+                    {
+                        "error": (
+                            f"Camera {managed_camera_id} is not currently streaming. "
+                            f"Start it via POST /cameras/{managed_camera_id}/restart or "
+                            f"check that the camera is registered and online."
+                        )
+                    }
+                )
                 await websocket.close()
                 return
             display_url = f"managed:{managed_camera_id}"
             print(f"\n[CCTV-v3] ===== SUBSCRIBER SESSION =====")
-            print(f"[CCTV-v3] User: {user.name} | Role: {role} | CameraID: {managed_camera_id}")
+            print(
+                f"[CCTV-v3] User: {user.name} | Role: {role} | CameraID: {managed_camera_id}"
+            )
 
         elif camera_url:
             # ── LEGACY MODE: open a dedicated CameraReader for this session ──
@@ -604,28 +641,32 @@ async def cctv_detection_websocket(websocket: WebSocket):
         # PPE filters
         handshake_filters = list(auth_data.get("filters", []))
         if role == "None" and not handshake_filters:
-            db_config = db.query(UserConfig).filter(UserConfig.user_id == user.id).first()
+            db_config = (
+                db.query(UserConfig).filter(UserConfig.user_id == user.id).first()
+            )
             if db_config:
                 handshake_filters = _parse_custom_ppe(db_config)
 
         state = {
-            "filters":       handshake_filters,
+            "filters": handshake_filters,
             "no_phone_zone": bool(auth_data.get("no_phone_zone", True)),
-            "enable_face":   bool(auth_data.get("enable_face", True)),
-            "frame_count":   0,
-            "alive":         True,
-            "cam_fps":       0.0,
+            "enable_face": bool(auth_data.get("enable_face", True)),
+            "frame_count": 0,
+            "alive": True,
+            "cam_fps": 0.0,
         }
 
-        await websocket.send_json({
-            "status":         "connected",
-            "role":           role,
-            "user":           user.name,
-            "camera_source":  display_url,
-            "face_enabled":   state["enable_face"],
-            "active_filters": state["filters"],
-            "mode":           "managed" if managed_camera_id else "legacy",
-        })
+        await websocket.send_json(
+            {
+                "status": "connected",
+                "role": role,
+                "user": user.name,
+                "camera_source": display_url,
+                "face_enabled": state["enable_face"],
+                "active_filters": state["filters"],
+                "mode": "managed" if managed_camera_id else "legacy",
+            }
+        )
 
         # ── Start camera reader (legacy mode only) ───────────────────────────
         if managed_camera_id is None:
@@ -649,15 +690,17 @@ async def cctv_detection_websocket(websocket: WebSocket):
                 return
 
             if camera.latest_frame() is None:
-                await websocket.send_json({
-                    "error": (
-                        f"No frames received from {camera_url}\n\n"
-                        f"Quick fix: open  {camera_url}  in your PC browser.\n"
-                        f"• If the video loads → reconnect in OccuSafe\n"
-                        f"• If it doesn't load → phone and PC are on different networks\n"
-                        f"• Make sure IP Webcam app shows 'Server started'"
-                    )
-                })
+                await websocket.send_json(
+                    {
+                        "error": (
+                            f"No frames received from {camera_url}\n\n"
+                            f"Quick fix: open  {camera_url}  in your PC browser.\n"
+                            f"• If the video loads → reconnect in OccuSafe\n"
+                            f"• If it doesn't load → phone and PC are on different networks\n"
+                            f"• Make sure IP Webcam app shows 'Server started'"
+                        )
+                    }
+                )
                 await websocket.close()
                 return
 
@@ -669,7 +712,9 @@ async def cctv_detection_websocket(websocket: WebSocket):
         async def recv_messages():
             while state["alive"]:
                 try:
-                    raw_msg = await asyncio.wait_for(websocket.receive_text(), timeout=0.5)
+                    raw_msg = await asyncio.wait_for(
+                        websocket.receive_text(), timeout=0.5
+                    )
                     msg = json.loads(raw_msg)
                     if "filters" in msg:
                         state["filters"] = msg["filters"]
@@ -680,15 +725,15 @@ async def cctv_detection_websocket(websocket: WebSocket):
                     if msg.get("stop"):
                         state["alive"] = False
                 except asyncio.TimeoutError:
-                    pass   # normal — keep looping
+                    pass  # normal — keep looping
                 except WebSocketDisconnect:
                     state["alive"] = False
                     return
 
         # ── Coroutine B: grab → infer → send at max speed ───────────────────
         async def process_frames():
-            MIN_INTERVAL_MS = 50          # hard floor: don't send faster than 20 fps
-            last_sent       = time.time()
+            MIN_INTERVAL_MS = 50  # hard floor: don't send faster than 20 fps
+            last_sent = time.time()
 
             while state["alive"]:
                 now = time.time()
@@ -701,7 +746,7 @@ async def cctv_detection_websocket(websocket: WebSocket):
                         await websocket.send_json({"error": cam_error})
                         state["alive"] = False
                         return
-                    frame   = camera_manager.get_latest_frame(managed_camera_id)
+                    frame = camera_manager.get_latest_frame(managed_camera_id)
                     cam_fps = camera_manager.get_reader_fps(managed_camera_id)
                 else:
                     # Legacy mode: read from private CameraReader
@@ -709,11 +754,11 @@ async def cctv_detection_websocket(websocket: WebSocket):
                         await websocket.send_json({"error": camera.last_error()})
                         state["alive"] = False
                         return
-                    frame   = camera.latest_frame()
+                    frame = camera.latest_frame()
                     cam_fps = camera.fps()
 
                 if frame is None:
-                    await asyncio.sleep(0.015)   # wait for first frame
+                    await asyncio.sleep(0.015)  # wait for first frame
                     continue
 
                 # Enforce minimum send interval so WebSocket isn't flooded
@@ -723,74 +768,88 @@ async def cctv_detection_websocket(websocket: WebSocket):
                     continue
 
                 state["frame_count"] += 1
-                fn          = state["frame_count"]
+                fn = state["frame_count"]
                 det_filters = list(state["filters"]) if state["filters"] else None
-                nph         = state["no_phone_zone"]
-                ef          = state["enable_face"]
+                nph = state["no_phone_zone"]
+                ef = state["enable_face"]
 
                 try:
                     # Run combined PPE + Face inference in thread pool
                     result = await loop.run_in_executor(
                         _yolo_executor,
                         lambda fr=frame, fi=fn, df=det_filters, nz=nph, efa=ef: (
-                            _run_combined_inference(fr, role, user.id, db, df, nz, fi, efa)
+                            _run_combined_inference(
+                                fr, role, user.id, db, df, nz, fi, efa
+                            )
                         ),
                     )
 
                     response = {
-                        "annotated_frame":  result.get("annotated_frame"),
-                        "detections":       result.get("detections",       []),
-                        "is_compliant":     result.get("is_compliant",     True),
-                        "missing_items":    result.get("missing_items",    []),
+                        "annotated_frame": result.get("annotated_frame"),
+                        "detections": result.get("detections", []),
+                        "is_compliant": result.get("is_compliant", True),
+                        "missing_items": result.get("missing_items", []),
                         "violations_count": result.get("violations_count", 0),
-                        "persons_count":    result.get("persons_count",    0),
-                        "alert_message":    result.get("alert_message"),
-                        "severity":         result.get("severity"),
-                        "frame_count":      fn,
-                        "persons":          result.get("persons",          []),
-                        "model_mode":       result.get("model_mode",       "cctv"),
-                        "active_filters":   state["filters"],
-                        "phone_status":     result.get("phone_status",     "safe"),
-                        "phone_detected":   result.get("phone_detected",   False),
-                        "face_result":      result.get("face_result"),
-                        "cam_fps":          cam_fps,
-                        "source":           "cctv",
+                        "persons_count": result.get("persons_count", 0),
+                        "alert_message": result.get("alert_message"),
+                        "severity": result.get("severity"),
+                        "frame_count": fn,
+                        "persons": result.get("persons", []),
+                        "model_mode": result.get("model_mode", "cctv"),
+                        "active_filters": state["filters"],
+                        "phone_status": result.get("phone_status", "safe"),
+                        "phone_detected": result.get("phone_detected", False),
+                        "face_result": result.get("face_result"),
+                        "cam_fps": cam_fps,
+                        "source": "cctv",
                     }
 
                     # ── PPE alert save ─────────────────────────────────────
                     if not result.get("is_compliant") and result.get("alert_message"):
-                        uid      = user.id
-                        now_t    = time.time()
-                        dets     = result.get("detections", [])
+                        uid = user.id
+                        now_t = time.time()
+                        dets = result.get("detections", [])
                         # Use person confidence as fallback so violations without
                         # a PPE bbox (College, Gloves, Goggles) still trigger alerts.
-                        persons_c = [p.get("confidence", 0) for p in result.get("persons", [])]
-                        dets_c    = [d.get("confidence", 0) for d in dets]
-                        top_conf  = max(persons_c + dets_c, default=0.5)
+                        persons_c = [
+                            p.get("confidence", 0) for p in result.get("persons", [])
+                        ]
+                        dets_c = [d.get("confidence", 0) for d in dets]
+                        top_conf = max(persons_c + dets_c, default=0.5)
                         cooldown = settings.ALERT_COOLDOWN
-                        if top_conf >= settings.MIN_VIOLATION_CONF and (now_t - _last_alert_time.get(uid, 0)) > cooldown:
+                        if (
+                            top_conf >= settings.MIN_VIOLATION_CONF
+                            and (now_t - _last_alert_time.get(uid, 0)) > cooldown
+                        ):
                             _last_alert_time[uid] = now_t
                             missing = result.get("missing_items", [])
                             save_alert(
-                                db=db, user_id=uid,
+                                db=db,
+                                user_id=uid,
                                 message=result["alert_message"],
                                 role=role,
                                 severity=result["severity"],
-                                detected_issue=", ".join(missing) if missing else result["alert_message"],
+                                detected_issue=(
+                                    ", ".join(missing)
+                                    if missing
+                                    else result["alert_message"]
+                                ),
                                 confidence=round(top_conf, 3),
                                 snapshot_b64=result.get("snapshot_b64"),
                             )
                             response["alert_saved"] = True
 
-
                     # ── Phone alert save ───────────────────────────────────
-                    if result.get("phone_severity") == "high" and result.get("phone_alert"):
-                        uid   = user.id
+                    if result.get("phone_severity") == "high" and result.get(
+                        "phone_alert"
+                    ):
+                        uid = user.id
                         now_t = time.time()
                         if now_t - _last_phone_alert_time.get(uid, 0) > 15:
                             _last_phone_alert_time[uid] = now_t
                             save_alert(
-                                db=db, user_id=uid,
+                                db=db,
+                                user_id=uid,
                                 message=result["phone_alert"],
                                 role=role,
                                 severity="high",
@@ -801,13 +860,16 @@ async def cctv_detection_websocket(websocket: WebSocket):
                             response["phone_alert_saved"] = True
 
                     # ── Face unknown alert save ────────────────────────────
-                    if result.get("face_result", {}) and result["face_result"].get("unknown_detected"):
-                        uid   = user.id
+                    if result.get("face_result", {}) and result["face_result"].get(
+                        "unknown_detected"
+                    ):
+                        uid = user.id
                         now_t = time.time()
                         if now_t - _last_alert_time.get(f"face_{uid}", 0) > 20:
                             _last_alert_time[f"face_{uid}"] = now_t
                             save_alert(
-                                db=db, user_id=uid,
+                                db=db,
+                                user_id=uid,
                                 message="Unknown person detected via CCTV",
                                 role=role,
                                 severity="critical",
@@ -823,13 +885,16 @@ async def cctv_detection_websocket(websocket: WebSocket):
                     face_res = result.get("face_result") or {}
                     recognized = face_res.get("recognized_employees", {})
                     if recognized and ef:
-                        from services.attendance_service import handle_face_match as _attn_hook
+                        from services.attendance_service import (
+                            handle_face_match as _attn_hook,
+                        )
+
                         _cam_id_for_attn = managed_camera_id  # None in legacy mode
                         for _emp_id, _conf in recognized.items():
                             _attn_hook(
-                                camera_id   = _cam_id_for_attn,
-                                employee_id = _emp_id,
-                                confidence  = _conf,
+                                camera_id=_cam_id_for_attn,
+                                employee_id=_emp_id,
+                                confidence=_conf,
                             )
 
                     await websocket.send_json(response)

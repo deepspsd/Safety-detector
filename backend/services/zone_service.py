@@ -79,13 +79,14 @@ log = logging.getLogger("zone_service")
 # In-process zone cache
 # ─────────────────────────────────────────────────────────────────────────────
 # Structure: { camera_id: { zone_name: [[x,y], ...] } }
-_zone_cache:  Dict[int, Dict[str, List[List[int]]]] = {}
-_cache_lock   = threading.Lock()
+_zone_cache: Dict[int, Dict[str, List[List[int]]]] = {}
+_cache_lock = threading.Lock()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Public helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def bbox_center(bbox: List[int]) -> Tuple[float, float]:
     """Return (cx, cy) from [x1, y1, x2, y2]."""
@@ -133,6 +134,7 @@ def bbox_in_zone(
 # Zone loading (cached)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def load_zones_for_camera(
     camera_id: int,
     db,
@@ -148,6 +150,7 @@ def load_zones_for_camera(
 
     # Cache miss — query DB
     from database import ZoneConfig
+
     try:
         rows = db.query(ZoneConfig).filter(ZoneConfig.camera_id == camera_id).all()
     except Exception as exc:
@@ -175,9 +178,7 @@ def load_zones_for_camera(
     with _cache_lock:
         _zone_cache[camera_id] = zones
 
-    log.debug(
-        f"[zone_service] Loaded zones for cam {camera_id}: {list(zones.keys())}"
-    )
+    log.debug(f"[zone_service] Loaded zones for cam {camera_id}: {list(zones.keys())}")
     return zones
 
 

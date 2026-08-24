@@ -36,8 +36,8 @@ Behaviour
 from __future__ import annotations
 
 import base64
-import logging
 import io
+import logging
 from typing import Optional
 
 log = logging.getLogger("notification_service")
@@ -47,6 +47,7 @@ log = logging.getLogger("notification_service")
 # we degrade gracefully — notifications are skipped, server keeps running.
 try:
     import httpx
+
     _HTTPX_AVAILABLE = True
 except ImportError:
     _HTTPX_AVAILABLE = False
@@ -63,6 +64,7 @@ _TIMEOUT = 10.0
 def _is_telegram_configured() -> bool:
     """Return True only if Telegram token and chat_id are set in config."""
     from config import settings
+
     return bool(settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_CHAT_ID)
 
 
@@ -73,6 +75,7 @@ _is_configured = _is_telegram_configured
 def _is_ntfy_configured() -> bool:
     """Return True only if ntfy topic is set in config."""
     from config import settings
+
     return bool(settings.NTFY_TOPIC)
 
 
@@ -88,9 +91,9 @@ def _build_caption(
     Telegram captions max 1024 chars; messages max 4096.
     """
     severity_emoji = {
-        "low":      "🟡",
-        "medium":   "🟠",
-        "high":     "🔴",
+        "low": "🟡",
+        "medium": "🟠",
+        "high": "🔴",
         "critical": "🚨",
     }.get(severity, "⚠️")
 
@@ -142,7 +145,8 @@ def send_telegram_alert(
         return False
 
     from config import settings
-    token   = settings.TELEGRAM_BOT_TOKEN
+
+    token = settings.TELEGRAM_BOT_TOKEN
     chat_id = settings.TELEGRAM_CHAT_ID
 
     caption = _build_caption(message, severity, floor, camera_name, detected_issue)
@@ -170,7 +174,9 @@ def _send_photo(token: str, chat_id: str, snapshot_b64: str, caption: str) -> bo
     try:
         img_bytes = base64.b64decode(raw_b64)
     except Exception as exc:
-        log.warning(f"[notification_service] base64 decode failed: {exc} — sending text only")
+        log.warning(
+            f"[notification_service] base64 decode failed: {exc} — sending text only"
+        )
         return _send_message(token, chat_id, caption)
 
     url = _TELEGRAM_API.format(token=token, method="sendPhoto")
@@ -183,8 +189,8 @@ def _send_photo(token: str, chat_id: str, snapshot_b64: str, caption: str) -> bo
             resp = client.post(
                 url,
                 data={
-                    "chat_id":    chat_id,
-                    "caption":    safe_caption,
+                    "chat_id": chat_id,
+                    "caption": safe_caption,
                     "parse_mode": "Markdown",
                 },
                 files={
@@ -220,8 +226,8 @@ def _send_message(token: str, chat_id: str, text: str) -> bool:
             resp = client.post(
                 url,
                 json={
-                    "chat_id":    chat_id,
-                    "text":       safe_text,
+                    "chat_id": chat_id,
+                    "text": safe_text,
                     "parse_mode": "Markdown",
                 },
             )
@@ -240,6 +246,8 @@ def _send_message(token: str, chat_id: str, text: str) -> bool:
     except httpx.RequestError as exc:
         log.warning(f"[notification_service] Telegram network error: {exc}")
         return False
+
+
 def send_ntfy_alert(
     message: str,
     severity: str = "medium",
@@ -275,16 +283,16 @@ def send_ntfy_alert(
 
     # ntfy priority: 1=min, 2=low, 3=default, 4=high, 5=max
     ntfy_priority = {
-        "low":      "2",
-        "medium":   "3",
-        "high":     "4",
+        "low": "2",
+        "medium": "3",
+        "high": "4",
         "critical": "5",
     }.get(severity, "3")
 
     severity_emoji = {
-        "low":      "🟡",
-        "medium":   "🟠",
-        "high":     "🔴",
+        "low": "🟡",
+        "medium": "🟠",
+        "high": "🔴",
         "critical": "🚨",
     }.get(severity, "⚠️")
 
@@ -309,9 +317,9 @@ def send_ntfy_alert(
                 url,
                 data=body.encode("utf-8"),
                 headers={
-                    "Title":    title,
+                    "Title": title,
                     "Priority": ntfy_priority,
-                    "Tags":     "warning,factory",
+                    "Tags": "warning,factory",
                 },
             )
         if resp.status_code in (200, 201):
@@ -355,16 +363,24 @@ def send_push_alert(
     """
     if _is_ntfy_configured():
         return send_ntfy_alert(
-            message=message, severity=severity, floor=floor,
-            camera_name=camera_name, detected_issue=detected_issue,
+            message=message,
+            severity=severity,
+            floor=floor,
+            camera_name=camera_name,
+            detected_issue=detected_issue,
         )
 
     if _is_telegram_configured():
         return send_telegram_alert(
-            message=message, severity=severity, floor=floor,
-            camera_name=camera_name, detected_issue=detected_issue,
+            message=message,
+            severity=severity,
+            floor=floor,
+            camera_name=camera_name,
+            detected_issue=detected_issue,
             snapshot_b64=snapshot_b64,
         )
 
-    log.debug("[notification_service] No push channel configured — alert is in-app only")
+    log.debug(
+        "[notification_service] No push channel configured — alert is in-app only"
+    )
     return False

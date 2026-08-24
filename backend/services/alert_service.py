@@ -39,13 +39,13 @@ Snapshot storage  (v3.2 — file-only, no DB blob)
   existing rows but is always written as NULL from v3.2 onwards.
 """
 
-import os
-import logging
 import base64
 import datetime
+import logging
+import os
 
-import numpy as np
 import cv2
+import numpy as np
 from sqlalchemy.orm import Session
 
 from database import Alert, Camera
@@ -58,14 +58,16 @@ os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 # ── Confidence tier registry ──────────────────────────────────────────────────
 # detected_issue strings that map to low-confidence (Phase 4) detectors.
 # Everything NOT in this set is treated as high-confidence → "confirmed".
-_LOW_CONFIDENCE_ISSUES: frozenset = frozenset({
-    "Dirty floor detected",
-    "Gas/oven idle — no supervision",
-    "Chewing detected",
-    "Eating at workstation",
-    "Cash-in-pocket suspected",
-    "Eating / chewing detected",  # combined label variant
-})
+_LOW_CONFIDENCE_ISSUES: frozenset = frozenset(
+    {
+        "Dirty floor detected",
+        "Gas/oven idle — no supervision",
+        "Chewing detected",
+        "Eating at workstation",
+        "Cash-in-pocket suspected",
+        "Eating / chewing detected",  # combined label variant
+    }
+)
 
 
 def _resolve_status(detected_issue: str, confidence_tier: str) -> str:
@@ -89,6 +91,7 @@ def _resolve_status(detected_issue: str, confidence_tier: str) -> str:
 
 # ── Snapshot helper ───────────────────────────────────────────────────────────
 
+
 def _save_snapshot_to_disk(
     annotated_b64: str,
     user_id: int,
@@ -103,12 +106,12 @@ def _save_snapshot_to_disk(
             raw = raw.split(",", 1)[1]
 
         img_bytes = base64.b64decode(raw)
-        nparr     = np.frombuffer(img_bytes, np.uint8)
-        img       = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        nparr = np.frombuffer(img_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if img is None:
             return None, annotated_b64
 
-        ts       = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         filename = f"{ts}_u{user_id}.jpg"
         abs_path = os.path.join(SNAPSHOT_DIR, filename)
         cv2.imwrite(abs_path, img, [cv2.IMWRITE_JPEG_QUALITY, 88])
@@ -123,6 +126,7 @@ def _save_snapshot_to_disk(
 
 
 # ── Camera name lookup ────────────────────────────────────────────────────────
+
 
 def _get_camera_name(camera_id: int | None, db: Session) -> str | None:
     """Return camera display name for the Telegram caption, or None."""
@@ -153,7 +157,9 @@ def _load_snapshot_b64(snapshot_path: str | None) -> str | None:
         log.debug("_load_snapshot_b64: could not read %s: %s", snapshot_path, exc)
         return None
 
+
 # ── Public API ────────────────────────────────────────────────────────────────
+
 
 def save_alert(
     db: Session,
@@ -169,7 +175,7 @@ def save_alert(
     floor: str = None,
     employee_id: int = None,
     # v3 — confidence tier (optional, defaults to auto-detect via issue name)
-    confidence_tier: str = "auto",   # "high" | "low" | "auto"
+    confidence_tier: str = "auto",  # "high" | "low" | "auto"
 ) -> Alert:
     """
     Persist an alert and (if confirmed) send a Telegram notification.
@@ -188,26 +194,26 @@ def save_alert(
 
     # Save snapshot to disk; keep raw b64 in a local var for Telegram push only —
     # it is deliberately NOT written to the DB row (see module docstring).
-    snapshot_path    = None
-    push_snapshot_b64 = None   # used only for Telegram, never stored
+    snapshot_path = None
+    push_snapshot_b64 = None  # used only for Telegram, never stored
     if snapshot_b64:
         snapshot_path, push_snapshot_b64 = _save_snapshot_to_disk(snapshot_b64, user_id)
 
     # Persist to DB — snapshot_b64 column always NULL from v3.2 onwards.
     alert = Alert(
-        user_id        = user_id,
-        message        = message,
-        role           = role,
-        severity       = severity,
-        detected_issue = detected_issue,
-        confidence     = confidence,
-        snapshot_b64   = None,          # intentionally not stored — use snapshot_path
-        snapshot_path  = snapshot_path,
-        timestamp      = datetime.datetime.utcnow(),
-        camera_id      = camera_id,
-        floor          = floor,
-        employee_id    = employee_id,
-        status         = status,
+        user_id=user_id,
+        message=message,
+        role=role,
+        severity=severity,
+        detected_issue=detected_issue,
+        confidence=confidence,
+        snapshot_b64=None,  # intentionally not stored — use snapshot_path
+        snapshot_path=snapshot_path,
+        timestamp=datetime.datetime.utcnow(),
+        camera_id=camera_id,
+        floor=floor,
+        employee_id=employee_id,
+        status=status,
     )
     db.add(alert)
     db.commit()
@@ -215,7 +221,13 @@ def save_alert(
 
     log.info(
         "Alert saved: id=%d user=%d severity=%s status=%s issue=%s cam=%s floor=%s snapshot=%s",
-        alert.id, user_id, severity, status, detected_issue, camera_id, floor,
+        alert.id,
+        user_id,
+        severity,
+        status,
+        detected_issue,
+        camera_id,
+        floor,
         "✅" if snapshot_path else "—",
     )
 
@@ -224,16 +236,17 @@ def save_alert(
     if status == "confirmed":
         camera_name = _get_camera_name(camera_id, db)
         _fire_push(
-            message        = message,
-            severity       = severity,
-            floor          = floor,
-            camera_name    = camera_name,
-            detected_issue = detected_issue,
-            snapshot_b64   = push_snapshot_b64,   # in-flight only, not from DB
+            message=message,
+            severity=severity,
+            floor=floor,
+            camera_name=camera_name,
+            detected_issue=detected_issue,
+            snapshot_b64=push_snapshot_b64,  # in-flight only, not from DB
         )
         if severity in ("high", "critical"):
             try:
                 from routers.alarm import _play_beep
+
                 _play_beep()
             except Exception as alarm_exc:
                 log.debug("[alert_service] local alarm error: %s", alarm_exc)
@@ -263,15 +276,15 @@ def confirm_alert(alert_id: int, db: Session) -> Alert:
 
     # Fire push notification (was skipped when first saved as pending_review).
     # snapshot_b64 is not in the DB row (v3.2); load the image from disk instead.
-    camera_name   = _get_camera_name(alert.camera_id, db)
+    camera_name = _get_camera_name(alert.camera_id, db)
     push_snapshot = _load_snapshot_b64(alert.snapshot_path)
     _fire_push(
-        message        = alert.message,
-        severity       = alert.severity,
-        floor          = alert.floor,
-        camera_name    = camera_name,
-        detected_issue = alert.detected_issue,
-        snapshot_b64   = push_snapshot,
+        message=alert.message,
+        severity=alert.severity,
+        floor=alert.floor,
+        camera_name=camera_name,
+        detected_issue=alert.detected_issue,
+        snapshot_b64=push_snapshot,
     )
     return alert
 
@@ -297,6 +310,7 @@ def dismiss_alert(alert_id: int, db: Session) -> Alert:
 
 # ── Internal: push notification dispatch ─────────────────────────────────────
 
+
 def _fire_push(
     message: str,
     severity: str,
@@ -311,13 +325,14 @@ def _fire_push(
     """
     try:
         from services.notification_service import send_push_alert
+
         send_push_alert(
-            message        = message,
-            severity       = severity,
-            floor          = floor,
-            camera_name    = camera_name,
-            detected_issue = detected_issue,
-            snapshot_b64   = snapshot_b64,
+            message=message,
+            severity=severity,
+            floor=floor,
+            camera_name=camera_name,
+            detected_issue=detected_issue,
+            snapshot_b64=snapshot_b64,
         )
     except Exception as exc:
         log.error(f"[alert_service] Push dispatch error: {exc}")

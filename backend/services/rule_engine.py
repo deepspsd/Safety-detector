@@ -76,6 +76,7 @@ def _get_rule_engine_user_id(db) -> int:
     try/except will catch the FK error and log it without crashing the loop.
     """
     from database import User
+
     try:
         user = db.query(User).filter(User.id == RULE_ENGINE_USER_ID).first()
         if user:
@@ -84,39 +85,44 @@ def _get_rule_engine_user_id(db) -> int:
         if any_user:
             log.warning(
                 "[rule_engine] user_id=%d not found; falling back to user_id=%d",
-                RULE_ENGINE_USER_ID, any_user.id,
+                RULE_ENGINE_USER_ID,
+                any_user.id,
             )
             return any_user.id
     except Exception as exc:
         log.error("[rule_engine] user lookup failed: %s", exc)
     return RULE_ENGINE_USER_ID
 
+
 # ═════════════════════════════════════════════════════════════════════════════
 # SECTION A — DB-backed settings loader
 # ═════════════════════════════════════════════════════════════════════════════
 # In-process cache: { key -> (value_str, cached_at) }
-_settings_cache:   Dict[str, Tuple[str, float]] = {}
-_settings_lock     = threading.Lock()
-_SETTINGS_TTL_SEC  = 60       # re-read from DB at most once per minute
+_settings_cache: Dict[str, Tuple[str, float]] = {}
+_settings_lock = threading.Lock()
+_SETTINGS_TTL_SEC = 60  # re-read from DB at most once per minute
 
 # Default values — written to DB on first startup via seed_defaults()
 SETTING_DEFAULTS: Dict[str, Tuple[str, str]] = {
     # (value, description)
-    "idle_limit_default":          ("300",   "Idle alert threshold (seconds) — all floors"),
-    "idle_limit_camera_standing":  ("60",    "Person blocking camera alert (seconds)"),
-    "idle_limit_shop_counter":     ("60",    "Employee absent from shop alert (seconds)"),
-    "idle_limit_gas_idle":         ("600",   "Stove/oil idle alert (seconds) — 2nd floor"),
-    "shift_start_ground":          ("08:00", "Ground floor shift start time (HH:MM)"),
-    "shift_start_first":           ("06:00", "First floor shift start time (HH:MM)"),
-    "shift_start_second":          ("05:00", "Second floor shift start time (HH:MM)"),
-    "shift_start_shop":            ("08:00", "Shop floor shift start time (HH:MM)"),
-    "dirty_floor_threshold":       ("0.08",  "Dirty-floor: changed pixel fraction (0-1)"),
-    "dirty_floor_consecutive_hits":("5",     "Consecutive dirty frames before alert"),
-    "cylinder_bbox_min_delta":     ("1",     "Min bbox-count change to log cylinder swap"),
-    "cylinder_log_rate_sec":       ("60",    "Minimum seconds between cylinder 'detected' logs"),
-    "move_threshold_px":           ("15",    "Person centroid movement threshold (px, at 640w)"),
-    "gas_activity_threshold":      ("5.0",   "Mean pixel change below which stove zone = idle"),
-    "shop_absence_limit_sec":      ("60",    "Seconds with no person in shop before alert"),
+    "idle_limit_default": ("300", "Idle alert threshold (seconds) — all floors"),
+    "idle_limit_camera_standing": ("60", "Person blocking camera alert (seconds)"),
+    "idle_limit_shop_counter": ("60", "Employee absent from shop alert (seconds)"),
+    "idle_limit_gas_idle": ("600", "Stove/oil idle alert (seconds) — 2nd floor"),
+    "shift_start_ground": ("08:00", "Ground floor shift start time (HH:MM)"),
+    "shift_start_first": ("06:00", "First floor shift start time (HH:MM)"),
+    "shift_start_second": ("05:00", "Second floor shift start time (HH:MM)"),
+    "shift_start_shop": ("08:00", "Shop floor shift start time (HH:MM)"),
+    "dirty_floor_threshold": ("0.08", "Dirty-floor: changed pixel fraction (0-1)"),
+    "dirty_floor_consecutive_hits": ("5", "Consecutive dirty frames before alert"),
+    "cylinder_bbox_min_delta": ("1", "Min bbox-count change to log cylinder swap"),
+    "cylinder_log_rate_sec": ("60", "Minimum seconds between cylinder 'detected' logs"),
+    "move_threshold_px": ("15", "Person centroid movement threshold (px, at 640w)"),
+    "gas_activity_threshold": (
+        "5.0",
+        "Mean pixel change below which stove zone = idle",
+    ),
+    "shop_absence_limit_sec": ("60", "Seconds with no person in shop before alert"),
 }
 
 
@@ -126,6 +132,7 @@ def seed_defaults(db) -> None:
     Safe to call on every startup — uses INSERT OR IGNORE semantics.
     """
     from database import SystemSettings
+
     for key, (value, description) in SETTING_DEFAULTS.items():
         existing = db.query(SystemSettings).filter(SystemSettings.key == key).first()
         if not existing:
@@ -136,6 +143,7 @@ def seed_defaults(db) -> None:
 
 def _fetch_setting_from_db(key: str, db) -> Optional[str]:
     from database import SystemSettings
+
     row = db.query(SystemSettings).filter(SystemSettings.key == key).first()
     return row.value if row else None
 
@@ -199,16 +207,18 @@ def invalidate_settings_cache(key: Optional[str] = None) -> None:
 # SECTION B — Shift-start compliance checker
 # ═════════════════════════════════════════════════════════════════════════════
 # State: { floor -> date checked } — checked once per floor per calendar day.
-_shift_checked:     Dict[str, datetime.date] = {}
-_shift_first_seen:  Dict[str, Optional[datetime.datetime]] = {}   # floor -> first detection ts
-_shift_lock         = threading.Lock()
+_shift_checked: Dict[str, datetime.date] = {}
+_shift_first_seen: Dict[str, Optional[datetime.datetime]] = (
+    {}
+)  # floor -> first detection ts
+_shift_lock = threading.Lock()
 
 # Map camera floor → settings key
 _FLOOR_SETTING_KEY = {
-    "ground":  "shift_start_ground",
-    "first":   "shift_start_first",
-    "second":  "shift_start_second",
-    "shop":    "shift_start_shop",
+    "ground": "shift_start_ground",
+    "first": "shift_start_first",
+    "second": "shift_start_second",
+    "shop": "shift_start_shop",
 }
 
 
@@ -241,33 +251,36 @@ def check_shift_start(camera_id: int, floor: str, db) -> None:
         return  # unknown floor — skip
 
     now_ist = datetime.datetime.now(_IST)
-    today   = now_ist.date()
+    today = now_ist.date()
 
-    setting_key     = _FLOOR_SETTING_KEY[floor]
+    setting_key = _FLOOR_SETTING_KEY[floor]
     shift_start_str = get_setting(setting_key, db) or SETTING_DEFAULTS[setting_key][0]
     try:
         h, m = map(int, shift_start_str.split(":"))
         shift_start_time = datetime.time(h, m)
     except ValueError:
-        log.error(f"[rule_engine] Invalid shift_start format for {floor!r}: {shift_start_str!r}")
+        log.error(
+            f"[rule_engine] Invalid shift_start format for {floor!r}: {shift_start_str!r}"
+        )
         return
 
-    shift_dt  = datetime.datetime.combine(today, shift_start_time, tzinfo=_IST)
+    shift_dt = datetime.datetime.combine(today, shift_start_time, tzinfo=_IST)
 
     # ── Pre-shift warning: 5 minutes BEFORE shift start ──────────────────────────────
     pre_warn_key = f"_pre_warned_{floor}"
-    warn_at  = shift_dt - datetime.timedelta(minutes=5)
+    warn_at = shift_dt - datetime.timedelta(minutes=5)
     warn_end = shift_dt  # stop warning once shift actually started
 
     if warn_at <= now_ist < warn_end:
         with _shift_lock:
             already_warned = _shift_checked.get(pre_warn_key)
-            first_seen     = _shift_first_seen.get(floor)
+            first_seen = _shift_first_seen.get(floor)
 
         if not already_warned and first_seen is None:
             with _shift_lock:
                 _shift_checked[pre_warn_key] = today
             from services.alert_service import save_alert
+
             try:
                 save_alert(
                     db=db,
@@ -290,7 +303,7 @@ def check_shift_start(camera_id: int, floor: str, db) -> None:
 
     # ── Post-shift alert: 5 minutes AFTER shift start ──────────────────────────────
     grace_minutes = 5
-    check_after   = shift_dt + datetime.timedelta(minutes=grace_minutes)
+    check_after = shift_dt + datetime.timedelta(minutes=grace_minutes)
 
     if now_ist < check_after:
         return  # not yet time for the post-shift check
@@ -347,7 +360,7 @@ def check_shift_start(camera_id: int, floor: str, db) -> None:
 # ═════════════════════════════════════════════════════════════════════════════
 # State per camera: last_bbox_count, last_log_ts, last_day_increment_date, usage_day_count
 _cylinder_state: Dict[int, dict] = {}
-_cylinder_lock   = threading.Lock()
+_cylinder_lock = threading.Lock()
 
 
 def process_cylinder_detections(
@@ -374,21 +387,24 @@ def process_cylinder_detections(
         return
 
     current_count = len(cylinder_dets)
-    now           = datetime.datetime.now()
-    today         = now.date()
+    now = datetime.datetime.now()
+    today = now.date()
 
-    log_rate     = get_int("cylinder_log_rate_sec", db)
-    min_delta    = get_int("cylinder_bbox_min_delta", db)
+    log_rate = get_int("cylinder_log_rate_sec", db)
+    min_delta = get_int("cylinder_bbox_min_delta", db)
 
     from database import CylinderLog
 
     with _cylinder_lock:
-        state = _cylinder_state.setdefault(camera_id, {
-            "last_bbox_count":     current_count,
-            "last_log_ts":         None,
-            "last_day_date":       None,
-            "usage_day_count":     0,
-        })
+        state = _cylinder_state.setdefault(
+            camera_id,
+            {
+                "last_bbox_count": current_count,
+                "last_log_ts": None,
+                "last_day_date": None,
+                "usage_day_count": 0,
+            },
+        )
 
         # ── Rate-limited "detected" log ────────────────────────────────
         last_log_ts = state.get("last_log_ts")
@@ -402,34 +418,38 @@ def process_cylinder_detections(
 
         # ── Daily usage-day increment ───────────────────────────────────
         last_day = state.get("last_day_date")
-        should_increment_day = (last_day is None or last_day < today)
+        should_increment_day = last_day is None or last_day < today
         if should_increment_day:
             state["usage_day_count"] += 1
-            state["last_day_date"]    = today
+            state["last_day_date"] = today
 
         # ── Swap detection ──────────────────────────────────────────────
-        prev_count    = state.get("last_bbox_count", current_count)
-        count_delta   = abs(current_count - prev_count)
-        swapped       = count_delta >= min_delta
+        prev_count = state.get("last_bbox_count", current_count)
+        count_delta = abs(current_count - prev_count)
+        swapped = count_delta >= min_delta
         state["last_bbox_count"] = current_count
-        usage_day_count          = state["usage_day_count"]
+        usage_day_count = state["usage_day_count"]
 
     try:
         if should_log_detected:
-            db.add(CylinderLog(
-                camera_id       = camera_id,
-                event_type      = "detected",
-                timestamp       = now,
-                usage_day_count = usage_day_count,
-            ))
+            db.add(
+                CylinderLog(
+                    camera_id=camera_id,
+                    event_type="detected",
+                    timestamp=now,
+                    usage_day_count=usage_day_count,
+                )
+            )
 
         if swapped:
-            db.add(CylinderLog(
-                camera_id       = camera_id,
-                event_type      = "swapped",
-                timestamp       = now,
-                usage_day_count = usage_day_count,
-            ))
+            db.add(
+                CylinderLog(
+                    camera_id=camera_id,
+                    event_type="swapped",
+                    timestamp=now,
+                    usage_day_count=usage_day_count,
+                )
+            )
             log.info(
                 f"[rule_engine] Cylinder swap detected cam={camera_id} "
                 f"prev={prev_count} curr={current_count} day={usage_day_count}"
@@ -479,9 +499,9 @@ class DirtyFloorDetector:
         threshold: float = 0.08,
         consecutive_hits: int = 5,
     ):
-        self.camera_id        = camera_id
-        self.baseline_path    = baseline_path
-        self.threshold        = threshold
+        self.camera_id = camera_id
+        self.baseline_path = baseline_path
+        self.threshold = threshold
         self.consecutive_hits = consecutive_hits
         self._consecutive_dirty = 0
         self._baseline: Optional[np.ndarray] = None
@@ -497,11 +517,15 @@ class DirtyFloorDetector:
             return
         raw = cv2.imread(self.baseline_path, cv2.IMREAD_GRAYSCALE)
         if raw is None:
-            log.error(f"[DirtyFloorDetector] cam={self.camera_id} could not read baseline image")
+            log.error(
+                f"[DirtyFloorDetector] cam={self.camera_id} could not read baseline image"
+            )
             self._baseline = None
             return
         self._baseline = cv2.GaussianBlur(raw, (21, 21), 0)
-        log.info(f"[DirtyFloorDetector] cam={self.camera_id} baseline loaded from {self.baseline_path!r}")
+        log.info(
+            f"[DirtyFloorDetector] cam={self.camera_id} baseline loaded from {self.baseline_path!r}"
+        )
 
     def reload(self) -> None:
         """Hot-reload baseline — call after admin uploads a new photo."""
@@ -519,12 +543,12 @@ class DirtyFloorDetector:
             return False, 0.0
 
         bh, bw = self._baseline.shape[:2]
-        gray    = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        gray    = cv2.resize(gray, (bw, bh))
-        gray    = cv2.GaussianBlur(gray, (21, 21), 0)
-        diff    = cv2.absdiff(self._baseline, gray)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.resize(gray, (bw, bh))
+        gray = cv2.GaussianBlur(gray, (21, 21), 0)
+        diff = cv2.absdiff(self._baseline, gray)
         _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
-        fraction  = float(thresh.sum()) / (255.0 * thresh.size)
+        fraction = float(thresh.sum()) / (255.0 * thresh.size)
 
         is_dirty = fraction > self.threshold
         if is_dirty:
@@ -532,9 +556,7 @@ class DirtyFloorDetector:
         else:
             self._consecutive_dirty = 0
 
-        should_alert = (
-            is_dirty and self._consecutive_dirty >= self.consecutive_hits
-        )
+        should_alert = is_dirty and self._consecutive_dirty >= self.consecutive_hits
         if should_alert:
             # Reset counter so we don't spam — next alert needs another N hits
             self._consecutive_dirty = 0
@@ -543,8 +565,8 @@ class DirtyFloorDetector:
 
 
 # Registry of DirtyFloorDetector instances (one per camera_id)
-_dirty_detectors:      Dict[int, DirtyFloorDetector] = {}
-_dirty_detectors_lock  = threading.Lock()
+_dirty_detectors: Dict[int, DirtyFloorDetector] = {}
+_dirty_detectors_lock = threading.Lock()
 
 
 def _get_or_create_detector(camera_id: int, db) -> Optional[DirtyFloorDetector]:
@@ -555,6 +577,7 @@ def _get_or_create_detector(camera_id: int, db) -> Optional[DirtyFloorDetector]:
 
     # Look up baseline from DB
     from database import DirtyFloorBaseline
+
     try:
         row = (
             db.query(DirtyFloorBaseline)
@@ -567,7 +590,7 @@ def _get_or_create_detector(camera_id: int, db) -> Optional[DirtyFloorDetector]:
     if row is None:
         return None  # no baseline configured for this camera yet
 
-    threshold        = get_float("dirty_floor_threshold", db)
+    threshold = get_float("dirty_floor_threshold", db)
     consecutive_hits = get_int("dirty_floor_consecutive_hits", db)
     detector = DirtyFloorDetector(
         camera_id=camera_id,
@@ -617,6 +640,7 @@ def check_dirty_floor(
 
     if should_alert:
         from services.alert_service import save_alert
+
         try:
             save_alert(
                 db=db,
@@ -667,11 +691,11 @@ class GasIdleMonitor:
     """
 
     def __init__(self, camera_id: int, idle_limit_sec: int = 600):
-        self.camera_id    = camera_id
-        self.idle_limit   = idle_limit_sec
+        self.camera_id = camera_id
+        self.idle_limit = idle_limit_sec
         self._prev_frame: Optional[np.ndarray] = None
-        self._idle_since: Optional[float]       = None  # monotonic timestamp
-        self._alert_fired                        = False
+        self._idle_since: Optional[float] = None  # monotonic timestamp
+        self._alert_fired = False
 
     def update(
         self,
@@ -695,23 +719,19 @@ class GasIdleMonitor:
             return False
 
         # Frame difference
-        diff       = cv2.absdiff(self._prev_frame, roi)
-        mean_diff  = float(diff.mean())
+        diff = cv2.absdiff(self._prev_frame, roi)
+        mean_diff = float(diff.mean())
         self._prev_frame = roi.copy()
 
-        activity_threshold = float(
-            get_setting("gas_activity_threshold", db) or "5.0"
-        )
-        idle_limit = int(
-            get_setting("idle_limit_gas_idle", db) or str(self.idle_limit)
-        )
+        activity_threshold = float(get_setting("gas_activity_threshold", db) or "5.0")
+        idle_limit = int(get_setting("idle_limit_gas_idle", db) or str(self.idle_limit))
 
         zone_active = mean_diff >= activity_threshold
 
         if zone_active or person_present:
             # Activity detected — reset idle timer
-            self._idle_since   = None
-            self._alert_fired  = False
+            self._idle_since = None
+            self._alert_fired = False
             return False
 
         # Zone appears idle
@@ -740,13 +760,15 @@ class GasIdleMonitor:
             return gray
         pts = np.array(polygon, dtype=np.int32)
         x, y, w, h = cv2.boundingRect(pts)
-        x1 = max(0, x); y1 = max(0, y)
+        x1 = max(0, x)
+        y1 = max(0, y)
         x2 = min(frame.shape[1], x + w)
         y2 = min(frame.shape[0], y + h)
         return gray[y1:y2, x1:x2]
 
     def _fire_alert(self, idle_for: float, floor: str, db) -> None:
         from services.alert_service import save_alert
+
         mins = idle_for / 60
         try:
             save_alert(
@@ -774,8 +796,8 @@ class GasIdleMonitor:
 
 
 # Registry (camera_id → GasIdleMonitor)
-_gas_monitors:     Dict[int, GasIdleMonitor] = {}
-_gas_monitor_lock  = threading.Lock()
+_gas_monitors: Dict[int, GasIdleMonitor] = {}
+_gas_monitor_lock = threading.Lock()
 
 
 def gas_idle_update(
@@ -815,8 +837,8 @@ def gas_idle_update(
 #         an alert should come to the admin."
 # Implementation: pure time/state — no ML needed.
 
-_shop_absence_state: Dict[int, dict] = {}   # camera_id → {empty_since, alert_fired}
-_shop_absence_lock   = threading.Lock()
+_shop_absence_state: Dict[int, dict] = {}  # camera_id → {empty_since, alert_fired}
+_shop_absence_lock = threading.Lock()
 
 
 def check_shop_absence(
@@ -836,18 +858,21 @@ def check_shop_absence(
         return  # only applies to shop floor cameras
 
     limit = get_int("shop_absence_limit_sec", db) or 60
-    now   = time.monotonic()
+    now = time.monotonic()
 
     with _shop_absence_lock:
-        state = _shop_absence_state.setdefault(camera_id, {
-            "empty_since":  None,
-            "alert_fired":  False,
-        })
+        state = _shop_absence_state.setdefault(
+            camera_id,
+            {
+                "empty_since": None,
+                "alert_fired": False,
+            },
+        )
 
         if persons:
             # Someone visible — reset
-            state["empty_since"]  = None
-            state["alert_fired"]  = False
+            state["empty_since"] = None
+            state["alert_fired"] = False
             return
 
         # No persons visible
@@ -864,6 +889,7 @@ def check_shop_absence(
 
 def _fire_shop_absence_alert(camera_id: int, empty_for: float, db) -> None:
     from services.alert_service import save_alert
+
     mins = empty_for / 60
     try:
         save_alert(
@@ -887,24 +913,29 @@ def _fire_shop_absence_alert(camera_id: int, empty_for: float, db) -> None:
     except Exception as exc:
         log.error(f"[rule_engine] shop-absence alert save failed: {exc}")
 
+
 # -----------------------------------------------------------------------------
 # SECTION G � Camera Blocking Detection (REQ-041)
 # -----------------------------------------------------------------------------
 _camera_blocking_state: Dict[int, dict] = {}
 _camera_blocking_lock = threading.Lock()
 
-def check_camera_blocking(camera_id: int, frame_shape: Tuple[int, int, int], persons: List[dict], db) -> None:
+
+def check_camera_blocking(
+    camera_id: int, frame_shape: Tuple[int, int, int], persons: List[dict], db
+) -> None:
     CAMERA_BLOCK_RATIO = 0.70
     limit = get_int("idle_limit_camera_standing", db) or 60
     now = time.monotonic()
-    
+
     frame_h, frame_w = frame_shape[:2]
     frame_area = frame_h * frame_w
-    
+
     is_blocked = False
     for p in persons:
         bbox = p.get("bbox")
-        if not bbox: continue
+        if not bbox:
+            continue
         x1, y1, x2, y2 = bbox
         area = (x2 - x1) * (y2 - y1)
         if area / frame_area > CAMERA_BLOCK_RATIO:
@@ -912,24 +943,28 @@ def check_camera_blocking(camera_id: int, frame_shape: Tuple[int, int, int], per
             break
 
     with _camera_blocking_lock:
-        state = _camera_blocking_state.setdefault(camera_id, {
-            "blocked_since": None,
-            "alert_fired": False,
-        })
-        
+        state = _camera_blocking_state.setdefault(
+            camera_id,
+            {
+                "blocked_since": None,
+                "alert_fired": False,
+            },
+        )
+
         if not is_blocked:
             state["blocked_since"] = None
             state["alert_fired"] = False
             return
-            
+
         if state["blocked_since"] is None:
             state["blocked_since"] = now
             return
-            
+
         blocked_for = now - state["blocked_since"]
         if blocked_for >= limit and not state["alert_fired"]:
             state["alert_fired"] = True
             from services.alert_service import save_alert
+
             try:
                 save_alert(
                     db=db,
@@ -951,8 +986,8 @@ def check_camera_blocking(camera_id: int, frame_shape: Tuple[int, int, int], per
 # ─────────────────────────────────────────────────────────────────────────────────
 # SECTION H — Stock Zone Monitor (REQ-011, REQ-014)
 # ─────────────────────────────────────────────────────────────────────────────────
-_stock_zone_state: Dict[int, float] = {}   # camera_id → last_alert_time
-_stock_zone_lock  = threading.Lock()
+_stock_zone_state: Dict[int, float] = {}  # camera_id → last_alert_time
+_stock_zone_lock = threading.Lock()
 
 
 def check_stock_zone(
@@ -986,6 +1021,7 @@ def check_stock_zone(
                     return
                 _stock_zone_state[camera_id] = now
             from services.alert_service import save_alert
+
             try:
                 save_alert(
                     db=db,
@@ -1000,7 +1036,6 @@ def check_stock_zone(
             except Exception as exc:
                 log.error(f"[rule_engine] stock-zone alert save failed: {exc}")
             return  # one alert per tick maximum
-
 
 
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -1023,6 +1058,7 @@ def check_machinery_zone(
         return
 
     from services.zone_service import bbox_in_zone
+
     now = time.monotonic()
 
     for zone_name in ("dough", "biscuit_cutting"):
@@ -1032,14 +1068,17 @@ def check_machinery_zone(
 
         machines = [d for d in raw_detections if d.get("label") == "machinery"]
         machines_in_zone = any(bbox_in_zone(m["bbox"], poly) for m in machines)
-        persons_in_zone  = any(bbox_in_zone(p["bbox"], poly) for p in persons)
+        persons_in_zone = any(bbox_in_zone(p["bbox"], poly) for p in persons)
 
         state_key = f"{camera_id}_{zone_name}"
         with _machinery_idle_lock:
-            state = _machinery_idle_state.setdefault(state_key, {
-                "unattended_since": None,
-                "alert_fired": False,
-            })
+            state = _machinery_idle_state.setdefault(
+                state_key,
+                {
+                    "unattended_since": None,
+                    "alert_fired": False,
+                },
+            )
 
             if machines_in_zone and not persons_in_zone:
                 if state["unattended_since"] is None:
@@ -1047,6 +1086,7 @@ def check_machinery_zone(
                 elif now - state["unattended_since"] >= 60 and not state["alert_fired"]:
                     state["alert_fired"] = True
                     from services.alert_service import save_alert
+
                     try:
                         save_alert(
                             db=db,
@@ -1062,11 +1102,12 @@ def check_machinery_zone(
                             floor=floor,
                         )
                     except Exception as exc:
-                        log.error(f"[rule_engine] machinery-zone alert save failed: {exc}")
+                        log.error(
+                            f"[rule_engine] machinery-zone alert save failed: {exc}"
+                        )
             else:
                 state["unattended_since"] = None
                 state["alert_fired"] = False
-
 
 
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -1075,7 +1116,7 @@ def check_machinery_zone(
 # zone. Useful for vendor payment audits and access log.
 # Rate-limited to once per 5 minutes per camera to avoid snapshot flooding.
 # ─────────────────────────────────────────────────────────────────────────────────
-_counter_snapshot_state: Dict[int, float] = {}   # camera_id → last_snapshot_time
+_counter_snapshot_state: Dict[int, float] = {}  # camera_id → last_snapshot_time
 _counter_snapshot_lock = threading.Lock()
 
 
@@ -1096,6 +1137,7 @@ def trigger_vendor_snapshot(
         return
 
     from services.zone_service import bbox_in_zone
+
     if not any(bbox_in_zone(p["bbox"], poly) for p in persons):
         return
 
@@ -1107,6 +1149,7 @@ def trigger_vendor_snapshot(
 
     from services.alert_service import save_alert
     from services.yolo_service import encode_frame
+
     try:
         save_alert(
             db=db,
@@ -1145,8 +1188,8 @@ def trigger_vendor_snapshot(
 _window_throw_state: Dict[str, dict] = {}
 _window_throw_lock = threading.Lock()
 
-_WINDOW_THROW_VELOCITY_PX = 40.0   # min pixel displacement per frame to flag
-_WINDOW_LOITER_SEC = 30.0           # person near window without work = suspicious
+_WINDOW_THROW_VELOCITY_PX = 40.0  # min pixel displacement per frame to flag
+_WINDOW_LOITER_SEC = 30.0  # person near window without work = suspicious
 _WINDOW_COOLDOWN_SEC = 120
 
 
@@ -1185,14 +1228,16 @@ def check_window_throw(
 
         # ── Part 1: Optical-flow velocity check on non-person objects ──────
         non_person_dets = [
-            d for d in raw_detections
-            if d.get("label") not in ("Person", "Hardhat", "Mask",
-                                       "Safety Vest", "Bakery-Head-Cap")
+            d
+            for d in raw_detections
+            if d.get("label")
+            not in ("Person", "Hardhat", "Mask", "Safety Vest", "Bakery-Head-Cap")
         ]
 
         if non_person_dets:
             try:
                 from services.zone_service import bbox_in_zone
+
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
                 with _window_throw_lock:
@@ -1200,9 +1245,16 @@ def check_window_throw(
 
                     if prev is not None and prev.shape == gray.shape:
                         flow = cv2.calcOpticalFlowFarneback(
-                            prev, gray, None,
-                            pyr_scale=0.5, levels=3, winsize=15,
-                            iterations=3, poly_n=5, poly_sigma=1.2, flags=0,
+                            prev,
+                            gray,
+                            None,
+                            pyr_scale=0.5,
+                            levels=3,
+                            winsize=15,
+                            iterations=3,
+                            poly_n=5,
+                            poly_sigma=1.2,
+                            flags=0,
                         )
 
                         for det in non_person_dets:
@@ -1211,7 +1263,7 @@ def check_window_throw(
                                 continue
 
                             x1, y1, x2, y2 = [int(v) for v in bbox[:4]]
-                            roi_flow = flow[max(0,y1):y2, max(0,x1):x2]
+                            roi_flow = flow[max(0, y1) : y2, max(0, x1) : x2]
                             if roi_flow.size == 0:
                                 continue
 
@@ -1223,18 +1275,23 @@ def check_window_throw(
                             fx = float(roi_flow[..., 0].mean())
                             frame_w = frame.shape[1]
                             cx_obj = (x1 + x2) / 2.0
-                            moving_outward = (
-                                (fx > 0 and cx_obj > frame_w * 0.6)
-                                or (fx < 0 and cx_obj < frame_w * 0.4)
+                            moving_outward = (fx > 0 and cx_obj > frame_w * 0.6) or (
+                                fx < 0 and cx_obj < frame_w * 0.4
                             )
 
-                            if (mean_mag > _WINDOW_THROW_VELOCITY_PX
-                                    or max_mag > _WINDOW_THROW_VELOCITY_PX * 2):
+                            if (
+                                mean_mag > _WINDOW_THROW_VELOCITY_PX
+                                or max_mag > _WINDOW_THROW_VELOCITY_PX * 2
+                            ):
                                 if moving_outward:
                                     _fire_window_throw_alert(
-                                        db, camera_id, floor, zone_name,
+                                        db,
+                                        camera_id,
+                                        floor,
+                                        zone_name,
                                         det.get("label", "unknown"),
-                                        mean_mag, max_mag,
+                                        mean_mag,
+                                        max_mag,
                                     )
                                     _window_throw_state[state_key] = {"prev_gray": gray}
                                     return
@@ -1242,28 +1299,41 @@ def check_window_throw(
                     _window_throw_state.setdefault(state_key, {})["prev_gray"] = gray
 
             except Exception as exc:
-                log.debug(f"[rule_engine] window-throw flow error cam={camera_id}: {exc}")
+                log.debug(
+                    f"[rule_engine] window-throw flow error cam={camera_id}: {exc}"
+                )
 
         # ── Part 2: Person loitering near window ───────────────────────────
         from services.zone_service import bbox_in_zone
+
         persons_in_window = [
             p for p in persons if bbox_in_zone(p.get("bbox", []), polygon)
         ]
 
         loiter_key = f"loiter_{camera_id}_{zone_name}"
         with _window_throw_lock:
-            state = _window_throw_state.setdefault(loiter_key, {
-                "since": None, "alert_fired": False,
-            })
+            state = _window_throw_state.setdefault(
+                loiter_key,
+                {
+                    "since": None,
+                    "alert_fired": False,
+                },
+            )
 
             if persons_in_window:
                 if state["since"] is None:
                     state["since"] = now
-                elif (now - state["since"] >= _WINDOW_LOITER_SEC
-                      and not state["alert_fired"]):
+                elif (
+                    now - state["since"] >= _WINDOW_LOITER_SEC
+                    and not state["alert_fired"]
+                ):
                     state["alert_fired"] = True
                     _fire_window_loiter_alert(
-                        db, camera_id, floor, zone_name, len(persons_in_window),
+                        db,
+                        camera_id,
+                        floor,
+                        zone_name,
+                        len(persons_in_window),
                     )
             else:
                 state["since"] = None
@@ -1271,10 +1341,16 @@ def check_window_throw(
 
 
 def _fire_window_throw_alert(
-    db, camera_id: int, floor: str, zone_name: str,
-    obj_label: str, mean_mag: float, max_mag: float,
+    db,
+    camera_id: int,
+    floor: str,
+    zone_name: str,
+    obj_label: str,
+    mean_mag: float,
+    max_mag: float,
 ) -> None:
     from services.alert_service import save_alert
+
     try:
         save_alert(
             db=db,
@@ -1301,9 +1377,14 @@ def _fire_window_throw_alert(
 
 
 def _fire_window_loiter_alert(
-    db, camera_id: int, floor: str, zone_name: str, person_count: int,
+    db,
+    camera_id: int,
+    floor: str,
+    zone_name: str,
+    person_count: int,
 ) -> None:
     from services.alert_service import save_alert
+
     try:
         save_alert(
             db=db,
@@ -1353,10 +1434,10 @@ def cleanup_window_state(camera_id: int) -> None:
 _cash_pocket_state: Dict[int, dict] = {}
 _cash_pocket_lock = threading.Lock()
 _CASH_POCKET_COOLDOWN_SEC = 300
-_CASH_GESTURE_MIN_FRAMES = 5      # minimum frames to detect a gesture
-_CASH_GESTURE_MAX_FRAMES = 25     # too many frames = not a quick gesture
-_CASH_DOWNWARD_RATIO = 0.6        # fraction of movement that must be downward
-_CASH_INWARD_RATIO = 0.4          # fraction of movement that must be inward
+_CASH_GESTURE_MIN_FRAMES = 5  # minimum frames to detect a gesture
+_CASH_GESTURE_MAX_FRAMES = 25  # too many frames = not a quick gesture
+_CASH_DOWNWARD_RATIO = 0.6  # fraction of movement that must be downward
+_CASH_INWARD_RATIO = 0.4  # fraction of movement that must be inward
 
 
 def check_cash_in_pocket(
@@ -1378,14 +1459,13 @@ def check_cash_in_pocket(
         return
 
     cash_poly = (
-        zones.get("cashbox")
-        or zones.get("cash_counter")
-        or zones.get("shop_counter")
+        zones.get("cashbox") or zones.get("cash_counter") or zones.get("shop_counter")
     )
     if not cash_poly:
         return
 
     import cv2
+
     from services.zone_service import bbox_in_zone
 
     now = time.monotonic()
@@ -1422,10 +1502,13 @@ def check_cash_in_pocket(
         hy = moments["m01"] / moments["m00"] + hand_y1
 
         with _cash_pocket_lock:
-            state = _cash_pocket_state.setdefault(key, {
-                "history": [],
-                "last_alert": 0,
-            })
+            state = _cash_pocket_state.setdefault(
+                key,
+                {
+                    "history": [],
+                    "last_alert": 0,
+                },
+            )
 
             state["history"].append((now, hx, hy))
             # Keep last 2 seconds
@@ -1473,6 +1556,7 @@ def check_cash_in_pocket(
 
 def _fire_cash_pocket_alert(db, camera_id: int, floor: str, track_id: int):
     from services.alert_service import save_alert
+
     try:
         save_alert(
             db=db,
@@ -1542,9 +1626,17 @@ def check_finished_goods_dispatch(
 
     # Check for items in finished goods zone
     items_in_fg = [
-        d for d in raw_detections
-        if d.get("label") not in ("Person", "Hardhat", "Mask",
-                                   "Safety Vest", "Bakery-Head-Cap", "vehicle")
+        d
+        for d in raw_detections
+        if d.get("label")
+        not in (
+            "Person",
+            "Hardhat",
+            "Mask",
+            "Safety Vest",
+            "Bakery-Head-Cap",
+            "vehicle",
+        )
         and bbox_in_zone(d.get("bbox", []), fg_poly)
     ]
 
@@ -1559,10 +1651,13 @@ def check_finished_goods_dispatch(
         )
 
     with _fg_dispatch_lock:
-        state = _fg_dispatch_state.setdefault(state_key, {
-            "items_since": None,
-            "alert_fired": False,
-        })
+        state = _fg_dispatch_state.setdefault(
+            state_key,
+            {
+                "items_since": None,
+                "alert_fired": False,
+            },
+        )
 
         if items_in_fg:
             if state["items_since"] is None:
@@ -1574,7 +1669,11 @@ def check_finished_goods_dispatch(
                 if not vehicle_present:
                     state["alert_fired"] = True
                     _fire_fg_dispatch_alert(
-                        db, camera_id, floor, len(items_in_fg), elapsed,
+                        db,
+                        camera_id,
+                        floor,
+                        len(items_in_fg),
+                        elapsed,
                     )
         else:
             state["items_since"] = None
@@ -1582,9 +1681,14 @@ def check_finished_goods_dispatch(
 
 
 def _fire_fg_dispatch_alert(
-    db, camera_id: int, floor: str, item_count: int, elapsed: float,
+    db,
+    camera_id: int,
+    floor: str,
+    item_count: int,
+    elapsed: float,
 ):
     from services.alert_service import save_alert
+
     mins = elapsed / 60
     try:
         save_alert(
@@ -1648,6 +1752,7 @@ def check_workflow_enforcement(
         return
 
     from services.zone_service import bbox_in_zone
+
     now = time.monotonic()
 
     workflow_zones = {
@@ -1664,22 +1769,22 @@ def check_workflow_enforcement(
             continue
 
         machines = [
-            d for d in raw_detections
-            if d.get("label") == "machinery"
-            and bbox_in_zone(d.get("bbox", []), poly)
+            d
+            for d in raw_detections
+            if d.get("label") == "machinery" and bbox_in_zone(d.get("bbox", []), poly)
         ]
-        persons_here = [
-            p for p in persons
-            if bbox_in_zone(p.get("bbox", []), poly)
-        ]
+        persons_here = [p for p in persons if bbox_in_zone(p.get("bbox", []), poly)]
 
         state_key = f"{camera_id}_{zone_name}"
         with _workflow_enforce_lock:
-            state = _workflow_enforce_state.setdefault(state_key, {
-                "machine_was_on": False,
-                "machine_off_since": None,
-                "alert_fired": False,
-            })
+            state = _workflow_enforce_state.setdefault(
+                state_key,
+                {
+                    "machine_was_on": False,
+                    "machine_off_since": None,
+                    "alert_fired": False,
+                },
+            )
 
             machine_on = bool(machines)
 
@@ -1694,21 +1799,27 @@ def check_workflow_enforcement(
                 if state["machine_off_since"] is None:
                     state["machine_off_since"] = now
 
-                if (state["machine_off_since"] is not None
-                        and persons_here
-                        and not state["alert_fired"]):
+                if (
+                    state["machine_off_since"] is not None
+                    and persons_here
+                    and not state["alert_fired"]
+                ):
                     elapsed = now - state["machine_off_since"]
                     if elapsed >= _WORKFLOW_GRACE_PERIOD_SEC:
-                        if now - _workflow_enforce_state.get(
-                            f"_last_alert_{camera_id}", 0
-                        ) >= _WORKFLOW_COOLDOWN_SEC:
+                        if (
+                            now
+                            - _workflow_enforce_state.get(f"_last_alert_{camera_id}", 0)
+                            >= _WORKFLOW_COOLDOWN_SEC
+                        ):
                             state["alert_fired"] = True
-                            _workflow_enforce_state[
-                                f"_last_alert_{camera_id}"
-                            ] = now
+                            _workflow_enforce_state[f"_last_alert_{camera_id}"] = now
                             _fire_workflow_alert(
-                                db, camera_id, floor, zone_name,
-                                next_zone, elapsed,
+                                db,
+                                camera_id,
+                                floor,
+                                zone_name,
+                                next_zone,
+                                elapsed,
                             )
 
             if not persons_here:
@@ -1718,10 +1829,15 @@ def check_workflow_enforcement(
 
 
 def _fire_workflow_alert(
-    db, camera_id: int, floor: str,
-    from_zone: str, to_zone: str, elapsed: float,
+    db,
+    camera_id: int,
+    floor: str,
+    from_zone: str,
+    to_zone: str,
+    elapsed: float,
 ):
     from services.alert_service import save_alert
+
     try:
         save_alert(
             db=db,
@@ -1743,5 +1859,3 @@ def _fire_workflow_alert(
         )
     except Exception as exc:
         log.error(f"[rule_engine] workflow alert save failed: {exc}")
-
-

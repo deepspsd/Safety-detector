@@ -34,12 +34,14 @@ import sys
 GDRIVE_FOLDER_ID = "11tfTBkp4JdlJ8QXoAMZxgVMf8xpLBXi_"
 OUTPUT_FILE = "ppe.pt"
 
+
 def download_with_gdown():
     try:
         import gdown
     except ImportError:
         print("Installing gdown…")
-        os.system(f"{sys.executable} -m pip install gdown")
+        import subprocess
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "gdown"])
         import gdown
 
     print(f"📥 Downloading ppe.pt from Google Drive…")

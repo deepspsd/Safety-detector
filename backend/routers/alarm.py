@@ -8,6 +8,7 @@ Requires: LOCAL_ALARM_ENABLED=true in .env (off by default).
 Windows:  Uses winsound.Beep().
 Linux:    Tries 'beep' command, falls back to terminal bell.
 """
+
 import logging
 import platform
 
@@ -29,11 +30,12 @@ def _play_beep() -> bool:
         return False
 
     freq = settings.LOCAL_ALARM_FREQ_HZ
-    dur  = settings.LOCAL_ALARM_DURATION_MS
+    dur = settings.LOCAL_ALARM_DURATION_MS
 
     if platform.system() == "Windows":
         try:
             import winsound
+
             winsound.Beep(freq, dur)
             return True
         except Exception as exc:
@@ -41,11 +43,14 @@ def _play_beep() -> bool:
             return False
     else:
         # Linux / macOS — try 'beep' command, then terminal bell
-        import subprocess, os
+        import os
+        import subprocess
+
         try:
             result = subprocess.run(
                 ["beep", "-f", str(freq), "-l", str(dur)],
-                capture_output=True, timeout=2,
+                capture_output=True,
+                timeout=2,
             )
             if result.returncode == 0:
                 return True
@@ -65,8 +70,8 @@ def trigger_alarm(current_user=Depends(get_current_user)):
     played = _play_beep()
     return {
         "triggered": played,
-        "enabled":   settings.LOCAL_ALARM_ENABLED,
-        "platform":  platform.system(),
+        "enabled": settings.LOCAL_ALARM_ENABLED,
+        "platform": platform.system(),
     }
 
 

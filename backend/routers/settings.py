@@ -15,17 +15,11 @@ import logging
 import os
 import shutil
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from database import (
-    get_db,
-    SystemSettings,
-    CylinderLog,
-    DirtyFloorBaseline,
-    Camera,
-)
+from database import Camera, CylinderLog, DirtyFloorBaseline, SystemSettings, get_db
 from routers.auth import get_current_user
 from services import rule_engine
 
@@ -42,9 +36,10 @@ os.makedirs(BASELINE_DIR, exist_ok=True)
 # Pydantic schemas
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class SettingOut(BaseModel):
-    key:         str
-    value:       str
+    key: str
+    value: str
     description: str | None = None
 
     class Config:
@@ -56,11 +51,11 @@ class SettingUpdate(BaseModel):
 
 
 class CylinderLogOut(BaseModel):
-    id:              int
-    camera_id:       int
-    event_type:      str
+    id: int
+    camera_id: int
+    event_type: str
     usage_day_count: int | None
-    timestamp:       str
+    timestamp: str
 
     class Config:
         from_attributes = True
@@ -70,10 +65,11 @@ class CylinderLogOut(BaseModel):
 # GET /settings/
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @router.get("/", response_model=list[SettingOut])
 def list_settings(
-    db:           Session = Depends(get_db),
-    _current_user = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    _current_user=Depends(get_current_user),
 ):
     """Return all system threshold settings (admin only)."""
     return db.query(SystemSettings).order_by(SystemSettings.key).all()
@@ -83,13 +79,14 @@ def list_settings(
 # GET /settings/cylinder-logs
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @router.get("/cylinder-logs", response_model=list[CylinderLogOut])
 def list_cylinder_logs(
-    camera_id:    int | None = None,
-    event_type:   str | None = None,
-    limit:        int         = 100,
-    db:           Session     = Depends(get_db),
-    _current_user             = Depends(get_current_user),
+    camera_id: int | None = None,
+    event_type: str | None = None,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    _current_user=Depends(get_current_user),
 ):
     """Paginated cylinder usage history with optional filters."""
     q = db.query(CylinderLog)
@@ -114,11 +111,12 @@ def list_cylinder_logs(
 # GET /settings/{key}
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @router.get("/{key}", response_model=SettingOut)
 def get_setting(
-    key:          str,
-    db:           Session = Depends(get_db),
-    _current_user = Depends(get_current_user),
+    key: str,
+    db: Session = Depends(get_db),
+    _current_user=Depends(get_current_user),
 ):
     row = db.query(SystemSettings).filter(SystemSettings.key == key).first()
     if not row:
@@ -130,12 +128,13 @@ def get_setting(
 # PUT /settings/{key}
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @router.put("/{key}", response_model=SettingOut)
 def update_setting(
-    key:          str,
-    body:         SettingUpdate,
-    db:           Session = Depends(get_db),
-    _current_user = Depends(get_current_user),
+    key: str,
+    body: SettingUpdate,
+    db: Session = Depends(get_db),
+    _current_user=Depends(get_current_user),
 ):
     """
     Update a threshold setting.  Unknown keys are rejected — only keys that
@@ -156,7 +155,7 @@ def update_setting(
         row.value = body.value
     else:
         desc = rule_engine.SETTING_DEFAULTS[key][1]
-        row  = SystemSettings(key=key, value=body.value, description=desc)
+        row = SystemSettings(key=key, value=body.value, description=desc)
         db.add(row)
 
     db.commit()
@@ -177,11 +176,11 @@ baseline_router = APIRouter(tags=["Camera Baselines"])
 
 @baseline_router.post("/cameras/{camera_id}/baseline", status_code=201)
 async def upload_baseline(
-    camera_id:    int,
-    zone_name:    str    = "default",
-    file:         UploadFile = File(...),
-    db:           Session    = Depends(get_db),
-    _current_user            = Depends(get_current_user),
+    camera_id: int,
+    zone_name: str = "default",
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _current_user=Depends(get_current_user),
 ):
     """
     Upload a clean-state reference photo for the dirty-floor detector.
@@ -199,11 +198,11 @@ async def upload_baseline(
     if file.content_type not in ("image/jpeg", "image/png", "image/webp"):
         raise HTTPException(
             status_code=400,
-            detail="Only JPEG / PNG / WebP baseline images are accepted"
+            detail="Only JPEG / PNG / WebP baseline images are accepted",
         )
 
     # Save to disk
-    ext      = os.path.splitext(file.filename or "baseline.jpg")[1] or ".jpg"
+    ext = os.path.splitext(file.filename or "baseline.jpg")[1] or ".jpg"
     filename = f"cam_{camera_id}_{zone_name}{ext}"
     abs_path = os.path.join(BASELINE_DIR, filename)
     with open(abs_path, "wb") as f:
@@ -219,34 +218,38 @@ async def upload_baseline(
         .first()
     )
     if existing:
-        existing.image_path  = abs_path
+        existing.image_path = abs_path
         existing.uploaded_at = __import__("datetime").datetime.utcnow()
     else:
-        db.add(DirtyFloorBaseline(
-            camera_id=camera_id,
-            zone_name=zone_name,
-            image_path=abs_path,
-        ))
+        db.add(
+            DirtyFloorBaseline(
+                camera_id=camera_id,
+                zone_name=zone_name,
+                image_path=abs_path,
+            )
+        )
     db.commit()
 
     # Hot-reload the detector (no server restart needed)
     rule_engine.reload_detector(camera_id)
 
-    log.info(f"[settings] Baseline uploaded cam={camera_id} zone={zone_name!r} path={abs_path!r}")
+    log.info(
+        f"[settings] Baseline uploaded cam={camera_id} zone={zone_name!r} path={abs_path!r}"
+    )
     return {
-        "camera_id":  camera_id,
-        "zone_name":  zone_name,
+        "camera_id": camera_id,
+        "zone_name": zone_name,
         "image_path": abs_path,
-        "message":    "Baseline saved and detector reloaded",
+        "message": "Baseline saved and detector reloaded",
     }
 
 
 @baseline_router.delete("/cameras/{camera_id}/baseline", status_code=200)
 def delete_baseline(
-    camera_id:    int,
-    zone_name:    str    = "default",
-    db:           Session = Depends(get_db),
-    _current_user          = Depends(get_current_user),
+    camera_id: int,
+    zone_name: str = "default",
+    db: Session = Depends(get_db),
+    _current_user=Depends(get_current_user),
 ):
     """Remove the dirty-floor baseline for a camera / zone."""
     row = (

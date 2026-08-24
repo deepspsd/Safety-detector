@@ -1,4 +1,5 @@
 """Vendor-neutral ONVIF WS-Discovery with a constrained private-LAN fallback."""
+
 from __future__ import annotations
 
 import ipaddress
@@ -33,12 +34,12 @@ class DiscoveredDevice:
 
 def _probe_xml() -> bytes:
     message_id = f"uuid:{uuid.uuid4()}"
-    return f'''<?xml version="1.0" encoding="UTF-8"?>
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
 <e:Envelope xmlns:e="http://www.w3.org/2003/05/soap-envelope"
  xmlns:w="{WSA}" xmlns:d="{WSD}">
  <e:Header><w:MessageID>{message_id}</w:MessageID><w:To>urn:docs-oasis-open-org:ws-dd-ns:discovery</w:To><w:Action>http://docs.oasis-open.org/ws-dd/ns/discovery/2009/01/Probe</w:Action></e:Header>
  <e:Body><d:Probe><d:Types>dn:NetworkVideoTransmitter</d:Types></d:Probe></e:Body>
-</e:Envelope>'''.replace("dn:", "").encode("utf-8")
+</e:Envelope>""".replace("dn:", "").encode("utf-8")
 
 
 def _parse_probe_match(payload: bytes) -> list[DiscoveredDevice]:
@@ -52,15 +53,19 @@ def _parse_probe_match(payload: bytes) -> list[DiscoveredDevice]:
         for endpoint in (location.text or "").split():
             parsed = urlparse(endpoint)
             if parsed.hostname:
-                devices.append(DiscoveredDevice(
-                    device_id=str(uuid.uuid5(uuid.NAMESPACE_URL, endpoint)),
-                    ip_address=parsed.hostname,
-                    onvif_endpoint=endpoint,
-                ))
+                devices.append(
+                    DiscoveredDevice(
+                        device_id=str(uuid.uuid5(uuid.NAMESPACE_URL, endpoint)),
+                        ip_address=parsed.hostname,
+                        onvif_endpoint=endpoint,
+                    )
+                )
     return devices
 
 
-def discover_onvif(timeout_seconds: float = 5.0, interface: str | None = None, retries: int = 1) -> list[dict]:
+def discover_onvif(
+    timeout_seconds: float = 5.0, interface: str | None = None, retries: int = 1
+) -> list[dict]:
     """Broadcast ONVIF WS-Discovery and return deduplicated device endpoints.
 
     `interface` may be a local IPv4 address on a multi-NIC server. This never
@@ -94,13 +99,19 @@ def discover_onvif(timeout_seconds: float = 5.0, interface: str | None = None, r
 def allowed_private_subnet(subnet: str) -> ipaddress.IPv4Network:
     network = ipaddress.ip_network(subnet, strict=False)
     if not isinstance(network, ipaddress.IPv4Network) or not network.is_private:
-        raise ValueError("Discovery fallback is restricted to an explicit RFC1918 IPv4 subnet")
+        raise ValueError(
+            "Discovery fallback is restricted to an explicit RFC1918 IPv4 subnet"
+        )
     if network.num_addresses > 1024:
-        raise ValueError("Discovery fallback subnet must contain at most 1024 addresses")
+        raise ValueError(
+            "Discovery fallback subnet must contain at most 1024 addresses"
+        )
     return network
 
 
-def probe_onvif_endpoints(subnet: str, ports: Iterable[int] = (80, 8080, 8899), timeout_seconds: float = 0.25) -> list[dict]:
+def probe_onvif_endpoints(
+    subnet: str, ports: Iterable[int] = (80, 8080, 8899), timeout_seconds: float = 0.25
+) -> list[dict]:
     """Conservative local fallback. It only finds reachable HTTP endpoints;
     callers must authenticate and validate ONVIF before registration.
     """
@@ -110,13 +121,22 @@ def probe_onvif_endpoints(subnet: str, ports: Iterable[int] = (80, 8080, 8899), 
         host_str = str(host)
         for port in ports:
             try:
-                with socket.create_connection((host_str, int(port)), timeout=timeout_seconds):
-                    results.append(DiscoveredDevice(
-                        device_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"onvif-candidate:{host_str}:{port}")),
-                        ip_address=host_str,
-                        onvif_endpoint=f"http://{host_str}:{port}/onvif/device_service",
-                        status="candidate_requires_validation",
-                    ).public())
+                with socket.create_connection(
+                    (host_str, int(port)), timeout=timeout_seconds
+                ):
+                    results.append(
+                        DiscoveredDevice(
+                            device_id=str(
+                                uuid.uuid5(
+                                    uuid.NAMESPACE_URL,
+                                    f"onvif-candidate:{host_str}:{port}",
+                                )
+                            ),
+                            ip_address=host_str,
+                            onvif_endpoint=f"http://{host_str}:{port}/onvif/device_service",
+                            status="candidate_requires_validation",
+                        ).public()
+                    )
                     break
             except OSError:
                 continue
@@ -127,12 +147,13 @@ def probe_onvif_endpoints(subnet: str, ports: Iterable[int] = (80, 8080, 8899), 
 # HikVision / ONVIF Quick-Add helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def build_hikvision_rtsp_url(
     ip: str,
     username: str,
     password: str,
     channel: int = 1,
-    stream: str = "sub",   # "main" (1080p+) | "sub" (D1/CIF, recommended for AI)
+    stream: str = "sub",  # "main" (1080p+) | "sub" (D1/CIF, recommended for AI)
     port: int = 554,
 ) -> str:
     """
@@ -153,9 +174,10 @@ def build_hikvision_rtsp_url(
     They are encrypted at rest in the camera_credentials table.
     """
     suffix = "01" if stream == "main" else "02"
-    path   = f"/Streaming/Channels/{channel}{suffix}"
+    path = f"/Streaming/Channels/{channel}{suffix}"
     # URL-encode credentials to handle special characters
     from urllib.parse import quote
+
     u = quote(username, safe="")
     p = quote(password, safe="")
     return f"rtsp://{u}:{p}@{ip}:{port}{path}"
@@ -180,12 +202,14 @@ def hikvision_quick_add(
     dict with all fields needed by the /cameras POST endpoint.
     """
     return {
-        "name":             name,
-        "floor":            floor,
-        "manufacturer":     "Hikvision",
-        "rtsp_url":         build_hikvision_rtsp_url(ip, username, password, channel, ai_stream),
+        "name": name,
+        "floor": floor,
+        "manufacturer": "Hikvision",
+        "rtsp_url": build_hikvision_rtsp_url(
+            ip, username, password, channel, ai_stream
+        ),
         "preferred_stream": display_stream,
-        "ai_stream":        ai_stream,
-        "ip_address":       ip,
-        "status":           "online",
+        "ai_stream": ai_stream,
+        "ip_address": ip,
+        "status": "online",
     }

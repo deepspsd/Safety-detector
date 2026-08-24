@@ -20,8 +20,8 @@ recognised as on-time for an 08:00 IST shift, not the wrong UTC hour.
 
 import datetime
 import logging
+from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
-from typing import Optional, List, Dict
 
 log = logging.getLogger("attendance_service")
 
@@ -29,21 +29,22 @@ log = logging.getLogger("attendance_service")
 _IST = ZoneInfo("Asia/Kolkata")
 
 # Auto clock-out time (IST): configurable via SETTING_DEFAULTS
-_AUTO_CLOCKOUT_HOUR_IST = 19   # 7 PM IST — change via rule_engine setting
-_AUTO_CLOCKOUT_MIN_IST  = 0
+_AUTO_CLOCKOUT_HOUR_IST = 19  # 7 PM IST — change via rule_engine setting
+_AUTO_CLOCKOUT_MIN_IST = 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Core helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def clock_in(
     db,
     employee_id: Optional[int] = None,
-    camera_id:   Optional[int] = None,
-    method:      str           = "manual",
-    notes:       Optional[str] = None,
-    user_id:     Optional[int] = None,
+    camera_id: Optional[int] = None,
+    method: str = "manual",
+    notes: Optional[str] = None,
+    user_id: Optional[int] = None,
 ) -> dict:
     """
     Create a new open attendance record (clock_out=NULL).
@@ -72,7 +73,7 @@ def clock_in(
             db.query(AttendanceRecord)
             .filter(
                 AttendanceRecord.employee_id == employee_id,
-                AttendanceRecord.clock_in    >= today_start_utc,
+                AttendanceRecord.clock_in >= today_start_utc,
             )
             .first()
         )
@@ -84,12 +85,12 @@ def clock_in(
             return _record_to_dict(existing)
 
     record = AttendanceRecord(
-        employee_id = employee_id,
-        camera_id   = camera_id,
-        method      = method,
-        notes       = notes,
-        user_id     = user_id,
-        clock_in    = now_utc,
+        employee_id=employee_id,
+        camera_id=camera_id,
+        method=method,
+        notes=notes,
+        user_id=user_id,
+        clock_in=now_utc,
     )
     db.add(record)
     db.commit()
@@ -144,9 +145,7 @@ def auto_clock_out_open_sessions(db) -> dict:
 
     now_utc = datetime.datetime.utcnow()
     open_records = (
-        db.query(AttendanceRecord)
-        .filter(AttendanceRecord.clock_out.is_(None))
-        .all()
+        db.query(AttendanceRecord).filter(AttendanceRecord.clock_out.is_(None)).all()
     )
     closed = 0
     for r in open_records:
@@ -167,6 +166,7 @@ def auto_clock_out_open_sessions(db) -> dict:
     if closed:
         try:
             from services.notification_service import send_telegram_alert
+
             send_telegram_alert(
                 message=(
                     f"🕖 Nightly auto clock-out ran at "
@@ -208,23 +208,22 @@ def get_today_summary(db) -> dict:
     now_ist = datetime.datetime.now(_IST)
     today_midnight_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
     # Convert to UTC (naive) for DB query
-    today_start_utc = (
-        today_midnight_ist
-        .astimezone(datetime.timezone.utc)
-        .replace(tzinfo=None)
+    today_start_utc = today_midnight_ist.astimezone(datetime.timezone.utc).replace(
+        tzinfo=None
     )
 
     # Default late threshold: 09:00 IST. Pull floor-specific setting if we can.
     # Use the ground-floor setting as the global fallback (most common shift).
     late_threshold_hour_ist = 9
-    late_threshold_min_ist  = 0
+    late_threshold_min_ist = 0
     try:
         from services.rule_engine import get_setting
+
         val = get_setting("shift_start_ground", db)
         if val and ":" in val:
             h, m = map(int, val.split(":"))
             late_threshold_hour_ist = h
-            late_threshold_min_ist  = m
+            late_threshold_min_ist = m
     except Exception:
         pass
 
@@ -235,13 +234,15 @@ def get_today_summary(db) -> dict:
         .all()
     )
 
-    total_employees = db.query(Employee).filter(Employee.active == True).count()  # noqa: E712
+    total_employees = (
+        db.query(Employee).filter(Employee.active == True).count()
+    )  # noqa: E712
     clocked_in_employee_ids = {
         r.employee_id for r in records if r.employee_id is not None
     }
-    present_count  = len(clocked_in_employee_ids)
-    absent_count   = max(0, total_employees - present_count)
-    open_sessions  = sum(1 for r in records if r.clock_out is None)
+    present_count = len(clocked_in_employee_ids)
+    absent_count = max(0, total_employees - present_count)
+    open_sessions = sum(1 for r in records if r.clock_out is None)
 
     # Late count — compare clock_in converted to IST
     late_count = 0
@@ -254,26 +255,27 @@ def get_today_summary(db) -> dict:
         shift_limit = clock_in_ist.replace(
             hour=late_threshold_hour_ist,
             minute=late_threshold_min_ist,
-            second=0, microsecond=0,
+            second=0,
+            microsecond=0,
         )
         if clock_in_ist > shift_limit:
             late_count += 1
 
     return {
-        "present_count":  present_count,
-        "absent_count":   absent_count,
-        "late_count":     late_count,
-        "open_sessions":  open_sessions,
+        "present_count": present_count,
+        "absent_count": absent_count,
+        "late_count": late_count,
+        "open_sessions": open_sessions,
         "total_employees": total_employees,
-        "records":        [_record_to_dict(r) for r in records],
+        "records": [_record_to_dict(r) for r in records],
     }
 
 
 def get_records(
     db,
-    date:        Optional[datetime.date] = None,
-    employee_id: Optional[int]           = None,
-    limit:       int                     = 200,
+    date: Optional[datetime.date] = None,
+    employee_id: Optional[int] = None,
+    limit: int = 200,
 ) -> List[dict]:
     """List attendance records with optional filters."""
     from database import AttendanceRecord
@@ -281,12 +283,16 @@ def get_records(
     q = db.query(AttendanceRecord)
     if date:
         # Interpret the requested date as IST calendar day → UTC range for DB
-        day_start_ist = datetime.datetime(date.year, date.month, date.day,
-                                          0, 0, 0, tzinfo=_IST)
-        day_end_ist   = datetime.datetime(date.year, date.month, date.day,
-                                          23, 59, 59, tzinfo=_IST)
-        day_start_utc = day_start_ist.astimezone(datetime.timezone.utc).replace(tzinfo=None)
-        day_end_utc   = day_end_ist.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        day_start_ist = datetime.datetime(
+            date.year, date.month, date.day, 0, 0, 0, tzinfo=_IST
+        )
+        day_end_ist = datetime.datetime(
+            date.year, date.month, date.day, 23, 59, 59, tzinfo=_IST
+        )
+        day_start_utc = day_start_ist.astimezone(datetime.timezone.utc).replace(
+            tzinfo=None
+        )
+        day_end_utc = day_end_ist.astimezone(datetime.timezone.utc).replace(tzinfo=None)
         q = q.filter(
             AttendanceRecord.clock_in >= day_start_utc,
             AttendanceRecord.clock_in <= day_end_utc,
@@ -302,10 +308,11 @@ def get_records(
 # Face-recognition hook (called from camera_manager detection loop)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def handle_face_match(
-    camera_id:   int,
+    camera_id: int,
     employee_id: int,
-    confidence:  float,
+    confidence: float,
 ) -> None:
     """
     Auto-clock-in when face-recognition positively identifies an employee.
@@ -316,29 +323,35 @@ def handle_face_match(
         return
 
     from database import SessionLocal
+
     db = None
     try:
         db = SessionLocal()
         clock_in(
-            db          = db,
-            employee_id = employee_id,
-            camera_id   = camera_id,
-            method      = "face",
+            db=db,
+            employee_id=employee_id,
+            camera_id=camera_id,
+            method="face",
         )
     except Exception as exc:
         log.error(f"[Attendance] handle_face_match failed: {exc}")
         if db:
-            try: db.rollback()
-            except Exception: pass
+            try:
+                db.rollback()
+            except Exception:
+                pass
     finally:
         if db:
-            try: db.close()
-            except Exception: pass
+            try:
+                db.close()
+            except Exception:
+                pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Serialisation helper
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _utc_iso(dt: Optional[datetime.datetime]) -> Optional[str]:
     """
@@ -367,14 +380,14 @@ def _record_to_dict(r) -> dict:
         pass
 
     return {
-        "id":               r.id,
-        "employee_id":      r.employee_id,
-        "employee_name":    employee_name,
-        "camera_id":        r.camera_id,
-        "method":           r.method,
-        "notes":            r.notes,
-        "clock_in":         _utc_iso(r.clock_in),
-        "clock_out":        _utc_iso(r.clock_out),
+        "id": r.id,
+        "employee_id": r.employee_id,
+        "employee_name": employee_name,
+        "camera_id": r.camera_id,
+        "method": r.method,
+        "notes": r.notes,
+        "clock_in": _utc_iso(r.clock_in),
+        "clock_out": _utc_iso(r.clock_out),
         "duration_seconds": duration,
-        "is_open":          r.clock_out is None,
+        "is_open": r.clock_out is None,
     }

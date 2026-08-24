@@ -1,10 +1,11 @@
 """Tracking layer: identity, trajectory and zone-transition-ready state only."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+import threading
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from math import hypot
-import threading
 from typing import Dict, List, Optional, Tuple
 
 from services.detection_layer import Detection
@@ -30,15 +31,20 @@ class TrackObservation:
 
 class ByteTrackAdapter:
     """Uses the existing per-camera ByteTrack registry, with no policy logic."""
+
     def __init__(self) -> None:
         self._state: Dict[Tuple[int, str], Dict] = {}
         self._lock = threading.Lock()
 
-    def update(self, camera_id: int, detections: List[Detection]) -> List[TrackObservation]:
+    def update(
+        self, camera_id: int, detections: List[Detection]
+    ) -> List[TrackObservation]:
         from services import yolo_service
+
         persons = [
             {"bbox": item.bbox, "confidence": item.confidence}
-            for item in detections if item.label.lower() == "person"
+            for item in detections
+            if item.label.lower() == "person"
         ]
         tracked = yolo_service._apply_tracking(camera_id, persons) if persons else []
         now = datetime.utcnow()
@@ -61,16 +67,44 @@ class ByteTrackAdapter:
                 if prior:
                     old_center = prior["center"]
                     elapsed = max((now - prior["seen"]).total_seconds(), 0.001)
-                    velocity = ((center[0] - old_center[0]) / elapsed, (center[1] - old_center[1]) / elapsed)
+                    velocity = (
+                        (center[0] - old_center[0]) / elapsed,
+                        (center[1] - old_center[1]) / elapsed,
+                    )
                     speed = hypot(*velocity)
                     movement_state = "moving" if speed >= 8 else "stationary"
-                    direction = self._direction(velocity) if movement_state == "moving" else "stationary"
+                    direction = (
+                        self._direction(velocity)
+                        if movement_state == "moving"
+                        else "stationary"
+                    )
                     first_seen = prior["first_seen"]
-                self._state[key] = {"center": center, "seen": now, "first_seen": first_seen}
-                observations.append(TrackObservation(track_id, person["bbox"], person["confidence"], velocity, direction, movement_state, first_seen, now))
+                self._state[key] = {
+                    "center": center,
+                    "seen": now,
+                    "first_seen": first_seen,
+                }
+                observations.append(
+                    TrackObservation(
+                        track_id,
+                        person["bbox"],
+                        person["confidence"],
+                        velocity,
+                        direction,
+                        movement_state,
+                        first_seen,
+                        now,
+                    )
+                )
             # Track lifetime is bounded by the detector buffer.  Consumers see
             # a lost event from the context engine on the next absent frame.
-            for key in [k for k, state in self._state.items() if k[0] == camera_id and k not in active_keys and (now - state["seen"]).total_seconds() > 3]:
+            for key in [
+                k
+                for k, state in self._state.items()
+                if k[0] == camera_id
+                and k not in active_keys
+                and (now - state["seen"]).total_seconds() > 3
+            ]:
                 self._state.pop(key, None)
         return observations
 

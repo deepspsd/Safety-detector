@@ -1,9 +1,11 @@
 import json
+from typing import List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import Optional, List
-from database import get_db, User, UserConfig
+from sqlalchemy.orm import Session
+
+from database import User, UserConfig, get_db
 from routers.auth import get_current_user
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -48,33 +50,58 @@ def _parse_custom_ppe(config: UserConfig) -> List[str]:
 
 
 @router.put("/me")
-def update_profile(data: ProfileUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    valid_roles = {"Construction Worker", "Doctor", "Traffic Police", "College", "Home", "None", "Bakery Worker"}
+def update_profile(
+    data: ProfileUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    valid_roles = {
+        "Construction Worker",
+        "Doctor",
+        "Traffic Police",
+        "College",
+        "Home",
+        "None",
+        "Bakery Worker",
+    }
     if data.name is not None:
         current_user.name = data.name
     if data.role is not None:
         current_user.role = data.role if data.role in valid_roles else current_user.role
     db.commit()
     db.refresh(current_user)
-    return {"id": current_user.id, "email": current_user.email, "name": current_user.name, "role": current_user.role}
+    return {
+        "id": current_user.id,
+        "email": current_user.email,
+        "name": current_user.name,
+        "role": current_user.role,
+    }
 
 
 @router.get("/me/config")
-def get_config(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_config(
+    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
+):
     config = _get_or_create_config(db, current_user.id)
     return {
-        "camera_type":           config.camera_type,
-        "rtsp_url":              config.rtsp_url,
-        "notify_sound":          config.notify_sound,
-        "notify_ui":             config.notify_ui,
+        "camera_type": config.camera_type,
+        "rtsp_url": config.rtsp_url,
+        "notify_sound": config.notify_sound,
+        "notify_ui": config.notify_ui,
         "detection_sensitivity": config.detection_sensitivity,
-        "custom_ppe_items":      _parse_custom_ppe(config),
-        "no_phone_zone":         bool(config.no_phone_zone) if config.no_phone_zone is not None else False,
+        "custom_ppe_items": _parse_custom_ppe(config),
+        "no_phone_zone": (
+            bool(config.no_phone_zone) if config.no_phone_zone is not None else False
+        ),
     }
 
 
 @router.put("/me/config")
-def update_config(data: ConfigUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def update_config(
+    data: ConfigUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     config = _get_or_create_config(db, current_user.id)
     if data.camera_type is not None:
         config.camera_type = data.camera_type

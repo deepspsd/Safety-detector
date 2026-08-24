@@ -40,8 +40,8 @@ log = logging.getLogger("camera_alert_handler")
 _cooldowns: Dict[int, Dict[str, float]] = {}
 _cooldown_lock = threading.Lock()
 
-CAMERA_OFFLINE_COOLDOWN_SEC = 300    # 5 minutes between repeated "offline" alerts
-CAMERA_DRIFT_COOLDOWN_SEC   = 1800   # 30 minutes between repeated "drift" alerts
+CAMERA_OFFLINE_COOLDOWN_SEC = 300  # 5 minutes between repeated "offline" alerts
+CAMERA_DRIFT_COOLDOWN_SEC = 1800  # 30 minutes between repeated "drift" alerts
 
 _CAMERA_ALERT_USER_ID: int = int(os.environ.get("RULE_ENGINE_USER_ID", "1"))
 
@@ -53,6 +53,7 @@ def _get_alert_user_id(db) -> int:
     in the DB if user 1 doesn't exist, to prevent FK violations.
     """
     from database import User
+
     try:
         user = db.query(User).filter(User.id == _CAMERA_ALERT_USER_ID).first()
         if user:
@@ -96,21 +97,21 @@ def _handle_camera_offline(event) -> None:
         )
         return
 
-    payload      = event.payload or {}
-    status       = payload.get("status", "offline")
-    error        = payload.get("error") or ""
-    fps          = payload.get("fps", 0.0)
+    payload = event.payload or {}
+    status = payload.get("status", "offline")
+    error = payload.get("error") or ""
+    fps = payload.get("fps", 0.0)
     status_label = "offline" if status == "offline" else "error"
 
     try:
-        from database import SessionLocal, Camera
+        from database import Camera, SessionLocal
         from services.alert_service import save_alert
 
         db = SessionLocal()
         try:
-            cam      = db.query(Camera).filter(Camera.id == camera_id).first()
+            cam = db.query(Camera).filter(Camera.id == camera_id).first()
             cam_name = cam.name if cam else f"Camera {camera_id}"
-            floor    = cam.floor if cam else None
+            floor = cam.floor if cam else None
 
             full_msg = (
                 f"📷 Camera '{cam_name}' went {status_label}. "
@@ -121,15 +122,15 @@ def _handle_camera_offline(event) -> None:
 
             user_id = _get_alert_user_id(db)
             save_alert(
-                db              = db,
-                user_id         = user_id,
-                message         = full_msg,
-                role            = "System",
-                severity        = "high",
-                detected_issue  = "Camera offline / unreachable",
-                camera_id       = camera_id,
-                floor           = floor,
-                confidence_tier = "high",
+                db=db,
+                user_id=user_id,
+                message=full_msg,
+                role="System",
+                severity="high",
+                detected_issue="Camera offline / unreachable",
+                camera_id=camera_id,
+                floor=floor,
+                confidence_tier="high",
             )
             log.warning(
                 f"[camera_alert_handler] CAMERA_OFFLINE alert saved "
@@ -154,35 +155,35 @@ def _handle_camera_drift(event) -> None:
         return
 
     payload = event.payload or {}
-    score   = payload.get("score", 0.0)
-    method  = payload.get("method", "orb")
+    score = payload.get("score", 0.0)
+    method = payload.get("method", "orb")
 
     try:
-        from database import SessionLocal, Camera
+        from database import Camera, SessionLocal
         from services.alert_service import save_alert
 
         db = SessionLocal()
         try:
-            cam      = db.query(Camera).filter(Camera.id == camera_id).first()
+            cam = db.query(Camera).filter(Camera.id == camera_id).first()
             cam_name = cam.name if cam else f"Camera {camera_id}"
-            floor    = cam.floor if cam else None
+            floor = cam.floor if cam else None
 
             user_id = _get_alert_user_id(db)
             save_alert(
-                db              = db,
-                user_id         = user_id,
-                message         = (
+                db=db,
+                user_id=user_id,
+                message=(
                     f"📷 Camera '{cam_name}' may have been moved or tampered with "
                     f"(drift score={score:.1f}, method={method}). Zone calibration is now "
                     f"disabled for this camera until recalibrated. "
                     f"Please recalibrate via Settings → Cameras → Calibrate."
                 ),
-                role            = "System",
-                severity        = "medium",
-                detected_issue  = "Camera drift / tamper detected",
-                camera_id       = camera_id,
-                floor           = floor,
-                confidence_tier = "high",
+                role="System",
+                severity="medium",
+                detected_issue="Camera drift / tamper detected",
+                camera_id=camera_id,
+                floor=floor,
+                confidence_tier="high",
             )
             log.warning(
                 f"[camera_alert_handler] CAMERA_DRIFT alert saved "
@@ -201,7 +202,8 @@ def register() -> None:
     Safe to call multiple times — bus.subscribe deduplicates handlers.
     """
     from services.platform_events import bus
-    bus.subscribe("CAMERA_OFFLINE",        _handle_camera_offline)
+
+    bus.subscribe("CAMERA_OFFLINE", _handle_camera_offline)
     bus.subscribe("CAMERA_DRIFT_DETECTED", _handle_camera_drift)
     log.info(
         "[camera_alert_handler] Subscribed to CAMERA_OFFLINE "

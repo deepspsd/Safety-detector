@@ -27,9 +27,9 @@ log = logging.getLogger("packing_monitor")
 # ─────────────────────────────────────────────────────────────────────────────
 _packing_state: Dict[Tuple[int, int], dict] = {}
 _last_alert: Dict[Tuple[int, int], float] = {}
-_IDLE_THRESHOLD_SEC  = 90    # alert if hands stationary > 90s in packing zone
-_MOTION_VAR_THRESH   = 8.0   # pixel variance threshold — below = no hand movement
-_COOLDOWN_SEC        = 120
+_IDLE_THRESHOLD_SEC = 90  # alert if hands stationary > 90s in packing zone
+_MOTION_VAR_THRESH = 8.0  # pixel variance threshold — below = no hand movement
+_COOLDOWN_SEC = 120
 
 
 def _centroid(bbox: List[int]) -> Tuple[float, float]:
@@ -47,7 +47,9 @@ def _in_zone(bbox: List[int], polygon: List) -> bool:
     for i in range(n):
         xi, yi = polygon[i]
         xj, yj = polygon[j]
-        if ((yi > cy) != (yj > cy)) and (cx < (xj - xi) * (cy - yi) / (yj - yi + 1e-9) + xi):
+        if ((yi > cy) != (yj > cy)) and (
+            cx < (xj - xi) * (cy - yi) / (yj - yi + 1e-9) + xi
+        ):
             inside = not inside
         j = i
     return inside
@@ -71,9 +73,9 @@ def _crop_bbox(frame: np.ndarray, bbox: List[int]) -> Optional[np.ndarray]:
 
 def process_packing_frame(
     db,
-    camera_id:       int,
-    frame:           np.ndarray,
-    persons:         List[Dict],
+    camera_id: int,
+    frame: np.ndarray,
+    persons: List[Dict],
     packing_polygon: Optional[List] = None,
 ) -> None:
     """
@@ -94,6 +96,7 @@ def process_packing_frame(
     gray = None
     try:
         import cv2
+
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     except Exception:
         return
@@ -121,7 +124,10 @@ def process_packing_frame(
         var = float(np.var(crop))
 
         if key not in _packing_state:
-            _packing_state[key] = {"idle_since": now if var < _MOTION_VAR_THRESH else None, "last_var": var}
+            _packing_state[key] = {
+                "idle_since": now if var < _MOTION_VAR_THRESH else None,
+                "last_var": var,
+            }
         else:
             st = _packing_state[key]
             if var < _MOTION_VAR_THRESH:
@@ -148,19 +154,24 @@ def _fire_packing_idle_alert(db, camera_id: int, track_id: int, elapsed: float):
     try:
         from services.alert_service import save_alert
         from services.rule_engine import _get_rule_engine_user_id
+
         uid = _get_rule_engine_user_id(db)
         save_alert(
-            db=db, user_id=uid,
+            db=db,
+            user_id=uid,
             message=(
                 f"[PACKING ZONE] Camera {camera_id} — track #{track_id} "
                 f"appears idle in packing zone for {elapsed:.0f}s. "
                 "Worker may have stopped packing. Supervisor review required."
             ),
-            role="System", severity="medium",
+            role="System",
+            severity="medium",
             detected_issue="Packing zone idle",
             camera_id=camera_id,
         )
-        log.warning(f"[Packing] Idle alert — cam={camera_id} track={track_id} elapsed={elapsed:.0f}s")
+        log.warning(
+            f"[Packing] Idle alert — cam={camera_id} track={track_id} elapsed={elapsed:.0f}s"
+        )
     except Exception as exc:
         log.error(f"[Packing] _fire_packing_idle_alert failed: {exc}")
 
@@ -173,7 +184,10 @@ def get_packing_summary(db, camera_id: Optional[int] = None) -> dict:
     """
     try:
         from database import Alert
-        today = datetime.datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+
+        today = datetime.datetime.utcnow().replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
         q = db.query(Alert).filter(
             Alert.detected_issue == "Packing zone idle",
             Alert.timestamp >= today,
@@ -185,11 +199,11 @@ def get_packing_summary(db, camera_id: Optional[int] = None) -> dict:
             "today_count": len(rows),
             "events": [
                 {
-                    "id":        r.id,
+                    "id": r.id,
                     "camera_id": r.camera_id,
-                    "message":   r.message,
+                    "message": r.message,
                     "timestamp": r.timestamp.isoformat(),
-                    "severity":  r.severity,
+                    "severity": r.severity,
                 }
                 for r in rows
             ],

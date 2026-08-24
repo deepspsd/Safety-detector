@@ -4,11 +4,12 @@ This is the migration seam: legacy WebSocket payloads remain untouched, while
 managed cameras use raw detection -> tracking -> context -> events -> workflow
 -> configurable rules -> alerts/notifications.
 """
+
 from __future__ import annotations
 
-from datetime import datetime
 import threading
 import time
+from datetime import datetime
 from typing import Dict, Tuple
 
 from services.calibration_service import assess_drift
@@ -29,23 +30,37 @@ class EnterpriseRuntime:
 
     def process_frame(self, camera_id: int, frame, db) -> Dict:
         from database import Camera
+
         started = time.monotonic()
         camera = db.query(Camera).filter(Camera.id == camera_id).first()
         if not camera or not camera.ai_enabled:
             return {"detections": [], "tracks": [], "contexts": []}
         detections = detector.detect(frame)
-        tracks = tracker.update(camera_id, detections) if camera.supports_tracking else []
+        tracks = (
+            tracker.update(camera_id, detections) if camera.supports_tracking else []
+        )
         contexts = context_engine.build(camera_id, tracks, detections, db)
         for context in contexts:
             workflow_engine.apply(context, camera.workflow_profile_id)
             self._emit_temporal_events(context)
         self._check_drift(camera, frame, db)
         elapsed_ms = (time.monotonic() - started) * 1000
-        record("camera", str(camera_id), "online", {"inference_ms": round(elapsed_ms, 1),
-               "detections": len(detections), "tracks": len(tracks)})
-        return {"detections": [item.to_dict() for item in detections],
-                "tracks": [item.to_dict() for item in tracks],
-                "contexts": [item.to_dict() for item in contexts], "inference_ms": round(elapsed_ms, 1)}
+        record(
+            "camera",
+            str(camera_id),
+            "online",
+            {
+                "inference_ms": round(elapsed_ms, 1),
+                "detections": len(detections),
+                "tracks": len(tracks),
+            },
+        )
+        return {
+            "detections": [item.to_dict() for item in detections],
+            "tracks": [item.to_dict() for item in tracks],
+            "contexts": [item.to_dict() for item in contexts],
+            "inference_ms": round(elapsed_ms, 1),
+        }
 
     def _emit_temporal_events(self, context) -> None:
         key = (context.camera_id, context.track_id)
@@ -54,9 +69,18 @@ class EnterpriseRuntime:
             if key in self._idle_since:
                 started = self._idle_since.pop(key)
                 self._idle_emitted.discard(key)
-                emit("IDLE_STOPPED", camera_id=context.camera_id, zone_id=context.zone_id, track_id=context.track_id,
-                     calibration_version=context.calibration_version, source="temporal-context",
-                     payload={"idle_seconds": round(now - started, 1), "context": context.to_dict()})
+                emit(
+                    "IDLE_STOPPED",
+                    camera_id=context.camera_id,
+                    zone_id=context.zone_id,
+                    track_id=context.track_id,
+                    calibration_version=context.calibration_version,
+                    source="temporal-context",
+                    payload={
+                        "idle_seconds": round(now - started, 1),
+                        "context": context.to_dict(),
+                    },
+                )
             return
         with self._lock:
             started = self._idle_since.setdefault(key, now)
@@ -65,10 +89,19 @@ class EnterpriseRuntime:
         if context.zone_id:
             try:
                 from database import SessionLocal, ZoneConfig
+
                 local = SessionLocal()
                 try:
-                    zone = local.query(ZoneConfig).filter(ZoneConfig.id == context.zone_id).first()
-                    idle_threshold = float(zone.idle_threshold or idle_threshold) if zone else idle_threshold
+                    zone = (
+                        local.query(ZoneConfig)
+                        .filter(ZoneConfig.id == context.zone_id)
+                        .first()
+                    )
+                    idle_threshold = (
+                        float(zone.idle_threshold or idle_threshold)
+                        if zone
+                        else idle_threshold
+                    )
                 finally:
                     local.close()
             except Exception:
@@ -78,9 +111,19 @@ class EnterpriseRuntime:
         # to rely on elapsed-time modulus boundaries.
         if elapsed >= idle_threshold and key not in self._idle_emitted:
             self._idle_emitted.add(key)
-            emit("IDLE_STARTED", camera_id=context.camera_id, zone_id=context.zone_id, track_id=context.track_id,
-                 calibration_version=context.calibration_version, source="temporal-context",
-                 payload={"idle_seconds": round(elapsed, 1), "threshold_seconds": idle_threshold, "context": context.to_dict()})
+            emit(
+                "IDLE_STARTED",
+                camera_id=context.camera_id,
+                zone_id=context.zone_id,
+                track_id=context.track_id,
+                calibration_version=context.calibration_version,
+                source="temporal-context",
+                payload={
+                    "idle_seconds": round(elapsed, 1),
+                    "threshold_seconds": idle_threshold,
+                    "context": context.to_dict(),
+                },
+            )
 
     def _check_drift(self, camera, frame, db) -> None:
         now = time.monotonic()
@@ -91,8 +134,13 @@ class EnterpriseRuntime:
         camera.drift_score = score
         if drifted:
             camera.calibration_status = "required"
-            emit("CAMERA_DRIFT_DETECTED", camera_id=camera.id, calibration_version=camera.calibration_version,
-                 source="calibration-layer", payload={"score": score, "method": method, "rules_disabled": True})
+            emit(
+                "CAMERA_DRIFT_DETECTED",
+                camera_id=camera.id,
+                calibration_version=camera.calibration_version,
+                source="calibration-layer",
+                payload={"score": score, "method": method, "rules_disabled": True},
+            )
         db.commit()
 
     def reset_camera(self, camera_id: int) -> None:

@@ -5,23 +5,24 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from database import create_tables, ensure_enterprise_schema
 from config import settings
-from services.yolo_service import load_model
-from routers import auth, users, alerts, detection, video, faces, cctv, cameras
-from routers.settings import router as settings_router, baseline_router
-from routers.enterprise import router as enterprise_router
+from database import create_tables, ensure_enterprise_schema
+from routers import alerts, auth, cameras, cctv, detection, faces, users, video
+from routers.alarm import router as alarm_router
 from routers.attendance import router as attendance_router
 from routers.documents import router as documents_router
+from routers.enterprise import router as enterprise_router
+from routers.settings import baseline_router
+from routers.settings import router as settings_router
 from routers.workflow import router as workflow_router
-from routers.alarm import router as alarm_router
+from services.yolo_service import load_model
 
 log = logging.getLogger("main")
 
 app = FastAPI(
     title="Safety Monitor API",
     description="Real-time AI Safety Monitoring System",
-    version="1.0.0"
+    version="1.0.0",
 )
 
 # ── CORS configuration ──────────────────────────────────────────────────────
@@ -34,7 +35,7 @@ app = FastAPI(
 _allowed_origins_raw = settings.ALLOWED_ORIGINS.strip()
 if _allowed_origins_raw:
     _cors_origins = [o.strip() for o in _allowed_origins_raw.split(",") if o.strip()]
-    _allow_credentials = True   # safe with an explicit origin list
+    _allow_credentials = True  # safe with an explicit origin list
 else:
     _cors_origins = ["*"]
     _allow_credentials = False  # must be False when origin is "*"
@@ -57,15 +58,16 @@ app.include_router(faces.router)
 app.include_router(cctv.router)
 app.include_router(cameras.router)
 app.include_router(enterprise_router)
-app.include_router(settings_router)   # GET/PUT /settings/*
-app.include_router(baseline_router)   # POST/DELETE /cameras/{id}/baseline
+app.include_router(settings_router)  # GET/PUT /settings/*
+app.include_router(baseline_router)  # POST/DELETE /cameras/{id}/baseline
 app.include_router(attendance_router)  # GET/POST /attendance/*
-app.include_router(documents_router)   # GET/POST /documents/*
-app.include_router(workflow_router)    # GET /workflow/*
-app.include_router(alarm_router)        # POST /alarm/*
+app.include_router(documents_router)  # GET/POST /documents/*
+app.include_router(workflow_router)  # GET /workflow/*
+app.include_router(alarm_router)  # POST /alarm/*
 
 # ── /api prefix aggregate router (production single-origin compatibility) ──────
 from fastapi import APIRouter as _APIRouter
+
 _api_router = _APIRouter(prefix="/api")
 _api_router.include_router(auth.router)
 _api_router.include_router(users.router)
@@ -106,10 +108,11 @@ def health():
     cameras        : number of server-managed camera readers running
     database       : SQLite connectivity (simple SELECT 1)
     """
-    from services.inference_pool import inference_pool
-    from services import camera_manager
-    from database import engine
     from sqlalchemy import text as _text
+
+    from database import engine
+    from services import camera_manager
+    from services.inference_pool import inference_pool
 
     issues: list[str] = []
 
@@ -120,7 +123,7 @@ def health():
 
     # ── 2. Camera manager ────────────────────────────────────────────────────
     cam_statuses = camera_manager.list_status()
-    active_cams  = sum(1 for c in cam_statuses if c.get("status") == "online")
+    active_cams = sum(1 for c in cam_statuses if c.get("status") == "online")
 
     # ── 3. Database connectivity ─────────────────────────────────────────────
     db_ok = True
@@ -133,13 +136,13 @@ def health():
 
     # ── Response ─────────────────────────────────────────────────────────────
     payload = {
-        "status":          "ok" if not issues else "degraded",
-        "inference_pool":  {
-            "healthy":       pool_healthy,
+        "status": "ok" if not issues else "degraded",
+        "inference_pool": {
+            "healthy": pool_healthy,
             "restart_count": inference_pool.restart_count,
         },
         "cameras": {
-            "total":  len(cam_statuses),
+            "total": len(cam_statuses),
             "online": active_cams,
         },
         "database": {
@@ -149,6 +152,7 @@ def health():
     if issues:
         payload["issues"] = issues
         from fastapi.responses import JSONResponse
+
         return JSONResponse(status_code=503, content=payload)
 
     return payload
@@ -164,7 +168,11 @@ if os.path.isdir(_FRONTEND_DIST):
     from fastapi.staticfiles import StaticFiles as _SF
 
     # Serve JS/CSS/assets
-    app.mount("/assets", _SF(directory=os.path.join(_FRONTEND_DIST, "assets"), html=False), name="frontend-assets")
+    app.mount(
+        "/assets",
+        _SF(directory=os.path.join(_FRONTEND_DIST, "assets"), html=False),
+        name="frontend-assets",
+    )
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def serve_frontend(full_path: str):
@@ -185,96 +193,176 @@ _DEFAULT_SECRET = "safety-monitor-super-secret-key-2024-change-in-prod"
 def _run_migrations() -> None:
     """Run all incremental SQLite schema migrations in version order."""
     from sqlalchemy import text
+
     from database import engine
 
     # v1: face_encodings thumbnail
-    _migrate_columns(engine, [
-        ("face_encodings", "thumbnail_b64",
-         "ALTER TABLE face_encodings ADD COLUMN thumbnail_b64 TEXT"),
-    ])
+    _migrate_columns(
+        engine,
+        [
+            (
+                "face_encodings",
+                "thumbnail_b64",
+                "ALTER TABLE face_encodings ADD COLUMN thumbnail_b64 TEXT",
+            ),
+        ],
+    )
 
     # v2: alert factory columns
-    _migrate_columns(engine, [
-        ("alerts", "camera_id",
-         "ALTER TABLE alerts ADD COLUMN camera_id   INTEGER REFERENCES cameras(id)"),
-        ("alerts", "floor",
-         "ALTER TABLE alerts ADD COLUMN floor        TEXT"),
-        ("alerts", "employee_id",
-         "ALTER TABLE alerts ADD COLUMN employee_id  INTEGER REFERENCES employees(id)"),
-    ])
+    _migrate_columns(
+        engine,
+        [
+            (
+                "alerts",
+                "camera_id",
+                "ALTER TABLE alerts ADD COLUMN camera_id   INTEGER REFERENCES cameras(id)",
+            ),
+            ("alerts", "floor", "ALTER TABLE alerts ADD COLUMN floor        TEXT"),
+            (
+                "alerts",
+                "employee_id",
+                "ALTER TABLE alerts ADD COLUMN employee_id  INTEGER REFERENCES employees(id)",
+            ),
+        ],
+    )
 
     # v3: alert status + core tables
-    _migrate_columns(engine, [
-        ("alerts", "status",
-         "ALTER TABLE alerts ADD COLUMN status TEXT NOT NULL DEFAULT 'confirmed'"),
-    ])
-    _migrate_tables(engine, [
-        ("system_settings",
-         "CREATE TABLE IF NOT EXISTS system_settings "
-         "(id INTEGER PRIMARY KEY, key TEXT UNIQUE NOT NULL, "
-         "value TEXT NOT NULL, description TEXT, updated_at DATETIME)"),
-        ("dirty_floor_baselines",
-         "CREATE TABLE IF NOT EXISTS dirty_floor_baselines "
-         "(id INTEGER PRIMARY KEY, camera_id INTEGER REFERENCES cameras(id), "
-         "zone_name TEXT NOT NULL, image_path TEXT NOT NULL, uploaded_at DATETIME)"),
-    ])
+    _migrate_columns(
+        engine,
+        [
+            (
+                "alerts",
+                "status",
+                "ALTER TABLE alerts ADD COLUMN status TEXT NOT NULL DEFAULT 'confirmed'",
+            ),
+        ],
+    )
+    _migrate_tables(
+        engine,
+        [
+            (
+                "system_settings",
+                "CREATE TABLE IF NOT EXISTS system_settings "
+                "(id INTEGER PRIMARY KEY, key TEXT UNIQUE NOT NULL, "
+                "value TEXT NOT NULL, description TEXT, updated_at DATETIME)",
+            ),
+            (
+                "dirty_floor_baselines",
+                "CREATE TABLE IF NOT EXISTS dirty_floor_baselines "
+                "(id INTEGER PRIMARY KEY, camera_id INTEGER REFERENCES cameras(id), "
+                "zone_name TEXT NOT NULL, image_path TEXT NOT NULL, uploaded_at DATETIME)",
+            ),
+        ],
+    )
 
     # v4: attendance + lift + OCR log tables
-    _migrate_tables(engine, [
-        ("attendance_records",
-         "CREATE TABLE IF NOT EXISTS attendance_records "
-         "(id INTEGER PRIMARY KEY, employee_id INTEGER REFERENCES employees(id), "
-         "user_id INTEGER REFERENCES users(id), camera_id INTEGER REFERENCES cameras(id), "
-         "clock_in DATETIME NOT NULL, clock_out DATETIME, duration_seconds FLOAT, "
-         "method VARCHAR(20) DEFAULT 'manual', notes VARCHAR(500))"),
-        ("lift_events",
-         "CREATE TABLE IF NOT EXISTS lift_events "
-         "(id INTEGER PRIMARY KEY, camera_id INTEGER NOT NULL REFERENCES cameras(id), "
-         "track_id INTEGER NOT NULL, employee_id INTEGER REFERENCES employees(id), "
-         "event_type VARCHAR(30) NOT NULL, floor_from VARCHAR(20), floor_to VARCHAR(20), "
-         "duration_sec FLOAT, timestamp DATETIME)"),
-        ("invoice_logs",
-         "CREATE TABLE IF NOT EXISTS invoice_logs "
-         "(id INTEGER PRIMARY KEY, camera_id INTEGER REFERENCES cameras(id), "
-         "employee_id INTEGER REFERENCES employees(id), direction VARCHAR(10) DEFAULT 'inward', "
-         "raw_ocr_text TEXT, goods_count INTEGER, approved BOOLEAN NOT NULL DEFAULT 0, "
-         "snapshot_b64 TEXT, ocr_available BOOLEAN NOT NULL DEFAULT 1, timestamp DATETIME NOT NULL)"),
-        ("order_form_logs",
-         "CREATE TABLE IF NOT EXISTS order_form_logs "
-         "(id INTEGER PRIMARY KEY, camera_id INTEGER REFERENCES cameras(id), "
-         "employee_id INTEGER REFERENCES employees(id), direction VARCHAR(10) DEFAULT 'outward', "
-         "raw_ocr_text TEXT, approved BOOLEAN NOT NULL DEFAULT 0, "
-         "snapshot_b64 TEXT, person_snapshot_b64 TEXT, "
-         "ocr_available BOOLEAN NOT NULL DEFAULT 1, timestamp DATETIME NOT NULL)"),
-    ])
+    _migrate_tables(
+        engine,
+        [
+            (
+                "attendance_records",
+                "CREATE TABLE IF NOT EXISTS attendance_records "
+                "(id INTEGER PRIMARY KEY, employee_id INTEGER REFERENCES employees(id), "
+                "user_id INTEGER REFERENCES users(id), camera_id INTEGER REFERENCES cameras(id), "
+                "clock_in DATETIME NOT NULL, clock_out DATETIME, duration_seconds FLOAT, "
+                "method VARCHAR(20) DEFAULT 'manual', notes VARCHAR(500))",
+            ),
+            (
+                "lift_events",
+                "CREATE TABLE IF NOT EXISTS lift_events "
+                "(id INTEGER PRIMARY KEY, camera_id INTEGER NOT NULL REFERENCES cameras(id), "
+                "track_id INTEGER NOT NULL, employee_id INTEGER REFERENCES employees(id), "
+                "event_type VARCHAR(30) NOT NULL, floor_from VARCHAR(20), floor_to VARCHAR(20), "
+                "duration_sec FLOAT, timestamp DATETIME)",
+            ),
+            (
+                "invoice_logs",
+                "CREATE TABLE IF NOT EXISTS invoice_logs "
+                "(id INTEGER PRIMARY KEY, camera_id INTEGER REFERENCES cameras(id), "
+                "employee_id INTEGER REFERENCES employees(id), direction VARCHAR(10) DEFAULT 'inward', "
+                "raw_ocr_text TEXT, goods_count INTEGER, approved BOOLEAN NOT NULL DEFAULT 0, "
+                "snapshot_b64 TEXT, ocr_available BOOLEAN NOT NULL DEFAULT 1, timestamp DATETIME NOT NULL)",
+            ),
+            (
+                "order_form_logs",
+                "CREATE TABLE IF NOT EXISTS order_form_logs "
+                "(id INTEGER PRIMARY KEY, camera_id INTEGER REFERENCES cameras(id), "
+                "employee_id INTEGER REFERENCES employees(id), direction VARCHAR(10) DEFAULT 'outward', "
+                "raw_ocr_text TEXT, approved BOOLEAN NOT NULL DEFAULT 0, "
+                "snapshot_b64 TEXT, person_snapshot_b64 TEXT, "
+                "ocr_available BOOLEAN NOT NULL DEFAULT 1, timestamp DATETIME NOT NULL)",
+            ),
+        ],
+    )
     # goods_count + person_snapshot on existing tables (safe on fresh DBs too)
-    _migrate_columns(engine, [
-        ("invoice_logs",    "goods_count",
-         "ALTER TABLE invoice_logs    ADD COLUMN goods_count         INTEGER"),
-        ("order_form_logs", "person_snapshot_b64",
-         "ALTER TABLE order_form_logs ADD COLUMN person_snapshot_b64 TEXT"),
-    ])
+    _migrate_columns(
+        engine,
+        [
+            (
+                "invoice_logs",
+                "goods_count",
+                "ALTER TABLE invoice_logs    ADD COLUMN goods_count         INTEGER",
+            ),
+            (
+                "order_form_logs",
+                "person_snapshot_b64",
+                "ALTER TABLE order_form_logs ADD COLUMN person_snapshot_b64 TEXT",
+            ),
+        ],
+    )
 
     # v5: camera credential / health tables + column extensions
-    _migrate_tables(engine, [
-        "CREATE TABLE IF NOT EXISTS camera_credentials (camera_id INTEGER PRIMARY KEY REFERENCES cameras(id), encrypted_username TEXT NOT NULL, encrypted_password TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)",
-        "CREATE TABLE IF NOT EXISTS camera_streams (id INTEGER PRIMARY KEY, camera_id INTEGER NOT NULL REFERENCES cameras(id), profile_token VARCHAR(200), stream_type VARCHAR(20) NOT NULL, codec VARCHAR(40), width INTEGER, height INTEGER, fps FLOAT, encrypted_rtsp_uri TEXT NOT NULL, active BOOLEAN NOT NULL DEFAULT 1, created_at DATETIME NOT NULL)",
-        "CREATE TABLE IF NOT EXISTS camera_health (id INTEGER PRIMARY KEY, camera_id INTEGER NOT NULL REFERENCES cameras(id), status VARCHAR(40) NOT NULL, fps FLOAT, bitrate_kbps FLOAT, latency_ms FLOAT, packet_loss FLOAT, last_frame_at DATETIME, reconnect_count INTEGER NOT NULL DEFAULT 0, last_error TEXT, created_at DATETIME NOT NULL)",
-    ], name_from_sql=True)
-    _migrate_columns(engine, [
-        ("cameras", "manufacturer",    "ALTER TABLE cameras ADD COLUMN manufacturer VARCHAR(120)"),
-        ("cameras", "model",            "ALTER TABLE cameras ADD COLUMN model VARCHAR(160)"),
-        ("cameras", "ip_address",       "ALTER TABLE cameras ADD COLUMN ip_address VARCHAR(64)"),
-        ("cameras", "onvif_endpoint",   "ALTER TABLE cameras ADD COLUMN onvif_endpoint VARCHAR(500)"),
-        ("cameras", "discovery_id",     "ALTER TABLE cameras ADD COLUMN discovery_id VARCHAR(100)"),
-        ("cameras", "preferred_stream", "ALTER TABLE cameras ADD COLUMN preferred_stream VARCHAR(20) NOT NULL DEFAULT 'sub'"),
-        ("cameras", "ai_stream",        "ALTER TABLE cameras ADD COLUMN ai_stream VARCHAR(20) NOT NULL DEFAULT 'sub'"),
-    ])
+    _migrate_tables(
+        engine,
+        [
+            "CREATE TABLE IF NOT EXISTS camera_credentials (camera_id INTEGER PRIMARY KEY REFERENCES cameras(id), encrypted_username TEXT NOT NULL, encrypted_password TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS camera_streams (id INTEGER PRIMARY KEY, camera_id INTEGER NOT NULL REFERENCES cameras(id), profile_token VARCHAR(200), stream_type VARCHAR(20) NOT NULL, codec VARCHAR(40), width INTEGER, height INTEGER, fps FLOAT, encrypted_rtsp_uri TEXT NOT NULL, active BOOLEAN NOT NULL DEFAULT 1, created_at DATETIME NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS camera_health (id INTEGER PRIMARY KEY, camera_id INTEGER NOT NULL REFERENCES cameras(id), status VARCHAR(40) NOT NULL, fps FLOAT, bitrate_kbps FLOAT, latency_ms FLOAT, packet_loss FLOAT, last_frame_at DATETIME, reconnect_count INTEGER NOT NULL DEFAULT 0, last_error TEXT, created_at DATETIME NOT NULL)",
+        ],
+        name_from_sql=True,
+    )
+    _migrate_columns(
+        engine,
+        [
+            (
+                "cameras",
+                "manufacturer",
+                "ALTER TABLE cameras ADD COLUMN manufacturer VARCHAR(120)",
+            ),
+            ("cameras", "model", "ALTER TABLE cameras ADD COLUMN model VARCHAR(160)"),
+            (
+                "cameras",
+                "ip_address",
+                "ALTER TABLE cameras ADD COLUMN ip_address VARCHAR(64)",
+            ),
+            (
+                "cameras",
+                "onvif_endpoint",
+                "ALTER TABLE cameras ADD COLUMN onvif_endpoint VARCHAR(500)",
+            ),
+            (
+                "cameras",
+                "discovery_id",
+                "ALTER TABLE cameras ADD COLUMN discovery_id VARCHAR(100)",
+            ),
+            (
+                "cameras",
+                "preferred_stream",
+                "ALTER TABLE cameras ADD COLUMN preferred_stream VARCHAR(20) NOT NULL DEFAULT 'sub'",
+            ),
+            (
+                "cameras",
+                "ai_stream",
+                "ALTER TABLE cameras ADD COLUMN ai_stream VARCHAR(20) NOT NULL DEFAULT 'sub'",
+            ),
+        ],
+    )
 
 
 def _migrate_tables(engine, statements, *, name_from_sql: bool = False) -> None:
     """Execute CREATE TABLE IF NOT EXISTS statements, swallowing 'already exists'."""
     from sqlalchemy import text
+
     with engine.connect() as conn:
         for item in statements:
             sql = item if isinstance(item, str) else item[-1]
@@ -290,6 +378,7 @@ def _migrate_tables(engine, statements, *, name_from_sql: bool = False) -> None:
 def _migrate_columns(engine, specs) -> None:
     """Execute ALTER TABLE ADD COLUMN statements, swallowing 'duplicate column' / 'already exists'."""
     from sqlalchemy import text
+
     with engine.connect() as conn:
         for table, col, sql in specs:
             try:
@@ -339,14 +428,20 @@ def startup():
     try:
         from database import SessionLocal
         from services import model_manager
+
         _mdb = SessionLocal()
         try:
             model_manager.seed_registry(_mdb)
         finally:
             _mdb.close()
-        from services import rule_engine_v2, alert_engine_v2, notification_engine  # noqa: F401
         # Wire camera health events (offline / drift) → DB alerts + Telegram
-        from services import camera_alert_handler
+        from services import (
+            alert_engine_v2,  # noqa: F401
+            camera_alert_handler,
+            notification_engine,
+            rule_engine_v2,
+        )
+
         camera_alert_handler.register()
         print("Enterprise event, rule, alert and model services ready")
     except Exception as e:
@@ -356,6 +451,7 @@ def startup():
     try:
         from database import SessionLocal
         from services import rule_engine
+
         _sdb = SessionLocal()
         try:
             rule_engine.seed_defaults(_sdb)
@@ -368,6 +464,7 @@ def startup():
     # ── Start server-managed camera streams ───────────────────────────────────
 
     from services import camera_manager
+
     _started = camera_manager.start_all()
     print(f"✅ Camera manager: {_started} camera(s) started")
 
@@ -375,6 +472,7 @@ def startup():
     # One daemon thread runs YOLO for all cameras — no duplicate model loads.
     try:
         from services.inference_pool import inference_pool
+
         inference_pool.start()
         print("✅ Shared inference pool started (single YOLO model for all cameras)")
     except Exception as _ie:
@@ -385,24 +483,30 @@ def startup():
     # Closes all open attendance sessions and sends a Telegram notification.
     import threading
     from zoneinfo import ZoneInfo
+
     _IST = ZoneInfo("Asia/Kolkata")
 
     def _auto_clockout_scheduler():
         """Background daemon: sleep until 19:00 IST each day, then bulk-close."""
         import datetime as _dt
+        import logging as _logging
+
         from database import SessionLocal as _SessionLocal
         from services.attendance_service import auto_clock_out_open_sessions as _aco
-        import logging as _logging
+
         _log = _logging.getLogger("auto_clockout")
         while True:
             now_ist = _dt.datetime.now(tz=_IST)
-            target  = now_ist.replace(hour=19, minute=0, second=0, microsecond=0)
+            target = now_ist.replace(hour=19, minute=0, second=0, microsecond=0)
             if now_ist >= target:
                 # Already past 19:00 today — sleep until 19:00 tomorrow
                 target += _dt.timedelta(days=1)
             sleep_secs = (target - now_ist).total_seconds()
-            _log.info(f"[AutoClockOut] Next run in {sleep_secs/3600:.1f}h at {target.strftime('%Y-%m-%d %H:%M IST')}")
+            _log.info(
+                f"[AutoClockOut] Next run in {sleep_secs/3600:.1f}h at {target.strftime('%Y-%m-%d %H:%M IST')}"
+            )
             import time as _time
+
             _time.sleep(max(sleep_secs, 1))
             # Time to run
             _db = None
@@ -414,8 +518,10 @@ def startup():
                 _log.error(f"[AutoClockOut] Failed: {exc}")
             finally:
                 if _db:
-                    try: _db.close()
-                    except Exception: pass
+                    try:
+                        _db.close()
+                    except Exception:
+                        pass
 
     _clockout_thread = threading.Thread(
         target=_auto_clockout_scheduler,
@@ -434,8 +540,11 @@ def startup():
         """Background daemon: weekly SQLite WAL checkpoint at 02:00 IST Sunday."""
         import datetime as _dt
         import time as _time
+
         from sqlalchemy import text as _text
+
         from database import engine as _engine
+
         _log = logging.getLogger("wal_checkpoint")
         _IST_wal = ZoneInfo("Asia/Kolkata")
 
@@ -480,6 +589,7 @@ def shutdown():
     """Gracefully stop all camera reader threads and shared inference pool on server shutdown."""
     from services import camera_manager
     from services.inference_pool import inference_pool
+
     camera_manager.stop_all()
     inference_pool.stop()
     print("🛑 Safety Monitor: all camera readers and inference pool stopped")

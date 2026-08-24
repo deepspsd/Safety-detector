@@ -16,40 +16,43 @@ Key improvements in v5.0:
   - Frame-position fallback when COCO misses person detection
   - No smoothing buffer (frontend 5s hold handles stability)
 """
+
+import logging
+import random
+from typing import Dict, List, Optional, Tuple
+
 import cv2
 import numpy as np
-import random
-import logging
-from typing import List, Dict, Optional, Tuple
 
 log = logging.getLogger("phone_service")
 
 # ── COCO class IDs ────────────────────────────────────────────────
-PHONE_CLASS_ID     = 67
-PERSON_CLASS_ID    = 0
+PHONE_CLASS_ID = 67
+PERSON_CLASS_ID = 0
 
 # ── Detection thresholds ──────────────────────────────────────────
-CONF_THRESHOLD     = 0.12   # very low — better to have false positives than miss phones
-IMG_SIZE           = 960    # higher resolution = much better small-object detection
+CONF_THRESHOLD = 0.12  # very low — better to have false positives than miss phones
+IMG_SIZE = 960  # higher resolution = much better small-object detection
 
 # ── Ear / head region thresholds ─────────────────────────────────
-NEAR_EAR_FRACTION  = 0.50   # upper 50% of PERSON bbox = ear/head region
-FRAME_EAR_FRACTION = 0.55   # fallback: upper 55% of frame height = near head
+NEAR_EAR_FRACTION = 0.50  # upper 50% of PERSON bbox = ear/head region
+FRAME_EAR_FRACTION = 0.55  # fallback: upper 55% of frame height = near head
 
 # ── Colors (BGR) — NO emoji, cv2.putText cannot render them ──────
-COLOR_GREEN  = (50,  200,  50)    # safe — no phone
-COLOR_YELLOW = (0,   200, 220)    # in hand
-COLOR_RED    = (30,   30, 220)    # calling / zone violation
-COLOR_WHITE  = (255, 255, 255)
+COLOR_GREEN = (50, 200, 50)  # safe — no phone
+COLOR_YELLOW = (0, 200, 220)  # in hand
+COLOR_RED = (30, 30, 220)  # calling / zone violation
+COLOR_WHITE = (255, 255, 255)
 
 # ── Simulation state (stateful — phone persists across frames) ────
 _sim_frames_left = 0
-_sim_near_ear    = False
+_sim_near_ear = False
 
 
 # ─────────────────────────────────────────────────────────────────
 # Geometry helpers
 # ─────────────────────────────────────────────────────────────────
+
 
 def _box_center(box: List[int]) -> Tuple[float, float]:
     return (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
@@ -69,21 +72,22 @@ def _is_phone_near_ear_by_frame(phone_box: List[int], frame_h: int) -> bool:
     return phone_cy <= frame_h * FRAME_EAR_FRACTION
 
 
-def _phone_associated_to_person(phone_box: List[int],
-                                  person_box: List[int]) -> bool:
+def _phone_associated_to_person(phone_box: List[int], person_box: List[int]) -> bool:
     """
     True if the phone center is within the person bounding box (with 30% margin).
     More reliable than pure distance when holding the phone away from body.
     """
     px1, py1, px2, py2 = person_box
-    pw  = px2 - px1
-    ph  = py2 - py1
+    pw = px2 - px1
+    ph = py2 - py1
     # Allow phone to be up to 30% of person width/height outside the box
     margin_x = pw * 0.30
     margin_y = ph * 0.30
     phone_cx, phone_cy = _box_center(phone_box)
-    return (px1 - margin_x <= phone_cx <= px2 + margin_x and
-            py1 - margin_y <= phone_cy <= py2 + margin_y)
+    return (
+        px1 - margin_x <= phone_cx <= px2 + margin_x
+        and py1 - margin_y <= phone_cy <= py2 + margin_y
+    )
 
 
 def _get_person_phone_status(
@@ -125,14 +129,14 @@ def _get_person_phone_status(
 # Inference
 # ─────────────────────────────────────────────────────────────────
 
-def _run_phone_inference(
-    frame: np.ndarray, model
-) -> Tuple[List[Dict], List[Dict]]:
+
+def _run_phone_inference(frame: np.ndarray, model) -> Tuple[List[Dict], List[Dict]]:
     """
     Run COCO model at 960px/conf=0.12 to maximise phone recall.
     Returns (phones, persons).
     """
     from config import settings
+
     results = model(
         frame,
         verbose=False,
@@ -145,10 +149,13 @@ def _run_phone_inference(
     for r in results:
         for box in r.boxes:
             cls_id = int(box.cls[0])
-            conf   = round(float(box.conf[0]), 3)
+            conf = round(float(box.conf[0]), 3)
             x1, y1, x2, y2 = [int(v) for v in box.xyxy[0]]
-            det = {"label": model.names[cls_id], "confidence": conf,
-                   "bbox": [x1, y1, x2, y2]}
+            det = {
+                "label": model.names[cls_id],
+                "confidence": conf,
+                "bbox": [x1, y1, x2, y2],
+            }
             if cls_id == PHONE_CLASS_ID:
                 phones.append(det)
             elif cls_id == PERSON_CLASS_ID:
@@ -162,12 +169,11 @@ def _simulate_phone(frame: np.ndarray) -> Tuple[List[Dict], List[Dict]]:
     h, w = frame.shape[:2]
     px1, py1 = int(w * 0.15), int(h * 0.05)
     px2, py2 = int(w * 0.55), int(h * 0.95)
-    persons = [{"label": "person", "confidence": 0.89,
-                "bbox": [px1, py1, px2, py2]}]
+    persons = [{"label": "person", "confidence": 0.89, "bbox": [px1, py1, px2, py2]}]
     if _sim_frames_left <= 0:
         if random.random() < 0.70:
             _sim_frames_left = random.randint(10, 20)
-            _sim_near_ear    = random.random() < 0.50
+            _sim_near_ear = random.random() < 0.50
         else:
             return [], persons
     _sim_frames_left -= 1
@@ -179,9 +185,13 @@ def _simulate_phone(frame: np.ndarray) -> Tuple[List[Dict], List[Dict]]:
     else:
         ph_y1 = py1 + int(height * 0.55)
         ph_y2 = py1 + int(height * 0.75)
-    phones = [{"label": "cell phone",
-               "confidence": round(random.uniform(0.70, 0.95), 3),
-               "bbox": [cx - 25, ph_y1, cx + 25, ph_y2]}]
+    phones = [
+        {
+            "label": "cell phone",
+            "confidence": round(random.uniform(0.70, 0.95), 3),
+            "bbox": [cx - 25, ph_y1, cx + 25, ph_y2],
+        }
+    ]
     return phones, persons
 
 
@@ -189,16 +199,24 @@ def _simulate_phone(frame: np.ndarray) -> Tuple[List[Dict], List[Dict]]:
 # Annotation  (ASCII labels only — cv2.putText cannot render emoji)
 # ─────────────────────────────────────────────────────────────────
 
-def _put_label(img: np.ndarray, text: str,
-               x1: int, y1: int, color: tuple,
-               font_scale: float = 0.52) -> None:
+
+def _put_label(
+    img: np.ndarray, text: str, x1: int, y1: int, color: tuple, font_scale: float = 0.52
+) -> None:
     """Draw filled-background text label above y1."""
     (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
     ty = max(th + 8, y1 - 4)
     cv2.rectangle(img, (x1, ty - th - 6), (x1 + tw + 8, ty + 2), color, -1)
-    cv2.putText(img, text, (x1 + 4, ty - 2),
-                cv2.FONT_HERSHEY_SIMPLEX, font_scale,
-                COLOR_WHITE, 1, cv2.LINE_AA)
+    cv2.putText(
+        img,
+        text,
+        (x1 + 4, ty - 2),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        font_scale,
+        COLOR_WHITE,
+        1,
+        cv2.LINE_AA,
+    )
 
 
 def _draw_all_annotations(
@@ -228,9 +246,7 @@ def _draw_all_annotations(
             thickness = 3
         else:  # calling / zone_violation
             color = COLOR_RED
-            label = ("CALLING DETECTED"
-                     if status == "calling"
-                     else "PHONE VIOLATION")
+            label = "CALLING DETECTED" if status == "calling" else "PHONE VIOLATION"
             thickness = 3
 
         cv2.rectangle(annotated, (px1, py1), (px2, py2), color, thickness)
@@ -238,21 +254,25 @@ def _draw_all_annotations(
 
         # Confidence badge (bottom-left of person box)
         conf_label = f"{int(person['confidence'] * 100)}%"
-        (cw, ch), _ = cv2.getTextSize(
-            conf_label, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
-        cv2.rectangle(annotated,
-                      (px1, py2 - ch - 6), (px1 + cw + 6, py2),
-                      color, -1)
-        cv2.putText(annotated, conf_label, (px1 + 3, py2 - 3),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, COLOR_WHITE, 1, cv2.LINE_AA)
+        (cw, ch), _ = cv2.getTextSize(conf_label, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+        cv2.rectangle(annotated, (px1, py2 - ch - 6), (px1 + cw + 6, py2), color, -1)
+        cv2.putText(
+            annotated,
+            conf_label,
+            (px1 + 3, py2 - 3),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            COLOR_WHITE,
+            1,
+            cv2.LINE_AA,
+        )
 
     # ── Draw phone boxes ──────────────────────────────────────
     for phone in phones:
         phx1, phy1, phx2, phy2 = phone["bbox"]
         # Determine if any person associated this phone
         is_alert = any(
-            assoc is not None and assoc is phone
-            for _status, assoc in person_statuses
+            assoc is not None and assoc is phone for _status, assoc in person_statuses
         )
         # Even without person association, colour by zone rule
         # (single-person frame often has no separate person box)
@@ -274,6 +294,7 @@ def _draw_all_annotations(
 # ─────────────────────────────────────────────────────────────────
 # Public API
 # ─────────────────────────────────────────────────────────────────
+
 
 def detect_phone_usage(
     frame: np.ndarray,
@@ -301,7 +322,7 @@ def detect_phone_usage(
       phone_detections, annotated_frame
     """
     active_model = coco_model or coco_fallback
-    frame_h      = frame.shape[0]
+    frame_h = frame.shape[0]
 
     # ── Run inference ─────────────────────────────────────────
     if use_simulation or active_model is None:
@@ -311,16 +332,23 @@ def detect_phone_usage(
     else:
         try:
             phones, persons = _run_phone_inference(frame, active_model)
-            log.debug(f"Phone inference: {len(phones)} phone(s), {len(persons)} person(s)")
+            log.debug(
+                f"Phone inference: {len(phones)} phone(s), {len(persons)} person(s)"
+            )
         except Exception as e:
             log.warning(f"Phone inference error: {e} — simulation fallback")
             phones, persons = _simulate_phone(frame)
 
     # ── No persons and no phones → completely safe ────────────
     if not phones and not persons:
-        return {"phone_detected": False, "phone_status": "safe",
-                "phone_alert": None, "phone_severity": None,
-                "phone_detections": [], "annotated_frame": frame}
+        return {
+            "phone_detected": False,
+            "phone_status": "safe",
+            "phone_alert": None,
+            "phone_severity": None,
+            "phone_detections": [],
+            "annotated_frame": frame,
+        }
 
     # ── If persons detected but no phones → all green ─────────
     if not phones and persons:
@@ -329,22 +357,27 @@ def detect_phone_usage(
             px1, py1, px2, py2 = person["bbox"]
             cv2.rectangle(annotated, (px1, py1), (px2, py2), COLOR_GREEN, 2)
             _put_label(annotated, "SAFE - No Phone", px1, py1, COLOR_GREEN)
-        return {"phone_detected": False, "phone_status": "safe",
-                "phone_alert": None, "phone_severity": None,
-                "phone_detections": [], "annotated_frame": annotated}
+        return {
+            "phone_detected": False,
+            "phone_status": "safe",
+            "phone_alert": None,
+            "phone_severity": None,
+            "phone_detections": [],
+            "annotated_frame": annotated,
+        }
 
     # ── If phones but no persons → use frame-position heuristic ─
     if phones and not persons:
         # Create a synthetic full-frame person box
         h, w = frame.shape[:2]
-        persons = [{"label": "person", "confidence": 0.50,
-                    "bbox": [0, 0, w, h]}]
+        persons = [{"label": "person", "confidence": 0.50, "bbox": [0, 0, w, h]}]
 
     # ── Classify each person by phone association ─────────────
     person_statuses: List[Tuple[str, Optional[Dict]]] = []
     for person in persons:
         status, assoc = _get_person_phone_status(
-            person["bbox"], phones, no_phone_zone, frame_h)
+            person["bbox"], phones, no_phone_zone, frame_h
+        )
         person_statuses.append((status, assoc))
 
     # ── Phones not associated to any person → mark as detected ─
@@ -352,61 +385,73 @@ def detect_phone_usage(
 
     # ── Draw all annotations ──────────────────────────────────
     annotated = _draw_all_annotations(
-        frame, persons, phones, person_statuses, no_phone_zone)
+        frame, persons, phones, person_statuses, no_phone_zone
+    )
 
     # ── Determine overall alert ───────────────────────────────
     statuses = [s for s, _ in person_statuses]
 
     if "zone_violation" in statuses or "calling" in statuses:
         # Highest severity — red alert
-        worst = (
-            "zone_violation"
-            if "zone_violation" in statuses
-            else "calling"
+        worst = "zone_violation" if "zone_violation" in statuses else "calling"
+        alert_msg = (
+            "Phone Usage Not Allowed in This Area"
+            if worst == "zone_violation"
+            else "Unsafe Phone Usage Detected (Calling Near Ear)"
         )
-        alert_msg = ("Phone Usage Not Allowed in This Area"
-                     if worst == "zone_violation"
-                     else "Unsafe Phone Usage Detected (Calling Near Ear)")
         all_phone_dets = [
-            {"label": p["label"], "confidence": p["confidence"],
-             "bbox": p["bbox"],
-             "status": (s if s != "safe" else "in_hand")}
+            {
+                "label": p["label"],
+                "confidence": p["confidence"],
+                "bbox": p["bbox"],
+                "status": (s if s != "safe" else "in_hand"),
+            }
             for p, (s, _) in zip(persons, person_statuses)
             if s != "safe"
-        ] + [{"label": p["label"], "confidence": p["confidence"],
-              "bbox": p["bbox"], "status": "phone"}
-             for p in phones]
+        ] + [
+            {
+                "label": p["label"],
+                "confidence": p["confidence"],
+                "bbox": p["bbox"],
+                "status": "phone",
+            }
+            for p in phones
+        ]
         return {
-            "phone_detected":   True,
-            "phone_status":     worst,
-            "phone_alert":      alert_msg,
-            "phone_severity":   "high",
+            "phone_detected": True,
+            "phone_status": worst,
+            "phone_alert": alert_msg,
+            "phone_severity": "high",
             "phone_detections": all_phone_dets,
-            "annotated_frame":  annotated,
+            "annotated_frame": annotated,
         }
 
     if "in_hand" in statuses:
         # Medium severity — yellow alert
         all_phone_dets = [
-            {"label": p["label"], "confidence": p["confidence"],
-             "bbox": p["bbox"], "status": "phone"}
+            {
+                "label": p["label"],
+                "confidence": p["confidence"],
+                "bbox": p["bbox"],
+                "status": "phone",
+            }
             for p in phones
         ]
         return {
-            "phone_detected":   True,
-            "phone_status":     "in_hand",
-            "phone_alert":      "Phone Detected in Hand",
-            "phone_severity":   "medium",
+            "phone_detected": True,
+            "phone_status": "in_hand",
+            "phone_alert": "Phone Detected in Hand",
+            "phone_severity": "medium",
             "phone_detections": all_phone_dets,
-            "annotated_frame":  annotated,
+            "annotated_frame": annotated,
         }
 
     # All persons are safe (phone detected but not associated to any person)
     return {
-        "phone_detected":   bool(phones),
-        "phone_status":     "safe",
-        "phone_alert":      None,
-        "phone_severity":   None,
+        "phone_detected": bool(phones),
+        "phone_status": "safe",
+        "phone_alert": None,
+        "phone_severity": None,
         "phone_detections": [],
-        "annotated_frame":  annotated,
+        "annotated_frame": annotated,
     }

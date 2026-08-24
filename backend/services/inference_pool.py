@@ -54,8 +54,8 @@ import threading
 import time
 from typing import Dict, Optional
 
-import numpy as np
 import cv2
+import numpy as np
 
 log = logging.getLogger("inference_pool")
 
@@ -100,14 +100,14 @@ class _InferencePool:
 
     def __init__(self) -> None:
         # { camera_id: queue.Queue(maxsize=_MAX_QUEUE_DEPTH) }
-        self._queues:  Dict[int, "queue.Queue[np.ndarray]"] = {}
+        self._queues: Dict[int, "queue.Queue[np.ndarray]"] = {}
         # { camera_id: inference result dict }
         self._results: Dict[int, dict] = {}
-        self._lock     = threading.Lock()
-        self._running  = False
-        self._thread:  Optional[threading.Thread] = None
+        self._lock = threading.Lock()
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
         self._watchdog: Optional[threading.Thread] = None
-        self.restart_count: int = 0   # public — exposed on /health
+        self.restart_count: int = 0  # public — exposed on /health
 
     # ── Public ────────────────────────────────────────────────────────────────
 
@@ -127,11 +127,7 @@ class _InferencePool:
 
     def is_healthy(self) -> bool:
         """Return True if the inference worker thread is alive."""
-        return (
-            self._running
-            and self._thread is not None
-            and self._thread.is_alive()
-        )
+        return self._running and self._thread is not None and self._thread.is_alive()
 
     def put_frame(self, camera_id: int, frame: np.ndarray) -> None:
         """
@@ -188,7 +184,10 @@ class _InferencePool:
             daemon=True,
         )
         self._watchdog.start()
-        log.info("[InferencePool] Watchdog thread started (interval=%ds)", self._WATCHDOG_INTERVAL)
+        log.info(
+            "[InferencePool] Watchdog thread started (interval=%ds)",
+            self._WATCHDOG_INTERVAL,
+        )
 
     def _watchdog_loop(self) -> None:
         """
@@ -217,6 +216,7 @@ class _InferencePool:
         """
         try:
             from services.notification_service import send_push_alert
+
             send_push_alert(
                 message=(
                     f"⚠️ OccuSafe: YOLO inference pool crashed and was auto-restarted "
@@ -271,9 +271,12 @@ class _InferencePool:
                 processed_any = True
                 try:
                     from config import settings
-                    infer_frame = _resize_for_inference(frame, settings.YOLO_INFERENCE_WIDTH)
+
+                    infer_frame = _resize_for_inference(
+                        frame, settings.YOLO_INFERENCE_WIDTH
+                    )
                     detections = detector.detect(infer_frame)
-                    det_dicts  = [d.to_dict() for d in detections]
+                    det_dicts = [d.to_dict() for d in detections]
                 except Exception as exc:
                     log.debug(f"[InferencePool] Inference error cam={camera_id}: {exc}")
                     det_dicts = []

@@ -23,7 +23,7 @@ log = logging.getLogger("lift_monitor")
 # ─────────────────────────────────────────────────────────────────────────────
 # { (camera_id, track_id): {"entered_at": float, "floor": str, "db_id": int} }
 _lift_state: Dict[Tuple[int, int], dict] = {}
-_LIFT_IDLE_LIMIT_SEC = 300   # 5 min — alert if person stays in lift zone
+_LIFT_IDLE_LIMIT_SEC = 300  # 5 min — alert if person stays in lift zone
 
 # Cooldown for idle alerts
 _last_idle_alert: Dict[Tuple[int, int], float] = {}
@@ -46,7 +46,9 @@ def _in_zone(bbox: List[int], polygon: List) -> bool:
     for i in range(n):
         xi, yi = polygon[i]
         xj, yj = polygon[j]
-        if ((yi > cy) != (yj > cy)) and (cx < (xj - xi) * (cy - yi) / (yj - yi + 1e-9) + xi):
+        if ((yi > cy) != (yj > cy)) and (
+            cx < (xj - xi) * (cy - yi) / (yj - yi + 1e-9) + xi
+        ):
             inside = not inside
         j = i
     return inside
@@ -54,26 +56,27 @@ def _in_zone(bbox: List[int], polygon: List) -> bool:
 
 def _save_lift_event(
     db,
-    camera_id:    int,
-    track_id:     int,
-    event_type:   str,
-    floor_from:   Optional[str] = None,
-    floor_to:     Optional[str] = None,
+    camera_id: int,
+    track_id: int,
+    event_type: str,
+    floor_from: Optional[str] = None,
+    floor_to: Optional[str] = None,
     duration_sec: Optional[float] = None,
-    employee_id:  Optional[int]  = None,
+    employee_id: Optional[int] = None,
 ) -> Optional[int]:
     """Insert a LiftEvent row and return its id."""
     try:
         from database import LiftEvent
+
         row = LiftEvent(
-            camera_id    = camera_id,
-            track_id     = track_id,
-            event_type   = event_type,
-            floor_from   = floor_from,
-            floor_to     = floor_to,
-            duration_sec = duration_sec,
-            employee_id  = employee_id,
-            timestamp    = datetime.datetime.utcnow(),
+            camera_id=camera_id,
+            track_id=track_id,
+            event_type=event_type,
+            floor_from=floor_from,
+            floor_to=floor_to,
+            duration_sec=duration_sec,
+            employee_id=employee_id,
+            timestamp=datetime.datetime.utcnow(),
         )
         db.add(row)
         db.commit()
@@ -85,16 +88,18 @@ def _save_lift_event(
         return row.id
     except Exception as exc:
         log.error(f"[Lift] _save_lift_event failed: {exc}")
-        try: db.rollback()
-        except Exception: pass
+        try:
+            db.rollback()
+        except Exception:
+            pass
         return None
 
 
 def process_lift_frame(
     db,
-    camera_id:    int,
-    floor:        str,
-    persons:      List[Dict],
+    camera_id: int,
+    floor: str,
+    persons: List[Dict],
     lift_polygon: Optional[List] = None,
 ) -> None:
     """
@@ -131,13 +136,17 @@ def process_lift_frame(
             if key not in _lift_state:
                 # New entry
                 db_id = _save_lift_event(
-                    db, camera_id, tid, "entry",
-                    floor_from=floor, employee_id=employee_id
+                    db,
+                    camera_id,
+                    tid,
+                    "entry",
+                    floor_from=floor,
+                    employee_id=employee_id,
                 )
                 _lift_state[key] = {
                     "entered_at": now,
-                    "floor":      floor,
-                    "db_id":      db_id,
+                    "floor": floor,
+                    "db_id": db_id,
                 }
 
             else:
@@ -150,15 +159,18 @@ def process_lift_frame(
                         try:
                             from services.alert_service import save_alert
                             from services.rule_engine import _get_rule_engine_user_id
+
                             uid = _get_rule_engine_user_id(db)
                             save_alert(
-                                db=db, user_id=uid,
+                                db=db,
+                                user_id=uid,
                                 message=(
                                     f"[LIFT IDLE] Camera {camera_id} — track #{tid} "
                                     f"has been in the lift zone for {elapsed:.0f}s on "
                                     f"{floor} floor."
                                 ),
-                                role="System", severity="medium",
+                                role="System",
+                                severity="medium",
                                 detected_issue="Lift zone idle",
                                 camera_id=camera_id,
                             )
@@ -173,31 +185,37 @@ def process_lift_frame(
         duration = now - state["entered_at"]
         _, tid = key
         _save_lift_event(
-            db, camera_id, tid, "exit",
+            db,
+            camera_id,
+            tid,
+            "exit",
             floor_from=state["floor"],
             duration_sec=round(duration, 1),
         )
 
 
-def get_recent_events(db, camera_id: Optional[int] = None, limit: int = 100) -> List[dict]:
+def get_recent_events(
+    db, camera_id: Optional[int] = None, limit: int = 100
+) -> List[dict]:
     """Return recent lift events for the workflow page."""
     try:
         from database import LiftEvent
+
         q = db.query(LiftEvent)
         if camera_id:
             q = q.filter(LiftEvent.camera_id == camera_id)
         rows = q.order_by(LiftEvent.timestamp.desc()).limit(limit).all()
         return [
             {
-                "id":           r.id,
-                "camera_id":    r.camera_id,
-                "track_id":     r.track_id,
-                "event_type":   r.event_type,
-                "floor_from":   r.floor_from,
-                "floor_to":     r.floor_to,
+                "id": r.id,
+                "camera_id": r.camera_id,
+                "track_id": r.track_id,
+                "event_type": r.event_type,
+                "floor_from": r.floor_from,
+                "floor_to": r.floor_to,
                 "duration_sec": r.duration_sec,
-                "employee_id":  r.employee_id,
-                "timestamp":    r.timestamp.isoformat(),
+                "employee_id": r.employee_id,
+                "timestamp": r.timestamp.isoformat(),
             }
             for r in rows
         ]
