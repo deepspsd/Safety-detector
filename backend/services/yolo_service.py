@@ -38,7 +38,6 @@ from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
-
 from config import settings
 
 log = logging.getLogger("yolo_service")
@@ -497,7 +496,7 @@ def load_model():
                 # Download from HuggingFace (one-time, ~52 MB)
                 print("⏬ [background] Downloading dedicated helmet model…")
                 print(f"   URL: {_HELMET_MODEL_URL}")
-                urllib.request.urlretrieve(_HELMET_MODEL_URL, _HELMET_MODEL_PATH)
+                urllib.request.urlretrieve(_HELMET_MODEL_URL, _HELMET_MODEL_PATH)  # nosec B310
                 if os.path.getsize(_HELMET_MODEL_PATH) < HELMET_MIN_BYTES:
                     raise ValueError(
                         "Downloaded file is too small — likely a network error"

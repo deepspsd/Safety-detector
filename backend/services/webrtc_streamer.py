@@ -4,7 +4,6 @@ from typing import Dict, Set
 
 from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
 from av import VideoFrame
-
 from services.camera_manager import get_latest_frame
 
 log = logging.getLogger("webrtc_streamer")

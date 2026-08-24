@@ -15,13 +15,13 @@ import logging
 import os
 import shutil
 
+from database import (Camera, CylinderLog, DirtyFloorBaseline, SystemSettings,
+                      get_db)
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
-
-from database import Camera, CylinderLog, DirtyFloorBaseline, SystemSettings, get_db
 from routers.auth import get_current_user
 from services import rule_engine
+from sqlalchemy.orm import Session
 
 log = logging.getLogger("routers.settings")
 

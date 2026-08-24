@@ -7,13 +7,12 @@ Faces router — Multi-Person Face Registration & Management
 
 import json
 
+from database import Employee, FaceEncoding, User, get_db
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
-
-from database import Employee, FaceEncoding, User, get_db
 from routers.auth import get_current_user
 from services.face_service import encode_face_from_image
+from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/faces", tags=["faces"])
 

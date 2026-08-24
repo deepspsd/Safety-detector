@@ -12,15 +12,15 @@ import os
 import uuid
 
 import cv2
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
-from sqlalchemy.orm import Session
-
 from config import settings
 from database import User, get_db
+from fastapi import (APIRouter, BackgroundTasks, Depends, File, HTTPException,
+                     UploadFile)
+from fastapi.responses import FileResponse
 from routers.auth import get_current_user
 from services import face_service, yolo_service
 from services.alert_service import save_alert
+from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/video", tags=["video"])
 

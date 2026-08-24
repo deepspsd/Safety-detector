@@ -21,15 +21,14 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from sqlalchemy.orm import Session
-
 from auth_utils import decode_token
 from config import settings
 from database import User, UserConfig, get_db
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from routers.users import _parse_custom_ppe
 from services import face_service, yolo_service
 from services.alert_service import save_alert
+from sqlalchemy.orm import Session
 
 router = APIRouter(tags=["detection"])
 

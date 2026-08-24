@@ -16,12 +16,12 @@ import logging
 from typing import Optional
 
 import numpy as np
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from pydantic import BaseModel
-from sqlalchemy.orm import Session
-
 from database import InvoiceLog, OrderFormLog, get_db
+from fastapi import (APIRouter, Depends, File, Form, HTTPException, Query,
+                     UploadFile)
+from pydantic import BaseModel
 from routers.auth import get_current_user
+from sqlalchemy.orm import Session
 
 log = logging.getLogger("documents_router")
 router = APIRouter(prefix="/documents", tags=["documents"])

@@ -46,9 +46,8 @@ import os
 
 import cv2
 import numpy as np
-from sqlalchemy.orm import Session
-
 from database import Alert, Camera
+from sqlalchemy.orm import Session
 
 log = logging.getLogger("alert_service")
 

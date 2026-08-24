@@ -13,7 +13,8 @@ from sqlalchemy import func
 
 class AnalyticsEngine:
     def summary(self, db, days: int) -> dict:
-        from database import AlertCase, Camera, ContextSnapshot, SurveillanceEvent
+        from database import (AlertCase, Camera, ContextSnapshot,
+                              SurveillanceEvent)
 
         since = datetime.utcnow() - timedelta(days=days)
         event_counts = (

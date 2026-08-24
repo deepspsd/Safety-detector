@@ -19,13 +19,12 @@ import io
 import logging
 from typing import Optional
 
+from database import AttendanceRecord, Employee, get_db
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
-
-from database import AttendanceRecord, Employee, get_db
 from routers.auth import get_current_user
+from sqlalchemy.orm import Session
 
 log = logging.getLogger("attendance_router")
 

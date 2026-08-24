@@ -21,12 +21,11 @@ import os
 from datetime import date, datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
-
 from database import Alert, Camera, User, get_db
+from fastapi import APIRouter, Depends, HTTPException, Query
 from routers.auth import get_current_user
 from services.alert_service import confirm_alert, dismiss_alert
+from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
 
@@ -301,7 +300,8 @@ def test_telegram(
     Useful to verify the token and chat_id are correct before going live.
     Does NOT create a DB alert row.
     """
-    from services.notification_service import _is_configured, send_telegram_alert
+    from services.notification_service import (_is_configured,
+                                               send_telegram_alert)
 
     if not _is_configured():
         raise HTTPException(
@@ -420,12 +420,10 @@ def test_push_notification(current_user: User = Depends(get_current_user)):
     Admin/debug use only.
     """
     from config import settings
-    from services.notification_service import (
-        _is_ntfy_configured,
-        _is_telegram_configured,
-        send_ntfy_alert,
-        send_telegram_alert,
-    )
+    from services.notification_service import (_is_ntfy_configured,
+                                               _is_telegram_configured,
+                                               send_ntfy_alert,
+                                               send_telegram_alert)
 
     result = {
         "ntfy": {

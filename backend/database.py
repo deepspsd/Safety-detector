@@ -19,24 +19,11 @@ Alert table is backward-compatible: three new nullable FK columns
 
 from datetime import datetime
 
-from sqlalchemy import (
-    Boolean,
-    Column,
-    DateTime,
-    Float,
-    ForeignKey,
-    Integer,
-    String,
-    Text,
-    create_engine,
-    event,
-    inspect,
-    text,
-)
+from config import settings
+from sqlalchemy import (Boolean, Column, DateTime, Float, ForeignKey, Integer,
+                        String, Text, create_engine, event, inspect, text)
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
-
-from config import settings
 
 _engine_kwargs = {}
 if settings.DATABASE_URL.startswith("sqlite"):

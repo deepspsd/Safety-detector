@@ -12,9 +12,8 @@ Linux:    Tries 'beep' command, falls back to terminal bell.
 import logging
 import platform
 
-from fastapi import APIRouter, Depends
-
 from config import settings
+from fastapi import APIRouter, Depends
 from routers.auth import get_current_user
 
 log = logging.getLogger("alarm_router")

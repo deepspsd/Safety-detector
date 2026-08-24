@@ -1,12 +1,11 @@
 import logging
 import os
 
+from config import settings
+from database import create_tables, ensure_enterprise_schema
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-
-from config import settings
-from database import create_tables, ensure_enterprise_schema
 from routers import alerts, auth, cameras, cctv, detection, faces, users, video
 from routers.alarm import router as alarm_router
 from routers.attendance import router as attendance_router
@@ -108,11 +107,10 @@ def health():
     cameras        : number of server-managed camera readers running
     database       : SQLite connectivity (simple SELECT 1)
     """
-    from sqlalchemy import text as _text
-
     from database import engine
     from services import camera_manager
     from services.inference_pool import inference_pool
+    from sqlalchemy import text as _text
 
     issues: list[str] = []
 
@@ -192,9 +190,8 @@ _DEFAULT_SECRET = "safety-monitor-super-secret-key-2024-change-in-prod"
 
 def _run_migrations() -> None:
     """Run all incremental SQLite schema migrations in version order."""
-    from sqlalchemy import text
-
     from database import engine
+    from sqlalchemy import text
 
     # v1: face_encodings thumbnail
     _migrate_columns(
@@ -435,12 +432,9 @@ def startup():
         finally:
             _mdb.close()
         # Wire camera health events (offline / drift) → DB alerts + Telegram
-        from services import (
-            alert_engine_v2,  # noqa: F401
-            camera_alert_handler,
-            notification_engine,
-            rule_engine_v2,
-        )
+        from services import alert_engine_v2  # noqa: F401
+        from services import (camera_alert_handler, notification_engine,
+                              rule_engine_v2)
 
         camera_alert_handler.register()
         print("Enterprise event, rule, alert and model services ready")
@@ -492,7 +486,8 @@ def startup():
         import logging as _logging
 
         from database import SessionLocal as _SessionLocal
-        from services.attendance_service import auto_clock_out_open_sessions as _aco
+        from services.attendance_service import \
+            auto_clock_out_open_sessions as _aco
 
         _log = _logging.getLogger("auto_clockout")
         while True:
@@ -541,9 +536,8 @@ def startup():
         import datetime as _dt
         import time as _time
 
-        from sqlalchemy import text as _text
-
         from database import engine as _engine
+        from sqlalchemy import text as _text
 
         _log = logging.getLogger("wal_checkpoint")
         _IST_wal = ZoneInfo("Asia/Kolkata")

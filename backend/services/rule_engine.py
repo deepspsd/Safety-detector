@@ -1465,7 +1465,6 @@ def check_cash_in_pocket(
         return
 
     import cv2
-
     from services.zone_service import bbox_in_zone
 
     now = time.monotonic()

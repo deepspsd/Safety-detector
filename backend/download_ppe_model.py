@@ -41,6 +41,7 @@ def download_with_gdown():
     except ImportError:
         print("Installing gdown…")
         import subprocess
+
         subprocess.check_call([sys.executable, "-m", "pip", "install", "gdown"])
         import gdown
 

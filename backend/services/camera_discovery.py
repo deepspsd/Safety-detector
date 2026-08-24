@@ -39,12 +39,16 @@ def _probe_xml() -> bytes:
  xmlns:w="{WSA}" xmlns:d="{WSD}">
  <e:Header><w:MessageID>{message_id}</w:MessageID><w:To>urn:docs-oasis-open-org:ws-dd-ns:discovery</w:To><w:Action>http://docs.oasis-open.org/ws-dd/ns/discovery/2009/01/Probe</w:Action></e:Header>
  <e:Body><d:Probe><d:Types>dn:NetworkVideoTransmitter</d:Types></d:Probe></e:Body>
-</e:Envelope>""".replace("dn:", "").encode("utf-8")
+</e:Envelope>""".replace(
+        "dn:", ""
+    ).encode(
+        "utf-8"
+    )
 
 
 def _parse_probe_match(payload: bytes) -> list[DiscoveredDevice]:
     try:
-        root = ET.fromstring(payload)
+        root = ET.fromstring(payload)  # nosec B314
     except ET.ParseError:
         return []
     locations = root.findall(f".//{{{WSD}}}XAddrs")

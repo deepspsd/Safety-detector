@@ -5,24 +5,15 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
+from database import (AuditLog, CalibrationVersion, Camera, HealthLog,
+                      RuleDefinition, RuleProfile, User, WorkflowProfile,
+                      get_db)
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
-
-from database import (
-    AuditLog,
-    CalibrationVersion,
-    Camera,
-    HealthLog,
-    RuleDefinition,
-    RuleProfile,
-    User,
-    WorkflowProfile,
-    get_db,
-)
 from routers.auth import get_current_user
 from services import calibration_service, model_manager
 from services.analytics_engine import analytics_engine
+from sqlalchemy.orm import Session
 
 router = APIRouter(tags=["enterprise-platform"])
 

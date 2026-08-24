@@ -158,7 +158,8 @@ def process_lift_frame(
                         _last_idle_alert[key] = now
                         try:
                             from services.alert_service import save_alert
-                            from services.rule_engine import _get_rule_engine_user_id
+                            from services.rule_engine import \
+                                _get_rule_engine_user_id
 
                             uid = _get_rule_engine_user_id(db)
                             save_alert(

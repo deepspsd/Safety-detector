@@ -1,12 +1,11 @@
 import json
 from typing import List, Optional
 
+from database import User, UserConfig, get_db
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
-
-from database import User, UserConfig, get_db
 from routers.auth import get_current_user
+from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/users", tags=["users"])
 

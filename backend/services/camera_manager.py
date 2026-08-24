@@ -169,7 +169,8 @@ class _ManagedCamera:
         Opens its own DB session, writes status + last_seen_at, closes it.
         Never holds a connection between ticks.
         """
-        from database import Camera as CameraModel  # avoid top-level circular import
+        from database import \
+            Camera as CameraModel  # avoid top-level circular import
         from database import SessionLocal
 
         while self._hb_running:
@@ -211,9 +212,7 @@ class _ManagedCamera:
                     db.commit()
                     try:
                         from services.health_monitor import (
-                            collect_camera_health,
-                            record,
-                        )
+                            collect_camera_health, record)
                         from services.platform_events import emit
 
                         record(
@@ -440,7 +439,8 @@ class _ManagedCamera:
                 )
                 if _has_entrance:
                     try:
-                        from services.yolo_service import run_ocr_gate_for_camera
+                        from services.yolo_service import \
+                            run_ocr_gate_for_camera
 
                         # outward direction: explicit outward zone_type OR outward polygon present
                         direction = (

@@ -25,26 +25,20 @@ import datetime
 import logging
 from typing import List, Optional
 
+from database import Camera as CameraModel
+from database import (CameraCredential, CameraHealth, CameraStreamProfile,
+                      User, get_db)
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
-
-from database import Camera as CameraModel
-from database import CameraCredential, CameraHealth, CameraStreamProfile, User, get_db
 from routers.auth import get_current_user
 from services import camera_manager
-from services.camera_credentials import (
-    CredentialConfigurationError,
-    decrypt,
-    encrypt,
-    encrypt_credentials,
-)
-from services.camera_discovery import (
-    discover_onvif,
-    hikvision_quick_add,
-    probe_onvif_endpoints,
-)
-from services.onvif_client import OnvifConnectionError, OnvifUnavailable, inspect_camera
+from services.camera_credentials import (CredentialConfigurationError, decrypt,
+                                         encrypt, encrypt_credentials)
+from services.camera_discovery import (discover_onvif, hikvision_quick_add,
+                                       probe_onvif_endpoints)
+from services.onvif_client import (OnvifConnectionError, OnvifUnavailable,
+                                   inspect_camera)
+from sqlalchemy.orm import Session
 
 log = logging.getLogger("cameras_router")
 router = APIRouter(prefix="/cameras", tags=["cameras"])

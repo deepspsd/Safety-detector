@@ -28,16 +28,15 @@ from typing import Dict, List, Optional
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from sqlalchemy.orm import Session
-
 from auth_utils import decode_token
 from config import settings
 from database import User, UserConfig, get_db
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from routers.users import _parse_custom_ppe
 from services import camera_manager  # server-managed stream registry
 from services import face_service, yolo_service
 from services.alert_service import save_alert
+from sqlalchemy.orm import Session
 
 router = APIRouter(tags=["cctv"])
 
@@ -179,7 +178,7 @@ class CameraReader:
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
 
-                with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+                with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:  # nosec B310
                     ct = resp.headers.get("Content-Type", "")
                     print(f"[CCTV] Connected — Content-Type: {ct}")
 
@@ -885,9 +884,8 @@ async def cctv_detection_websocket(websocket: WebSocket):
                     face_res = result.get("face_result") or {}
                     recognized = face_res.get("recognized_employees", {})
                     if recognized and ef:
-                        from services.attendance_service import (
-                            handle_face_match as _attn_hook,
-                        )
+                        from services.attendance_service import \
+                            handle_face_match as _attn_hook
 
                         _cam_id_for_attn = managed_camera_id  # None in legacy mode
                         for _emp_id, _conf in recognized.items():

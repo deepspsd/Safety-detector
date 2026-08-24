@@ -19,7 +19,8 @@ class NotificationEngine:
         bus.subscribe("NOTIFICATION_REQUESTED", self.deliver)
 
     def deliver(self, event: Event) -> None:
-        from database import AlertCase, Camera, NotificationDelivery, SessionLocal
+        from database import (AlertCase, Camera, NotificationDelivery,
+                              SessionLocal)
 
         payload = event.payload
         targets = payload.get("targets") or [{"channel": "dashboard"}]
