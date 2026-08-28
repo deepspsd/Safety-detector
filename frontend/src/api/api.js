@@ -7,11 +7,12 @@ import axios from 'axios'
 // In production: use the explicit env var or auto-detect.
 function getBaseURL() {
   const envURL = import.meta.env.VITE_API_BASE_URL
-  if (envURL && !envURL.includes('localhost') && !envURL.includes('127.0.0.1')) {
-    return envURL
-  }
+  // If env has a real URL (LAN IP or production), use it directly
+  if (envURL) return envURL
+  // Fallback: Vite proxy (localhost dev only)
   return '/api'
 }
+
 
 const BASE_URL = getBaseURL()
 console.log('BASE_URL:', BASE_URL)

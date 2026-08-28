@@ -73,4 +73,6 @@ fine_tuning_guide.md
 banglefir_main.zip
 backend/*.db-shm
 backend/*.db-wal
-.agents
+.agents*
+.corrupted
+*.corrupted

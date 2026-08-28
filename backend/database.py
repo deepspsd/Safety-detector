@@ -485,6 +485,10 @@ class InvoiceLog(Base):
         Boolean, nullable=False, default=True
     )  # False = Tesseract not installed
     timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
+    # QR upload tracking
+    upload_token = Column(String(500), nullable=True)   # JWT token used for this QR upload session
+    submitted_by_phone = Column(Boolean, nullable=False, default=False)  # True = uploaded via QR on phone
+    goods_count = Column(Integer, nullable=True)  # extracted goods count from OCR
 
     camera = relationship("Camera", back_populates="invoice_logs")
     employee = relationship("Employee", foreign_keys=[employee_id])
@@ -518,6 +522,9 @@ class OrderFormLog(Base):
     snapshot_b64 = Column(Text, nullable=True)
     ocr_available = Column(Boolean, nullable=False, default=True)
     timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
+    # QR upload tracking
+    upload_token = Column(String(500), nullable=True)   # JWT token used for this QR upload session
+    submitted_by_phone = Column(Boolean, nullable=False, default=False)  # True = uploaded via QR on phone
 
     camera = relationship("Camera", back_populates="order_logs")
     employee = relationship("Employee", foreign_keys=[employee_id])
@@ -936,6 +943,16 @@ def ensure_enterprise_schema() -> None:
             "health_status": "VARCHAR(40) NOT NULL DEFAULT 'unknown'",
             "reference_frame_path": "VARCHAR(500)",
             "drift_score": "FLOAT",
+        },
+        "invoice_logs": {
+            "upload_token": "VARCHAR(500)",
+            "submitted_by_phone": "BOOLEAN NOT NULL DEFAULT 0",
+            "goods_count": "INTEGER",
+        },
+
+        "order_form_logs": {
+            "upload_token": "VARCHAR(500)",
+            "submitted_by_phone": "BOOLEAN NOT NULL DEFAULT 0",
         },
         "zone_configs": {
             "zone_type": "VARCHAR(100)",
