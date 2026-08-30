@@ -12,8 +12,8 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from auth_utils import get_current_user
 from database import Alert, AlertCase, Camera, SessionLocal, User
+from routers.auth import get_current_user
 from services import camera_manager
 from services.tracking_layer import tracker as _tracker
 
@@ -47,8 +47,16 @@ def dashboard_summary(
 
     # ── Camera counts ────────────────────────────────────────────────────────
     cam_statuses = camera_manager.list_status()
-    total_cams = len(cam_statuses)
-    online_cams = sum(1 for c in cam_statuses if c.get("status") == "online")
+    live_by_id = {c.get("camera_id"): c for c in cam_statuses}
+    db_cameras = db.query(Camera).filter(Camera.status != "deleted").all()
+    total_cams = len(db_cameras)
+    online_cams = sum(
+        1
+        for c in db_cameras
+        if live_by_id.get(c.id, {}).get("status") == "online"
+        or c.status == "online"
+        or c.health_status == "online"
+    )
     offline_cams = total_cams - online_cams
 
     # ── Live person count ────────────────────────────────────────────────────
@@ -69,7 +77,7 @@ def dashboard_summary(
         )
         alerts_24h = (
             db.query(AlertCase)
-            .filter(AlertCase.created_at >= cutoff_24h)
+            .filter(AlertCase.opened_at >= cutoff_24h)
             .count()
         )
         recent_events = [
@@ -80,7 +88,7 @@ def dashboard_summary(
                 "severity": a.severity,
                 "camera_id": a.camera_id,
                 "status": a.status,
-                "created_at": a.created_at.isoformat() if a.created_at else None,
+                "created_at": a.opened_at.isoformat() if a.opened_at else None,
             }
             for a in db.query(AlertCase)
             .order_by(AlertCase.id.desc())

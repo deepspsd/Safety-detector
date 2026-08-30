@@ -15,8 +15,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from auth_utils import get_current_user
 from database import SessionLocal, User
+from routers.auth import get_current_user
 from services.tracking_layer import tracker as _tracker
 
 router = APIRouter(prefix="/tracks", tags=["tracks"])

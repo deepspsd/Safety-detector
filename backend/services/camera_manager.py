@@ -680,7 +680,14 @@ class _ManagedCamera:
 
                 # ── Zone transitions + line crossing ───────────────────────────
                 try:
-                    from services.zone_service import update_track_zone
+                    from services.tracking_layer import tracker as track_store
+                    from services.zone_service import (
+                        check_line_crossing,
+                        compute_zone_for_track,
+                        load_virtual_lines,
+                        update_track_zone,
+                    )
+                    virtual_lines = load_virtual_lines(self.camera_id, db)
                     for person in persons:
                         tid = str(person.get("track_id", ""))
                         if not tid:
@@ -688,48 +695,155 @@ class _ManagedCamera:
                         bx = person["bbox"]
                         cx = (bx[0] + bx[2]) / 2
                         cy = (bx[1] + bx[3]) / 2
-                        update_track_zone(
+                        transition = update_track_zone(
                             self.camera_id, tid, cx, cy, zones or {}
                         )
+                        obs = track_store.get_track(self.camera_id, tid)
+                        if obs:
+                            zone_now = compute_zone_for_track(
+                                self.camera_id, tid, cx, cy, zones or {}
+                            )
+                            if transition:
+                                obs.previous_zone = transition.get("previous_zone")
+                            obs.current_zone = zone_now
+                            if virtual_lines and len(obs.history) >= 2:
+                                prev = obs.history[-2]
+                                curr = obs.history[-1]
+                                check_line_crossing(
+                                    self.camera_id,
+                                    tid,
+                                    (prev["cx"], prev["cy"]),
+                                    (curr["cx"], curr["cy"]),
+                                    virtual_lines,
+                                )
                 except Exception as ze:
                     log.debug("[CamMgr] zone_transition error (cam=%s): %s", self.camera_id, ze)
 
                 # ── Attribute classifiers (uniform, head_cap, bangle) ──────────
                 try:
+                    import json
+                    from database import PersonAttributeResult
                     from services.classifier_adapter import (
-                        ClassifierCache, TemporalSmoother, get_classifier,
+                        ClassifierCache,
+                        TemporalSmoother,
+                        get_classifier,
+                        get_classifier_configs,
                     )
-                    from services.person_cropper import CropMode, crop_person
+                    from services.person_cropper import crop_person, save_debug_crop
+                    from services.platform_events import emit
+                    from services.tracking_layer import tracker as track_store
 
                     if not hasattr(self, "_clf_cache"):
                         self._clf_cache = ClassifierCache()
-                        self._clf_smoother = TemporalSmoother()
+                        self._clf_smoothers = {}
+                        self._classifier_configs = get_classifier_configs()
                         self._classifiers = {
                             name: get_classifier(name)
-                            for name in ("uniform", "head_cap")
+                            for name, cfg in self._classifier_configs.items()
+                            if cfg.get("classes")
                         }
+                        for name, cfg in self._classifier_configs.items():
+                            self._clf_smoothers[name] = TemporalSmoother(
+                                window=cfg.get("smoothing_window")
+                            )
 
                     for person in persons:
                         tid = str(person.get("track_id", ""))
                         if not tid:
                             continue
                         for clf_name, clf in self._classifiers.items():
-                            if not self._clf_cache.should_run(tid, clf_name):
+                            cfg = self._classifier_configs.get(clf_name, {})
+                            if not self._clf_cache.should_run(
+                                tid, clf_name, cfg.get("inference_interval_ms")
+                            ):
                                 continue
-                            crop_mode = (
-                                CropMode.HEAD if clf_name == "head_cap" else CropMode.UPPER_BODY
+                            target_size = (
+                                int(cfg.get("input_width", 224)),
+                                int(cfg.get("input_height", 224)),
                             )
-                            crop = crop_person(frame, person["bbox"], crop_mode=crop_mode)
+                            crop = crop_person(
+                                frame,
+                                person["bbox"],
+                                crop_mode=cfg.get("crop_mode", "full_person"),
+                                padding=float(cfg.get("padding", 0.05)),
+                                upper_body_ratio=float(cfg.get("upper_body_ratio", 0.65)),
+                                target_size=target_size,
+                            )
                             if crop is None:
                                 continue
                             result = clf.predict(crop)
                             self._clf_cache.record(tid, clf_name)
-                            self._clf_smoother.push(tid, clf_name, result)
+                            smoother = self._clf_smoothers[clf_name]
+                            smoother.push(tid, clf_name, result)
+                            smoothed = smoother.vote(tid, clf_name)
+                            final_result = smoothed or result
+                            save_debug_crop(
+                                crop,
+                                self.camera_id,
+                                f"track_{tid}",
+                                clf_name,
+                                final_result.predicted_class,
+                                final_result.confidence,
+                            )
+
+                            obs = track_store.get_track(self.camera_id, tid)
+                            if obs:
+                                obs.last_attribute_predictions[clf_name] = {
+                                    "raw": result.to_dict(),
+                                    "smoothed": smoothed.to_dict() if smoothed else None,
+                                }
+
+                            db.add(
+                                PersonAttributeResult(
+                                    camera_id=self.camera_id,
+                                    track_id=tid,
+                                    classifier_name=clf_name,
+                                    predicted_class=result.predicted_class,
+                                    confidence=result.confidence,
+                                    smoothed_class=final_result.predicted_class,
+                                    smoothed_confidence=final_result.confidence,
+                                    model_loaded=result.model_loaded,
+                                    raw_probabilities_json=json.dumps(
+                                        result.all_class_probabilities
+                                    ),
+                                )
+                            )
+                            db.commit()
+
+                            threshold = float(cfg.get("confidence_threshold", 0.80))
+                            event_type = {
+                                "uniform": "NO_UNIFORM",
+                                "head_cap": "NO_HEAD_CAP",
+                                "bangle": "BANGLE_DETECTED",
+                            }.get(clf_name)
+                            if (
+                                event_type
+                                and final_result.confidence >= threshold
+                                and final_result.predicted_class
+                                in {"NO_UNIFORM", "NO_HEAD_CAP", "BANGLE"}
+                            ):
+                                emit(
+                                    event_type,
+                                    camera_id=self.camera_id,
+                                    track_id=tid,
+                                    confidence=final_result.confidence,
+                                    source="person-attribute-classifier",
+                                    payload={
+                                        "classifier": clf_name,
+                                        "predicted_class": final_result.predicted_class,
+                                        "model_loaded": result.model_loaded,
+                                        "message": (
+                                            f"{final_result.predicted_class} "
+                                            f"for person #{tid}; review evidence"
+                                        ),
+                                    },
+                                )
 
                         # Evict stale tracks every 30 s
                         active_ids = [str(p.get("track_id", "")) for p in persons]
                         self._clf_cache.evict_old_tracks(active_ids)
-                        self._clf_smoother.evict_old_tracks(active_ids)
+                        for smoother in self._clf_smoothers.values():
+                            smoother.evict_old_tracks(active_ids)
                 except Exception as clf_exc:
                     log.debug("[CamMgr] classifier error (cam=%s): %s", self.camera_id, clf_exc)
 

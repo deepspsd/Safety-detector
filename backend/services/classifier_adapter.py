@@ -31,12 +31,15 @@ Usage
 
 from __future__ import annotations
 
+import copy
 import logging
+import os
 import time
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -285,10 +288,16 @@ class ClassifierCache:
         self._interval_s = (interval_ms or settings.CLASSIFIER_INTERVAL_MS) / 1000.0
         self._last_run: Dict[Tuple[str, str], float] = {}
 
-    def should_run(self, track_id: str, classifier_name: str) -> bool:
+    def should_run(
+        self,
+        track_id: str,
+        classifier_name: str,
+        interval_ms: Optional[int] = None,
+    ) -> bool:
         key = (track_id, classifier_name)
         last = self._last_run.get(key, 0.0)
-        return (time.monotonic() - last) >= self._interval_s
+        interval_s = (interval_ms / 1000.0) if interval_ms else self._interval_s
+        return (time.monotonic() - last) >= interval_s
 
     def record(self, track_id: str, classifier_name: str) -> None:
         self._last_run[(track_id, classifier_name)] = time.monotonic()
@@ -403,6 +412,81 @@ _BUILTIN_CONFIGS: Dict[str, Dict] = {
 }
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _load_yaml_model_configs() -> Dict[str, Dict]:
+    """Load image-classifier entries from config/models.yaml when PyYAML exists.
+
+    PyYAML is optional in this project. If unavailable or malformed, callers get
+    built-in configs and the app still runs in mock mode.
+    """
+    path = _repo_root() / "config" / "models.yaml"
+    if not path.exists():
+        return {}
+    try:
+        import yaml  # type: ignore
+
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        log.warning("Could not load %s; using built-in classifier configs: %s", path, exc)
+        return {}
+
+    configs: Dict[str, Dict] = {}
+    for item in data.get("models", []):
+        if item.get("model_type") != "image_classifier":
+            continue
+        model_id = item.get("model_id") or item.get("model_key")
+        if not model_id:
+            continue
+        configs[str(model_id)] = {
+            "classes": item.get("classes", []),
+            "crop_mode": item.get("crop_mode", "full_person"),
+            "padding": float(item.get("padding", 0.05)),
+            "upper_body_ratio": float(item.get("upper_body_ratio", 0.65)),
+            "confidence_threshold": float(item.get("confidence_threshold", 0.80)),
+            "model_path": item.get("model_path") or "",
+            "input_width": int(item.get("input_width", 224) or 224),
+            "input_height": int(item.get("input_height", 224) or 224),
+            "inference_interval_ms": int(
+                item.get("inference_interval_ms", settings.CLASSIFIER_INTERVAL_MS)
+            ),
+            "smoothing_window": int(
+                item.get("smoothing_window", settings.CLASSIFIER_SMOOTHING_WINDOW)
+            ),
+        }
+    return configs
+
+
+def get_classifier_configs() -> Dict[str, Dict]:
+    """Return classifier configs keyed by model_id.
+
+    Runtime YAML overrides built-ins. Paths are left as configured; missing files
+    deliberately select MockClassifier instead of pretending a model exists.
+    """
+    configs = copy.deepcopy(_BUILTIN_CONFIGS)
+    configs.update(_load_yaml_model_configs())
+    return configs
+
+
+def get_classifier_config(classifier_name: str) -> Dict:
+    return copy.deepcopy(get_classifier_configs().get(classifier_name, {}))
+
+
+def _resolve_model_path(model_path: str) -> str:
+    if not model_path:
+        return ""
+    candidate = Path(model_path)
+    if candidate.is_absolute():
+        return str(candidate)
+    for base in (_repo_root() / "backend", _repo_root()):
+        resolved = base / candidate
+        if resolved.exists():
+            return str(resolved)
+    return str(_repo_root() / "backend" / candidate)
+
+
 def get_classifier(classifier_name: str) -> AbstractClassifier:
     """Return an AbstractClassifier for the given name.
 
@@ -410,18 +494,18 @@ def get_classifier(classifier_name: str) -> AbstractClassifier:
     returned.  Otherwise a MockClassifier is returned so the rest of the
     pipeline continues operating without real model weights.
     """
-    cfg = _BUILTIN_CONFIGS.get(classifier_name, {})
+    cfg = get_classifier_config(classifier_name)
     classes = cfg.get("classes", ["POSITIVE", "NEGATIVE"])
     threshold = cfg.get("confidence_threshold", 0.80)
-    model_path = cfg.get("model_path", "")
-
-    import os
+    model_path = _resolve_model_path(cfg.get("model_path", ""))
 
     if model_path and os.path.exists(model_path):
         return TeachableMachineAdapter(
             name=classifier_name,
             model_path=model_path,
             classes=classes,
+            input_width=cfg.get("input_width", 224),
+            input_height=cfg.get("input_height", 224),
             confidence_threshold=threshold,
         )
 
