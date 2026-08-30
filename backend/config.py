@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     # ppe_factory_v0.pt   → Phase 0: upgraded factory model (ACTIVE)
     # ppe_factory_v1.pt   → Phase 1: 17 classes, public data
     # ppe_factory_v2.pt   → Phase 2: 17 classes, client footage (retrain with real footage)
-    YOLO_MODEL: str = "ppe_factory_v0.pt"
+    YOLO_MODEL: str = "ppe_factory_v0_cash.pt"
     DETECTION_CONF: float = 0.30  # tighten to 0.40 after Phase 2 retraining
     NMS_IOU: float = 0.40
     IOU_PERSON_PPE: float = 0.10

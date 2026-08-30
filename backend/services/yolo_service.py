@@ -47,24 +47,22 @@ log = logging.getLogger("yolo_service")
 # ppe_factory_v0.pt adds classes 10-16 on top of the base ppe.pt set
 # ─────────────────────────────────────────────────────────────────
 PPE_CLASS_NAMES = [
-    "Hardhat",  # 0  ✅ compliant
-    "Mask",  # 1  ✅ compliant
-    "NO-Hardhat",  # 2  ❌ violation
-    "NO-Mask",  # 3  ❌ violation
-    "NO-Safety Vest",  # 4  ❌ violation
-    "Person",  # 5  👤 neutral person
-    "Safety Cone",  # 6  🟠 neutral
-    "Safety Vest",  # 7  ✅ compliant
-    "machinery",  # 8  🔵 neutral
-    "vehicle",  # 9  🔵 neutral
-    # ── Phase 1 new classes (ppe_factory_v1.pt) ────────────────
-    "Bakery-Head-Cap",  # 10 ✅ compliant (cloth cap worn correctly)
-    "NO-Bakery-Head-Cap",  # 11 ❌ violation  (cap absent / wrong)
-    "Bangles",  # 12 ❌ violation  (always flagged in food production)
+    "Hardhat",           # 0  ✅ compliant
+    "Mask",              # 1  ✅ compliant
+    "NO-Hardhat",        # 2  ❌ violation
+    "NO-Mask",           # 3  ❌ violation
+    "NO-Safety Vest",    # 4  ❌ violation
+    "Person",            # 5  👤 neutral person
+    "Safety Cone",       # 6  🟠 neutral
+    "Safety Vest",       # 7  ✅ compliant
+    "machinery",         # 8  🔵 neutral
+    "vehicle",           # 9  🔵 neutral
+    # ── Phase 1 new classes (ppe_factory_v0_cash.pt) ───────────────────
+    "Bakery-Head-Cap",   # 10 ✅ compliant (cloth cap worn correctly)
+    "NO-Bakery-Head-Cap",# 11 ❌ violation  (cap absent / wrong)
+    "Bangles",           # 12 ❌ violation  (always flagged in food production)
     "Document-in-hand",  # 13 🔵 neutral  (triggers OCR pipeline at entrance)
-    "Cylinder",  # 14 🔵 neutral  (usage counter)
-    "Exposed-Item",  # 15 ❌ violation  (stock kept openly)
-    "Cashbox",  # 16 🔵 neutral  (zone anchor for cash monitoring)
+    "Cash",              # 14 💵 neutral  (cash monitoring — CashEventTracker)
 ]
 
 # Sets for fast membership checks
@@ -91,7 +89,8 @@ NEUTRAL_CLASSES = {
     "vehicle",
     "Document-in-hand",
     "Cylinder",
-    "Cashbox",  # Phase 1 neutral classes
+    "Cashbox",
+    "Cash",          # Phase 1 cash monitoring — passed through to CashEventTracker
 }
 
 # Human-readable violation → missing item label
@@ -404,27 +403,40 @@ def load_model():
 
         torch.load = _patched_load
 
-        # Priority: ppe_factory_v0.pt → ppe_factory_v1.pt (17-class) → ppe.pt (10-class) → YOLO_MODEL → simulation
+        # Priority: settings.YOLO_MODEL -> ppe_factory_v0_cash.pt -> ppe_factory_v0.pt -> ppe_factory_v1.pt -> ppe.pt
         _factory_candidates = [
+            settings.YOLO_MODEL,
+            "ppe_factory_v0_cash.pt",
             "ppe_factory_v0.pt",
             "ppe_factory_v1.pt",
             "ppe_factory_v2.pt",
             "ppe.pt",
         ]
         _loaded = False
+        _backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         for _candidate in _factory_candidates:
-            try:
-                _model = YOLO(_candidate)
-                torch.load = _orig_load
-                _use_simulation = False
-                _model_is_ppe = True
-                _nc = len(_model.names)
-                log.info(f"✅ PPE model loaded: {_candidate} ({_nc} classes)")
-                print(f"✅ PPE model loaded: {_candidate} ({_nc} classes)")
-                _loaded = True
+            # Check candidate directly, then in backend dir, then in training/models
+            _paths_to_try = [
+                _candidate,
+                os.path.join(_backend_dir, _candidate),
+                os.path.join(_backend_dir, "..", "training", "models", _candidate),
+            ]
+            for _p in _paths_to_try:
+                if os.path.isfile(_p):
+                    try:
+                        _model = YOLO(_p)
+                        torch.load = _orig_load
+                        _use_simulation = False
+                        _model_is_ppe = True
+                        _nc = len(_model.names)
+                        log.info(f"✅ PPE model loaded: {_p} ({_nc} classes)")
+                        print(f"✅ PPE model loaded: {_candidate} ({_nc} classes: {list(_model.names.values())})")
+                        _loaded = True
+                        break
+                    except Exception as e:
+                        log.warning(f"{_p} load failed: {e}")
+            if _loaded:
                 break
-            except Exception as e:
-                log.warning(f"{_candidate} unavailable: {e}")
         if not _loaded:
             torch.load = _orig_load
     except Exception as e:
@@ -648,7 +660,7 @@ def _run_inference_with(frame: np.ndarray, model, is_ppe: bool) -> List[Dict]:
     results = model(
         frame,
         verbose=False,
-        conf=settings.DETECTION_CONF,
+        conf=0.20,
         iou=settings.NMS_IOU,
     )
     detections = []
@@ -973,18 +985,46 @@ def _draw_results(
             cv2.LINE_AA,
         )
 
-    # ── Draw neutral / PPE item boxes (thin, behind person boxes) ──
+    # ── Draw neutral / PPE item boxes (prominent, distinct colors) ──
+    _COLOR_CASH = (0, 215, 255)       # Gold/Yellow (BGR)
+    _COLOR_CYLINDER = (255, 180, 0)   # Cyan/Teal (BGR)
+    _COLOR_DOC = (255, 120, 200)      # Pink/Purple (BGR)
+
     for det in raw_detections:
         if det["det_type"] in ("neutral",):
             x1, y1, x2, y2 = det["bbox"]
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), COLOR_NEUTRAL, 1)
+            lbl = det["label"]
+            conf = det["confidence"]
+
+            if lbl.lower() == "cash":
+                box_color = _COLOR_CASH
+                prefix = "💵 "
+            elif "cylinder" in lbl.lower():
+                box_color = _COLOR_CYLINDER
+                prefix = "🛢️ "
+            elif "document" in lbl.lower():
+                box_color = _COLOR_DOC
+                prefix = "📄 "
+            else:
+                box_color = COLOR_NEUTRAL
+                prefix = "📦 "
+
+            # Draw box
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), box_color, 2)
+
+            # Draw text pill background
+            text_str = f"{prefix}{lbl} {conf:.0%}"
+            (tw, th), _ = cv2.getTextSize(text_str, cv2.FONT_HERSHEY_SIMPLEX, 0.50, 1)
+            pill_y1 = max(0, y1 - th - 8)
+            pill_y2 = y1
+            cv2.rectangle(annotated, (x1, pill_y1), (x1 + tw + 8, pill_y2), box_color, -1)
             cv2.putText(
                 annotated,
-                f"{det['label']} {det['confidence']:.0%}",
-                (x1 + 2, y1 - 5),
+                text_str,
+                (x1 + 4, pill_y2 - 4),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.42,
-                COLOR_NEUTRAL,
+                0.50,
+                (0, 0, 0) if box_color in (_COLOR_CASH, _COLOR_CYLINDER) else (255, 255, 255),
                 1,
                 cv2.LINE_AA,
             )
@@ -1703,6 +1743,14 @@ def _run_pipeline(
             "[zone_gate] 'window' zone configured — trajectory detection is Phase 4."
         )
 
+    # ── Cash detection summary ────────────────────────────────────────────────
+    # Extract Cash objects (class 14) from raw detections so callers can
+    # display a yellow badge and/or feed the CashEventTracker.
+    _cash_dets = [
+        d for d in raw
+        if str(d.get("label", "")).lower() == "cash" or d.get("class_id") == 14
+    ]
+
     return {
         "persons": enriched,
         "violations": violations,
@@ -1723,6 +1771,9 @@ def _run_pipeline(
             else ("simulation" if _use_simulation else settings.YOLO_MODEL)
         ),
         "phone_severity": phone_result.get("phone_severity", "low"),
+        # Cash monitoring fields
+        "cash_detected":   bool(_cash_dets),
+        "cash_detections": _cash_dets,
     }
 
 

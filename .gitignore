@@ -76,3 +76,6 @@ backend/*.db-wal
 .agents*
 .corrupted
 *.corrupted
+helmet_model.pt
+yolov8l.pt
+yolov8x.pt

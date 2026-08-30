@@ -1416,28 +1416,25 @@ def cleanup_window_state(camera_id: int) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────────
-# SECTION L — Cash-in-Pocket Heuristic (REQ-SH-01)
+# SECTION L — Cash-in-pocket (replaced by CashEventTracker in cash_monitor.py)
 # ─────────────────────────────────────────────────────────────────────────────────
-# Detects suspicious hand-to-pocket trajectories near the cashbox zone.
+# The previous gesture-heuristic implementation (centroid trajectory, downward+inward
+# motion check) had ~50% precision and fired on ordinary movements like
+# reaching for items.  It is replaced by the multi-frame CashEventTracker state
+# machine in cash_monitor.py which:
+#   • Requires a trained Cash detector (ppe_factory_v0_cash.pt, class ID 14)
+#   • Tracks the *actual cash object* across frames via ByteTrack IDs
+#   • Only fires SUSPICIOUS after cash enters body zone AND disappears without
+#     reaching the cashbox — event-based, not gesture-based
 #
-# Algorithm:
-#   1. For each person in the cashbox zone, crop the lower-body region.
-#   2. Track centroid movement pattern: a hand-to-pocket gesture shows as
-#      a rapid downward-then-inward movement (toward the hip/pocket area).
-#   3. If the gesture pattern is detected within the cashbox zone, fire a
-#      low-confidence alert for admin review.
-#
-# Accuracy: ~50-60% (bakery_cv_plan.md §12). Real accuracy ceiling for
-# visual-only detection. Recommend pairing with cashbox-open sensor.
+# This function is kept as a no-op shim for API compatibility only.
+# camera_manager.py no longer calls it (the comment block at line ~537 explains).
 # ─────────────────────────────────────────────────────────────────────────────────
 
+# Old module-level state — no longer used, preserved to avoid AttributeError
+# if any other path references it.
 _cash_pocket_state: Dict[int, dict] = {}
 _cash_pocket_lock = threading.Lock()
-_CASH_POCKET_COOLDOWN_SEC = 300
-_CASH_GESTURE_MIN_FRAMES = 5  # minimum frames to detect a gesture
-_CASH_GESTURE_MAX_FRAMES = 25  # too many frames = not a quick gesture
-_CASH_DOWNWARD_RATIO = 0.6  # fraction of movement that must be downward
-_CASH_INWARD_RATIO = 0.4  # fraction of movement that must be inward
 
 
 def check_cash_in_pocket(
@@ -1449,134 +1446,15 @@ def check_cash_in_pocket(
     db,
 ) -> None:
     """
-    Detect hand-to-pocket gesture patterns near the cashbox zone.
+    No-op shim — logic moved to cash_monitor.CashEventTracker.
 
-    Tracks per-person lower-body centroid trajectory over a sliding window.
-    A rapid downward-then-inward motion (toward hip/pocket) triggers a
-    low-confidence alert for admin review.
+    The CashEventTracker.update() call inside cash_monitor.check_cash_zone()
+    handles body-zone detection and theft confirmation for shop cameras.
+    This function is kept for API compatibility only.
     """
-    if not zones or frame is None:
-        return
-
-    cash_poly = (
-        zones.get("cashbox") or zones.get("cash_counter") or zones.get("shop_counter")
-    )
-    if not cash_poly:
-        return
-
-    import cv2
-    from services.zone_service import bbox_in_zone
-
-    now = time.monotonic()
-    active_keys = set()
-
-    for person in persons:
-        tid = int(person.get("track_id", -1))
-        if tid == -1:
-            continue
-        bbox = person.get("bbox", [])
-        if not bbox or not bbox_in_zone(bbox, cash_poly):
-            continue
-
-        key = (camera_id, tid)
-        active_keys.add(key)
-
-        x1, y1, x2, y2 = [int(v) for v in bbox[:4]]
-        h_frame, w_frame = frame.shape[:2]
-        x1c, y1c = max(0, x1), max(0, y1)
-        x2c, y2c = min(w_frame, x2), min(h_frame, y2)
-
-        # Lower 40% of person bbox = hand/pocket region
-        hand_y1 = y1c + int((y2c - y1c) * 0.6)
-        hand_region = frame[hand_y1:y2c, x1c:x2c]
-        if hand_region.size == 0:
-            continue
-
-        gray = cv2.cvtColor(hand_region, cv2.COLOR_BGR2GRAY)
-        # Centroid of the hand region
-        moments = cv2.moments(gray)
-        if moments["m00"] == 0:
-            continue
-        hx = moments["m10"] / moments["m00"] + x1c
-        hy = moments["m01"] / moments["m00"] + hand_y1
-
-        with _cash_pocket_lock:
-            state = _cash_pocket_state.setdefault(
-                key,
-                {
-                    "history": [],
-                    "last_alert": 0,
-                },
-            )
-
-            state["history"].append((now, hx, hy))
-            # Keep last 2 seconds
-            state["history"] = [
-                (t, x, y) for t, x, y in state["history"] if now - t <= 2.0
-            ]
-
-            history = state["history"]
-            if len(history) < _CASH_GESTURE_MIN_FRAMES:
-                continue
-            if len(history) > _CASH_GESTURE_MAX_FRAMES:
-                continue
-
-            # Check gesture pattern: overall downward + inward movement
-            start_y = history[0][2]
-            end_y = history[-1][2]
-            start_x = history[0][1]
-            end_x = history[-1][1]
-            frame_cx = w_frame / 2.0
-            person_cx = (x1c + x2c) / 2.0
-
-            total_dy = end_y - start_y  # positive = downward
-            total_dx = end_x - start_x
-
-            # Inward = toward the body center (away from frame edge toward person_cx)
-            if person_cx < frame_cx:
-                inward = total_dx > 0  # moving right = toward body center
-            else:
-                inward = total_dx < 0  # moving left = toward body center
-
-            is_downward = total_dy > 0
-
-            if is_downward and inward:
-                if now - state["last_alert"] < _CASH_POCKET_COOLDOWN_SEC:
-                    continue
-                state["last_alert"] = now
-                state["history"] = []
-                _fire_cash_pocket_alert(db, camera_id, floor, tid)
-
-    # Clean up departed tracks
-    departed = {k for k in _cash_pocket_state if k[0] == camera_id} - active_keys
-    for key in departed:
-        _cash_pocket_state.pop(key, None)
+    return  # intentional no-op
 
 
-def _fire_cash_pocket_alert(db, camera_id: int, floor: str, track_id: int):
-    from services.alert_service import save_alert
-
-    try:
-        save_alert(
-            db=db,
-            user_id=_get_rule_engine_user_id(db),
-            message=(
-                f"[CASH ALERT] Camera {camera_id} — track #{track_id} "
-                f"suspected hand-to-pocket gesture near cashbox. "
-                f"Low-confidence heuristic — admin review required."
-            ),
-            role="Security Monitor",
-            severity="high",
-            detected_issue="Cash-in-pocket suspected",
-            camera_id=camera_id,
-            floor=floor,
-            confidence_tier="low",
-        )
-        log.warning(
-            f"[rule_engine] Cash-in-pocket alert cam={camera_id} track={track_id}"
-        )
-    except Exception as exc:
-        log.error(f"[rule_engine] cash-in-pocket alert save failed: {exc}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────────

@@ -500,7 +500,7 @@ class _ManagedCamera:
                 # ── Cash + stock monitor ───────────────────────────────────────
                 # Triggers on shop floor OR when a cashbox/stock polygon is painted
                 # on ANY floor (e.g. a dedicated cash-counter camera on ground floor).
-                _has_cash_zone = self.floor == "shop" or bool(
+                _has_cash_zone = self.floor in ("shop", "bakery") or bool(
                     active_zones
                     & {
                         "cashbox",
@@ -514,14 +514,20 @@ class _ManagedCamera:
                     try:
                         from services import cash_monitor
 
+                        # v2: passes persons (with track_id) and frame so
+                        # CashEventTracker can do body-zone theft detection
+                        # and embed a snapshot in the alert.
                         cash_monitor.check_cash_zone(
                             db=db,
                             camera_id=self.camera_id,
                             detections=raw_dets,
+                            persons=persons,
                             cashbox_polygon=(
                                 (zones or {}).get("cashbox")
                                 or (zones or {}).get("cash_counter")
                             ),
+                            floor=self.floor,
+                            frame=frame,
                         )
                         cash_monitor.check_stock_zone(
                             db=db,
@@ -534,21 +540,9 @@ class _ManagedCamera:
                             f"[CamMgr] cash_monitor error (cam={self.camera_id}): {cm_exc}"
                         )
 
-                # ── Cash-in-pocket heuristic (hand-to-pocket near cashbox) ───────
-                if _has_cash_zone:
-                    try:
-                        rule_engine.check_cash_in_pocket(
-                            self.camera_id,
-                            self.floor,
-                            persons,
-                            frame,
-                            zones or {},
-                            db,
-                        )
-                    except Exception as cp_exc:
-                        log.debug(
-                            f"[CamMgr] cash-in-pocket error (cam={self.camera_id}): {cp_exc}"
-                        )
+                # ── Cash-in-pocket: now handled inside CashEventTracker ──────────
+                # check_cash_in_pocket() in rule_engine is a no-op shim kept
+                # for API compatibility only. No separate call needed here.
 
                 # ── Vendor payment snapshot (shop / vendor_desk cameras) ───────
                 # Captures a photo of the payee when a vendor payment is detected.

@@ -41,6 +41,8 @@ const ROLE_PPE_RULES = {
 const PPE_FILTERS = [
   { id: 'NO-Bakery-Head-Cap', label: 'Head Cap',      icon: '🧢' },
   { id: 'Bangles',            label: 'Bangles (ban)', icon: '🚨' },
+  { id: 'Cash',               label: 'Cash',          icon: '💵' },
+  { id: 'Cylinder',           label: 'Cylinder',      icon: '🛢️' },
   { id: 'NO-Hardhat',         label: 'Hardhat',       icon: '👷' },
   { id: 'NO-Safety Vest',     label: 'Safety Vest',   icon: '🦺' },
   { id: 'NO-Mask',            label: 'Mask',          icon: '😷' },
@@ -93,6 +95,8 @@ export default function LiveMonitor() {
   // Phone detection state — default ON so detection works immediately
   const [noPhoneZone,    setNoPhoneZone]    = useState(savedNoPhoneZone !== undefined ? !!savedNoPhoneZone : true)
   const [phoneStatus,    setPhoneStatus]    = useState('safe')
+  // Cash monitoring state
+  const [cashAlert,      setCashAlert]      = useState(null)  // theft alert message | null
   // Detection filters — seeded by role. Two-stage initialization:
   //   1. getFiltersForRole() gives the right initial value immediately if user is already loaded.
   //   2. useEffect below re-syncs when auth context resolves (async login).
@@ -400,7 +404,17 @@ export default function LiveMonitor() {
         personsCount:    data.persons_count    ?? 0,
         phoneDetected:   data.phone_detected   ?? false,
         phoneStatus:     data.phone_status     || 'safe',
+        cashDetected:    data.cash_detected    ?? false,
       })
+
+      // Cash theft alert banner — show when server fires a theft event
+      if (data.cash_alert) {
+        setCashAlert(data.cash_alert)
+        addToast('💰 Cash Theft Alert!', data.cash_alert, 'danger', 8000)
+      } else if (!data.cash_alert && cashAlert) {
+        // Clear only when the server explicitly sends no alert (not on empty frames)
+        if (data.cash_detected === false) setCashAlert(null)
+      }
 
       // Draw backend-annotated frame (PPE + face boxes already merged)
       if (data.annotated_frame && canvasRef.current) {
@@ -983,6 +997,33 @@ export default function LiveMonitor() {
               </div>
             ) : (
               <>
+                {/* ── Cash Theft Alert Banner ─────────────────────────────── */}
+                {cashAlert && (
+                  <div style={{
+                    display: 'flex', alignItems: 'flex-start', gap: 10,
+                    padding: '10px 14px', borderRadius: 10, marginBottom: 14,
+                    background: 'rgba(234,179,8,0.15)',
+                    border: '1px solid rgba(234,179,8,0.55)',
+                    animation: 'pulse 1.5s ease-in-out infinite',
+                  }}>
+                    <span style={{ fontSize: '1.3rem', flexShrink: 0 }}>💰</span>
+                    <div>
+                      <div style={{ color: '#eab308', fontWeight: 700, fontSize: '0.85rem', marginBottom: 2 }}>
+                        CASH THEFT ALERT
+                      </div>
+                      <div style={{ color: '#fde047', fontSize: '0.78rem', lineHeight: 1.4 }}>
+                        {cashAlert}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setCashAlert(null)}
+                      style={{ marginLeft: 'auto', background: 'none', border: 'none',
+                        cursor: 'pointer', color: '#eab308', fontSize: '1rem', flexShrink: 0 }}
+                      title="Dismiss"
+                    >✕</button>
+                  </div>
+                )}
+
                 {/* Overall compliance pill */}
                 <div style={{
                   display: 'flex', alignItems: 'center', gap: 10,
@@ -1009,6 +1050,39 @@ export default function LiveMonitor() {
                       {detectionInfo.missing.map(m => (
                         <span key={m} className="badge badge-critical">{m}</span>
                       ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Detected Objects & Items (Cash, Cylinder, Bangles, etc.) */}
+                {detectionInfo.detections && detectionInfo.detections.filter(d => d.label !== 'Person').length > 0 && (
+                  <div style={{ marginBottom: 14 }}>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: 6, letterSpacing: '0.05em' }}>
+                      DETECTED OBJECTS & ITEMS
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      {detectionInfo.detections
+                        .filter(d => d.label !== 'Person')
+                        .map((d, idx) => {
+                          const isCash = d.label?.toLowerCase() === 'cash'
+                          const isCyl = d.label?.toLowerCase().includes('cylinder')
+                          const isBangles = d.label?.toLowerCase().includes('bangles')
+                          const icon = isCash ? '💵' : isCyl ? '🛢️' : isBangles ? '🚨' : '📦'
+                          return (
+                            <span
+                              key={idx}
+                              style={{
+                                display: 'inline-flex', alignItems: 'center', gap: 4,
+                                padding: '4px 10px', borderRadius: 99, fontSize: '0.75rem', fontWeight: 600,
+                                background: isCash ? 'rgba(234,179,8,0.15)' : isCyl ? 'rgba(6,182,212,0.15)' : isBangles ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.08)',
+                                color: isCash ? '#eab308' : isCyl ? '#06b6d4' : isBangles ? '#ef4444' : 'var(--text-primary)',
+                                border: `1px solid ${isCash ? 'rgba(234,179,8,0.4)' : isCyl ? 'rgba(6,182,212,0.4)' : isBangles ? 'rgba(239,68,68,0.4)' : 'var(--border)'}`
+                              }}
+                            >
+                              <span>{icon}</span> {d.label} {Math.round((d.confidence || 0) * 100)}%
+                            </span>
+                          )
+                        })}
                     </div>
                   </div>
                 )}

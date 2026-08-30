@@ -409,9 +409,12 @@ def _run_combined_inference(
     no_phone_zone: bool,
     frame_idx: int,
     enable_face: bool,
+    camera_id: Optional[int] = None,
+    floor: str = "shop",
 ) -> Dict:
     """
     Run PPE detection and optional face recognition simultaneously.
+    Also runs cash_monitor.check_cash_zone() for cameras with cash zone.
     Returns a merged result dict with a single annotated_frame.
     """
     ppe_result = {}
@@ -435,6 +438,55 @@ def _run_combined_inference(
             no_phone_zone,
             frame_idx,
         )
+
+    # --- Cash monitoring (CashEventTracker state machine) --------------------
+    # Runs when a camera_id is supplied (managed + legacy modes both work).
+    # Uses class 14 (Cash) detections from the PPE result; fires a DB alert
+    # when cash enters an employee body zone then disappears (pocket theft).
+    _cash_alert_msg: Optional[str] = None
+    if camera_id is not None and db is not None:
+        try:
+            from services import cash_monitor as _cm
+
+            _all_dets = ppe_result.get("cash_detections", [])
+            _persons  = ppe_result.get("persons", [])
+
+            # Capture the last theft alert text so we can relay it via WS.
+            # We peek at the tracker BEFORE calling update so we can detect
+            # any NEW alert fired during this update.
+            _tracker = _cm.get_tracker(camera_id)
+            _prev_suspicious = {
+                tid for tid, t in list(_tracker._tracks.items())
+                if t.state.value == "suspicious"
+            }
+
+            _cm.check_cash_zone(
+                db=db,
+                camera_id=camera_id,
+                detections=ppe_result.get("detections", []),
+                persons=_persons,
+                cashbox_polygon=None,   # no polygon in pure WS/webcam mode
+                floor=floor,
+                frame=frame,
+            )
+
+            # Check if a new SUSPICIOUS event was just confirmed this frame.
+            _new_suspicious = {
+                tid for tid, t in list(_tracker._tracks.items())
+                if t.state.value == "suspicious"
+            } - _prev_suspicious
+
+            if _new_suspicious:
+                _cash_alert_msg = (
+                    "💰 CASH THEFT ALERT — Cash moved toward employee body zone "
+                    "and disappeared without reaching the cashbox. "
+                    "Please review CCTV footage immediately."
+                )
+        except Exception as _cm_exc:
+            import logging as _log_mod
+            _log_mod.getLogger("cctv").debug(
+                "[cctv] cash_monitor error (cam=%s): %s", camera_id, _cm_exc
+            )
 
     # --- Face recognition (numpy path - no double encode) --------------------
     if enable_face:
@@ -488,6 +540,9 @@ def _run_combined_inference(
         if enable_face
         else None
     )
+    # Cash monitoring fields — relayed to the browser via the WS response.
+    merged["cash_detected"] = ppe_result.get("cash_detected", False)
+    merged["cash_alert"]    = _cash_alert_msg
     merged["source"] = "cctv"
     return merged
 
@@ -773,12 +828,14 @@ async def cctv_detection_websocket(websocket: WebSocket):
                 ef = state["enable_face"]
 
                 try:
-                    # Run combined PPE + Face inference in thread pool
+                    # Run combined PPE + Face + Cash inference in thread pool
+                    _cam_id_for_infer = managed_camera_id  # int | None
                     result = await loop.run_in_executor(
                         _yolo_executor,
-                        lambda fr=frame, fi=fn, df=det_filters, nz=nph, efa=ef: (
+                        lambda fr=frame, fi=fn, df=det_filters, nz=nph, efa=ef, cid=_cam_id_for_infer: (
                             _run_combined_inference(
-                                fr, role, user.id, db, df, nz, fi, efa
+                                fr, role, user.id, db, df, nz, fi, efa,
+                                camera_id=cid, floor="shop",
                             )
                         ),
                     )
@@ -801,6 +858,10 @@ async def cctv_detection_websocket(websocket: WebSocket):
                         "face_result": result.get("face_result"),
                         "cam_fps": cam_fps,
                         "source": "cctv",
+                        # Cash monitoring
+                        "cash_detected": result.get("cash_detected", False),
+                        "cash_alert":    result.get("cash_alert"),
+                        "cash_alert_saved": False,  # set True below if alert was saved
                     }
 
                     # ── PPE alert save ─────────────────────────────────────

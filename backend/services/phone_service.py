@@ -31,7 +31,7 @@ PHONE_CLASS_ID = 67
 PERSON_CLASS_ID = 0
 
 # ── Detection thresholds ──────────────────────────────────────────
-CONF_THRESHOLD = 0.12  # very low — better to have false positives than miss phones
+CONF_THRESHOLD = 0.38  # balanced threshold — prevents banknotes/cards from falsely triggering phone detection
 IMG_SIZE = 960  # higher resolution = much better small-object detection
 
 # ── Ear / head region thresholds ─────────────────────────────────
