@@ -11,7 +11,7 @@
 cameras:
   - camera_id: shop_01
     name: "Shop Front Counter"
-    rtsp_url: "${SHOP_CAM_RTSP:-rtsp://admin:pass@192.168.1.101:554/Streaming/Channels/102}"
+    rtsp_url: "rtsp://username:password@192.168.1.101:554/stream1"
     floor: "shop"
     zone_type: "shop_counter"
     enabled: true
@@ -19,7 +19,7 @@ cameras:
 
   - camera_id: ground_entrance
     name: "Ground Floor Main Entrance"
-    rtsp_url: "${GROUND_ENTRANCE_RTSP:-rtsp://admin:pass@192.168.1.102:554/Streaming/Channels/102}"
+    rtsp_url: "rtsp://username:password@192.168.1.102:554/stream1"
     floor: "ground"
     zone_type: "entrance"
     enabled: true
@@ -27,7 +27,7 @@ cameras:
 
   - camera_id: ground_dough
     name: "Ground Floor Dough Section"
-    rtsp_url: "${DOUGH_CAM_RTSP:-rtsp://admin:pass@192.168.1.103:554/Streaming/Channels/102}"
+    rtsp_url: "rtsp://username:password@192.168.1.103:554/stream1"
     floor: "ground"
     zone_type: "dough_table"
     enabled: true
@@ -35,7 +35,7 @@ cameras:
 
   - camera_id: ground_packing
     name: "Ground Floor Packing Area"
-    rtsp_url: "${PACKING_CAM_RTSP:-rtsp://admin:pass@192.168.1.104:554/Streaming/Channels/102}"
+    rtsp_url: "rtsp://username:password@192.168.1.104:554/stream1"
     floor: "ground"
     zone_type: "packing"
     enabled: true
@@ -43,7 +43,7 @@ cameras:
 
   - camera_id: second_oven
     name: "Second Floor Oven & Cooking"
-    rtsp_url: "${OVEN_CAM_RTSP:-rtsp://admin:pass@192.168.1.105:554/Streaming/Channels/102}"
+    rtsp_url: "rtsp://username:password@192.168.1.105:554/stream1"
     floor: "second"
     zone_type: "oven"
     enabled: true
