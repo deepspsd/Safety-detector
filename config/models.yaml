@@ -1,0 +1,92 @@
+# models.yaml — AI Model Registry & Classifier Configuration
+#
+# Supported model_type values:
+#   - object_detector    (YOLO / ONNX)
+#   - image_classifier   (Teachable Machine TF / ONNX)
+#   - pose_model         (MediaPipe / Keypoints)
+#   - ocr                (Tesseract)
+#
+# crop_mode values for image_classifier:
+#   - full_person
+#   - upper_body
+#   - head
+#   - custom
+
+models:
+  - model_id: "yolo_detector"
+    name: "YOLOv8 Object & PPE Detector"
+    model_type: "object_detector"
+    model_path: "ppe_factory_v0_cash.pt"
+    confidence_threshold: 0.30
+    input_width: 640
+    input_height: 640
+    inference_interval_ms: 200
+    classes:
+      - Person
+      - Hardhat
+      - Mask
+      - NO-Hardhat
+      - NO-Mask
+      - Safety Vest
+      - NO-Safety Vest
+      - Bakery-Head-Cap
+      - NO-Bakery-Head-Cap
+      - Cylinder
+      - Cash
+      - Machinery
+      - Vehicle
+      - Document
+
+  - model_id: "head_cap"
+    name: "Bakery Hairnet / Head Cap Classifier"
+    model_type: "image_classifier"
+    model_path: "models/head_cap.onnx"
+    classes:
+      - HEAD_CAP
+      - NO_HEAD_CAP
+    crop_mode: "head"
+    padding: 0.15
+    confidence_threshold: 0.80
+    inference_interval_ms: 1000
+    smoothing_window: 5
+
+  - model_id: "uniform"
+    name: "Bakery Uniform Classifier"
+    model_type: "image_classifier"
+    model_path: "models/uniform.onnx"
+    classes:
+      - UNIFORM
+      - NO_UNIFORM
+    crop_mode: "upper_body"
+    padding: 0.10
+    upper_body_ratio: 0.65
+    confidence_threshold: 0.80
+    inference_interval_ms: 1000
+    smoothing_window: 5
+
+  - model_id: "bangle"
+    name: "Jewellery & Bangle Detector"
+    model_type: "image_classifier"
+    model_path: "models/bangle.onnx"
+    classes:
+      - BANGLE
+      - NO_BANGLE
+    crop_mode: "upper_body"
+    padding: 0.10
+    confidence_threshold: 0.80
+    inference_interval_ms: 1000
+    smoothing_window: 5
+
+  - model_id: "activity"
+    name: "Worker Activity Classifier"
+    model_type: "image_classifier"
+    model_path: "models/activity.onnx"
+    classes:
+      - WORKING
+      - IDLE
+      - WALKING
+    crop_mode: "full_person"
+    padding: 0.05
+    confidence_threshold: 0.75
+    inference_interval_ms: 1000
+    smoothing_window: 5

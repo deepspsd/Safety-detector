@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  cctv-ai-platform:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cctv_ai_monitor
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_ENV=production
+      - SECRET_KEY=${SECRET_KEY:-change-this-super-secret-key-for-production-deploy}
+      - DATABASE_URL=sqlite:///./safety.db
+      - YOLO_MODEL=ppe_factory_v0_cash.pt
+      - DETECTION_CONF=0.30
+      - CLASSIFIER_INTERVAL_MS=1000
+      - CLASSIFIER_SMOOTHING_WINDOW=5
+      - MOCK_MODE=${MOCK_MODE:-false}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - NTFY_TOPIC=${NTFY_TOPIC:-}
+    volumes:
+      - cctv_data:/app/backend/uploads
+      - cctv_face_data:/app/backend/face_data
+      - cctv_models:/app/backend/models
+      - ./config:/app/config:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  cctv_data:
+  cctv_face_data:
+  cctv_models:

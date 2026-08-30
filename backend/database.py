@@ -989,3 +989,93 @@ def ensure_enterprise_schema() -> None:
                             f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}"
                         )
                     )
+
+    # ── Extend alerts table with evidence + rule link ──────────────────────────
+    alert_additions = {
+        "evidence_path": "VARCHAR(500)",
+        "clip_path": "VARCHAR(500)",
+        "rule_id": "INTEGER",
+        "event_type": "VARCHAR(100)",
+    }
+    if "alerts" in inspector.get_table_names():
+        existing_alert_cols = {c["name"] for c in inspector.get_columns("alerts")}
+        with engine.begin() as conn:
+            for col_name, col_sql in alert_additions.items():
+                if col_name not in existing_alert_cols:
+                    conn.execute(
+                        text(f"ALTER TABLE alerts ADD COLUMN {col_name} {col_sql}")
+                    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW PLATFORM MODELS
+# These are added as part of the CCTV AI monitoring platform upgrade.
+# All columns are nullable for full backward compatibility with existing DB.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class VirtualLine(Base):
+    """A named virtual line on a camera frame used for inward/outward detection."""
+
+    __tablename__ = "virtual_lines"
+
+    id = Column(Integer, primary_key=True, index=True)
+    camera_id = Column(Integer, ForeignKey("cameras.id"), nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    # JSON [[x1,y1],[x2,y2]] pixel coordinates
+    points_json = Column(Text, nullable=False, default="[]")
+    # Positive side = inward direction label
+    inward_label = Column(String(100), nullable=True, default="INWARD")
+    outward_label = Column(String(100), nullable=True, default="OUTWARD")
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PersonAttributeResult(Base):
+    """Stores per-track image classifier results with temporal smoothing output."""
+
+    __tablename__ = "person_attribute_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    camera_id = Column(Integer, nullable=True, index=True)
+    track_id = Column(String(50), nullable=True, index=True)
+    classifier_name = Column(String(100), nullable=False)   # uniform, head_cap, bangle
+    predicted_class = Column(String(100), nullable=False)
+    confidence = Column(Float, nullable=True)
+    smoothed_class = Column(String(100), nullable=True)     # after temporal vote
+    smoothed_confidence = Column(Float, nullable=True)
+    model_loaded = Column(Boolean, default=False)
+    raw_probabilities_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Evidence(Base):
+    """Evidence snapshot or clip linked to an alert or platform event."""
+
+    __tablename__ = "evidence"
+
+    id = Column(Integer, primary_key=True, index=True)
+    alert_id = Column(Integer, ForeignKey("alerts.id"), nullable=True, index=True)
+    event_id = Column(String(64), nullable=True, index=True)  # SurveillanceEvent.event_id
+    camera_id = Column(Integer, nullable=True)
+    track_id = Column(String(50), nullable=True)
+    evidence_type = Column(String(50), default="snapshot")  # snapshot | clip
+    file_path = Column(String(500), nullable=True)
+    width = Column(Integer, nullable=True)
+    height = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SystemHealth(Base):
+    """Periodic camera/system health snapshot."""
+
+    __tablename__ = "system_health"
+
+    id = Column(Integer, primary_key=True, index=True)
+    camera_id = Column(Integer, nullable=True, index=True)
+    status = Column(String(50), default="unknown")   # online | offline | degraded
+    fps = Column(Float, nullable=True)
+    last_frame_at = Column(DateTime, nullable=True)
+    reconnect_count = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
+    recorded_at = Column(DateTime, default=datetime.utcnow)

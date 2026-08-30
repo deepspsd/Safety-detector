@@ -199,3 +199,208 @@ def load_zones_without_db(camera_id: int) -> Optional[Dict[str, List[List[int]]]
     """
     with _cache_lock:
         return _zone_cache.get(camera_id)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Zone transition tracker
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Structure: { (camera_id, track_id): zone_name | None }
+_zone_state: Dict[Tuple[int, str], Optional[str]] = {}
+_zone_state_lock = threading.Lock()
+
+
+def compute_zone_for_track(
+    camera_id: int,
+    track_id: str,
+    cx: float,
+    cy: float,
+    zones: Dict[str, List[List[int]]],
+) -> Optional[str]:
+    """Return the zone name that contains point (cx, cy), or None."""
+    for zone_name, polygon in zones.items():
+        if point_in_zone(cx, cy, polygon):
+            return zone_name
+    return None
+
+
+def update_track_zone(
+    camera_id: int,
+    track_id: str,
+    cx: float,
+    cy: float,
+    zones: Dict[str, List[List[int]]],
+) -> Optional[Dict]:
+    """Update zone state for a track and emit ENTER_ZONE / EXIT_ZONE events.
+
+    Returns a dict describing the transition, or None if no zone change occurred.
+
+    Dict keys: event_type, track_id, camera_id, zone, previous_zone
+    """
+    current_zone = compute_zone_for_track(camera_id, track_id, cx, cy, zones)
+    key = (camera_id, track_id)
+
+    with _zone_state_lock:
+        previous_zone = _zone_state.get(key)
+
+        if current_zone == previous_zone:
+            return None  # no change
+
+        _zone_state[key] = current_zone
+
+    # Determine event type
+    if previous_zone is not None and current_zone is None:
+        event_type = "EXIT_ZONE"
+        zone = previous_zone
+    elif previous_zone is None and current_zone is not None:
+        event_type = "ENTER_ZONE"
+        zone = current_zone
+    else:
+        event_type = "ZONE_CHANGE"
+        zone = current_zone
+
+    transition = {
+        "event_type": event_type,
+        "track_id": track_id,
+        "camera_id": camera_id,
+        "zone": zone,
+        "previous_zone": previous_zone,
+    }
+
+    # Emit platform event (best-effort — never crashes the detection loop)
+    try:
+        from services.platform_events import emit
+        emit(
+            event_type,
+            camera_id=camera_id,
+            track_id=track_id,
+            payload={"zone": zone, "previous_zone": previous_zone},
+            source="zone-engine",
+        )
+    except Exception as exc:
+        log.warning("[zone_service] Could not emit zone event: %s", exc)
+
+    log.debug(
+        "[zone_service] cam=%s track=%s %s → %s",
+        camera_id, track_id, previous_zone, current_zone,
+    )
+    return transition
+
+
+def reset_track_zone(camera_id: int, track_id: str) -> None:
+    """Remove zone state when a track is lost."""
+    with _zone_state_lock:
+        _zone_state.pop((camera_id, track_id), None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Virtual line crossing
+# ─────────────────────────────────────────────────────────────────────────────
+
+# A virtual line is defined by two points: [[x1,y1],[x2,y2]]
+# Crossing direction is determined by which side of the line the center moves from.
+
+
+def _side_of_line(
+    px: float, py: float,
+    lx1: float, ly1: float,
+    lx2: float, ly2: float,
+) -> float:
+    """Return the signed cross-product indicating which side of the line the point is on."""
+    return (lx2 - lx1) * (py - ly1) - (ly2 - ly1) * (px - lx1)
+
+
+def check_line_crossing(
+    camera_id: int,
+    track_id: str,
+    prev_center: Tuple[float, float],
+    curr_center: Tuple[float, float],
+    lines: Dict[str, List[List[int]]],
+) -> Optional[Dict]:
+    """Detect if a track has crossed any configured virtual line.
+
+    Args:
+        camera_id:   Camera identifier.
+        track_id:    Track identifier.
+        prev_center: Previous (cx, cy) of the track.
+        curr_center: Current (cx, cy) of the track.
+        lines:       { line_name: [[x1,y1],[x2,y2]] } from VirtualLine DB rows.
+
+    Returns:
+        Dict with keys (line_name, direction='INWARD'|'OUTWARD', camera_id, track_id),
+        or None if no crossing was detected.
+    """
+    if prev_center is None or curr_center is None:
+        return None
+
+    px, py = prev_center
+    cx, cy = curr_center
+
+    for line_name, pts in lines.items():
+        if len(pts) < 2:
+            continue
+        lx1, ly1 = pts[0][0], pts[0][1]
+        lx2, ly2 = pts[1][0], pts[1][1]
+
+        side_prev = _side_of_line(px, py, lx1, ly1, lx2, ly2)
+        side_curr = _side_of_line(cx, cy, lx1, ly1, lx2, ly2)
+
+        if side_prev == 0 or side_curr == 0:
+            continue  # on the line — skip
+        if (side_prev > 0) == (side_curr > 0):
+            continue  # same side — no crossing
+
+        # Crossing detected
+        # Convention: moving from positive to negative side = INWARD
+        direction = "INWARD" if side_prev > 0 else "OUTWARD"
+
+        event_payload = {
+            "line_name": line_name,
+            "direction": direction,
+            "camera_id": camera_id,
+            "track_id": track_id,
+        }
+
+        try:
+            from services.platform_events import emit
+            emit(
+                f"{direction}_MOVEMENT",
+                camera_id=camera_id,
+                track_id=track_id,
+                payload=event_payload,
+                source="zone-engine",
+            )
+        except Exception as exc:
+            log.warning("[zone_service] Could not emit line-crossing event: %s", exc)
+
+        log.debug(
+            "[zone_service] cam=%s track=%s crossed line '%s' → %s",
+            camera_id, track_id, line_name, direction,
+        )
+        return event_payload
+
+    return None
+
+
+def load_virtual_lines(camera_id: int, db) -> Dict[str, List[List[int]]]:
+    """Load VirtualLine rows for *camera_id* from the database.
+
+    Returns { line_name: [[x1,y1],[x2,y2]] }.
+    Skips malformed rows silently.
+    """
+    try:
+        from database import VirtualLine
+        rows = db.query(VirtualLine).filter(VirtualLine.camera_id == camera_id).all()
+    except Exception as exc:
+        log.error("[zone_service] load_virtual_lines DB error cam=%s: %s", camera_id, exc)
+        return {}
+
+    lines: Dict[str, List[List[int]]] = {}
+    for row in rows:
+        try:
+            pts = json.loads(row.points_json)
+            if isinstance(pts, list) and len(pts) >= 2:
+                lines[row.name] = [[int(p[0]), int(p[1])] for p in pts[:2]]
+        except Exception as exc:
+            log.warning("[zone_service] VirtualLine parse error row=%s: %s", row.id, exc)
+    return lines

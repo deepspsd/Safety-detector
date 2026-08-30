@@ -1,0 +1,105 @@
+# rules.yaml — Surveillance & Business Rule Definitions
+#
+# Rules are evaluated per camera / zone tick.
+# Supported rule actions:
+#   - alert (creates AlertCase and sends notification)
+#   - snapshot (captures frame evidence)
+#   - log (auditing only)
+
+rules:
+  - rule_id: "RULE_SHIFT_START_GROUND"
+    name: "Shift Start Check — Ground Floor"
+    floor: "ground"
+    rule_type: "shift_start"
+    required_start_time: "08:00"
+    grace_period_minutes: 15
+    severity: "high"
+    enabled: true
+    action: "alert"
+
+  - rule_id: "RULE_SHIFT_START_DOUGH"
+    name: "Shift Start Check — Dough Mixing"
+    floor: "dough"
+    rule_type: "shift_start"
+    required_start_time: "06:00"
+    grace_period_minutes: 15
+    severity: "high"
+    enabled: true
+    action: "alert"
+
+  - rule_id: "RULE_SHIFT_START_SECOND"
+    name: "Shift Start Check — Second Floor Oven"
+    floor: "second"
+    rule_type: "shift_start"
+    required_start_time: "05:00"
+    grace_period_minutes: 15
+    severity: "high"
+    enabled: true
+    action: "alert"
+
+  - rule_id: "RULE_EMPLOYEE_IDLE_DEFAULT"
+    name: "Employee Inactive > 5 Minutes"
+    rule_type: "employee_idle"
+    duration_seconds: 300
+    movement_threshold_px: 8
+    cooldown_seconds: 120
+    severity: "medium"
+    enabled: true
+    action: "alert"
+
+  - rule_id: "RULE_SHOP_ABSENCE"
+    name: "Shop Front Counter Unattended"
+    zone: "shop_counter"
+    floor: "shop"
+    rule_type: "shop_absence"
+    duration_seconds: 60
+    cooldown_seconds: 180
+    severity: "high"
+    enabled: true
+    action: "alert"
+
+  - rule_id: "RULE_CAMERA_BLOCKING"
+    name: "Person Blocking Camera Lens"
+    rule_type: "camera_standing"
+    duration_seconds: 60
+    cooldown_seconds: 120
+    severity: "high"
+    enabled: true
+    action: "alert"
+
+  - rule_id: "RULE_DIRTY_FLOOR"
+    name: "Floor Contamination / Spill Detected"
+    rule_type: "dirty_floor"
+    similarity_threshold: 0.85
+    persistence_seconds: 60
+    severity: "medium"
+    enabled: true
+    action: "alert"
+
+  - rule_id: "RULE_CASHBOX_THEFT"
+    name: "Cash Removed From Cashbox Zone"
+    zone: "cashbox"
+    rule_type: "cash_monitoring"
+    severity: "critical"
+    enabled: true
+    action: "alert"
+
+  - rule_id: "RULE_HEAD_CAP_VIOLATION"
+    name: "Missing Bakery Hairnet / Head Cap"
+    rule_type: "attribute_violation"
+    classifier: "head_cap"
+    violation_class: "NO_HEAD_CAP"
+    threshold: 0.80
+    severity: "medium"
+    enabled: true
+    action: "alert"
+
+  - rule_id: "RULE_UNIFORM_VIOLATION"
+    name: "Improper Uniform / Plain Clothes"
+    rule_type: "attribute_violation"
+    classifier: "uniform"
+    violation_class: "NO_UNIFORM"
+    threshold: 0.80
+    severity: "low"
+    enabled: true
+    action: "alert"

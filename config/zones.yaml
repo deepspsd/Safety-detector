@@ -1,0 +1,44 @@
+# zones.yaml — Configurable Camera Polygon Zones and Virtual Lines
+#
+# Normalized coordinates (0.0 to 1.0) or absolute pixel coordinates.
+# Each zone maps to a camera ID.
+
+zones:
+  shop_01:
+    - name: "shop_counter"
+      polygon: [[50, 100], [250, 100], [250, 300], [50, 300]]
+      description: "Customer service counter area"
+
+    - name: "cashbox"
+      polygon: [[180, 150], [240, 150], [240, 220], [180, 220]]
+      description: "Cash register drawer zone"
+
+  ground_entrance:
+    - name: "entrance"
+      polygon: [[10, 50], [300, 50], [300, 400], [10, 400]]
+      description: "Factory main entry portal"
+
+  ground_dough:
+    - name: "dough_table"
+      polygon: [[100, 120], [450, 120], [450, 400], [100, 400]]
+      description: "Dough kneading and mixing station"
+
+  ground_packing:
+    - name: "packing"
+      polygon: [[80, 100], [500, 100], [500, 420], [80, 420]]
+      description: "Finished goods packing conveyor"
+
+  second_oven:
+    - name: "oven"
+      polygon: [[150, 100], [480, 100], [480, 380], [150, 380]]
+      description: "Baking oven and stove hot zone"
+
+# Virtual lines for direction counting (inward / outward)
+lines:
+  ground_entrance:
+    - line_id: "line_main_entry"
+      name: "Main Entrance Boundary"
+      p1: [50, 350]
+      p2: [350, 350]
+      inward_direction: "down"
+      outward_direction: "up"

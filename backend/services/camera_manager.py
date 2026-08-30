@@ -673,6 +673,99 @@ class _ManagedCamera:
                             f"[CamMgr] eating_from_store error (cam={self.camera_id}): {eat_exc}"
                         )
 
+                # ─── NEW PLATFORM SERVICES ────────────────────────────────────────
+                # These calls are wrapped individually so a failure in one module
+                # never breaks the rest of the detection loop tick.
+                # ─────────────────────────────────────────────────────────────────
+
+                # ── Zone transitions + line crossing ───────────────────────────
+                try:
+                    from services.zone_service import update_track_zone
+                    for person in persons:
+                        tid = str(person.get("track_id", ""))
+                        if not tid:
+                            continue
+                        bx = person["bbox"]
+                        cx = (bx[0] + bx[2]) / 2
+                        cy = (bx[1] + bx[3]) / 2
+                        update_track_zone(
+                            self.camera_id, tid, cx, cy, zones or {}
+                        )
+                except Exception as ze:
+                    log.debug("[CamMgr] zone_transition error (cam=%s): %s", self.camera_id, ze)
+
+                # ── Attribute classifiers (uniform, head_cap, bangle) ──────────
+                try:
+                    from services.classifier_adapter import (
+                        ClassifierCache, TemporalSmoother, get_classifier,
+                    )
+                    from services.person_cropper import CropMode, crop_person
+
+                    if not hasattr(self, "_clf_cache"):
+                        self._clf_cache = ClassifierCache()
+                        self._clf_smoother = TemporalSmoother()
+                        self._classifiers = {
+                            name: get_classifier(name)
+                            for name in ("uniform", "head_cap")
+                        }
+
+                    for person in persons:
+                        tid = str(person.get("track_id", ""))
+                        if not tid:
+                            continue
+                        for clf_name, clf in self._classifiers.items():
+                            if not self._clf_cache.should_run(tid, clf_name):
+                                continue
+                            crop_mode = (
+                                CropMode.HEAD if clf_name == "head_cap" else CropMode.UPPER_BODY
+                            )
+                            crop = crop_person(frame, person["bbox"], crop_mode=crop_mode)
+                            if crop is None:
+                                continue
+                            result = clf.predict(crop)
+                            self._clf_cache.record(tid, clf_name)
+                            self._clf_smoother.push(tid, clf_name, result)
+
+                        # Evict stale tracks every 30 s
+                        active_ids = [str(p.get("track_id", "")) for p in persons]
+                        self._clf_cache.evict_old_tracks(active_ids)
+                        self._clf_smoother.evict_old_tracks(active_ids)
+                except Exception as clf_exc:
+                    log.debug("[CamMgr] classifier error (cam=%s): %s", self.camera_id, clf_exc)
+
+                # ── Idle / absence / camera-standing rule state machines ────────
+                try:
+                    from services.rule_engine_v2 import (
+                        absence_rule, camera_standing_rule, idle_rule, shift_checker,
+                    )
+                    from services.tracking_layer import tracker as track_store
+
+                    person_count_in_shop = 0
+                    for person in persons:
+                        tid = str(person.get("track_id", ""))
+                        if not tid:
+                            continue
+                        obs = track_store.get_track(self.camera_id, tid)
+                        mvstate = obs.movement_state if obs else "stationary"
+                        cur_zone = obs.current_zone if obs else None
+
+                        idle_rule.update(self.camera_id, tid, mvstate, zone=cur_zone)
+
+                        in_standing_zone = cur_zone == "camera_standing" or bool(
+                            active_zones & {"camera_standing", "camera_block"}
+                        )
+                        camera_standing_rule.update(self.camera_id, tid, in_standing_zone)
+
+                        if cur_zone in ("shop_counter", "shop", None) and self.floor in ("shop", "bakery"):
+                            person_count_in_shop += 1
+
+                    absence_rule.update(self.camera_id, person_count_in_shop)
+                    shift_checker.tick(self.camera_id, self.floor, len(persons))
+                except Exception as re_exc:
+                    log.debug("[CamMgr] rule-sm error (cam=%s): %s", self.camera_id, re_exc)
+
+                # ─── END NEW PLATFORM SERVICES ────────────────────────────────
+
             except Exception as exc:
                 log.error(
                     f"[CamMgr] Detection loop error (cam={self.camera_id}): {exc}"

@@ -9,10 +9,12 @@ from fastapi.staticfiles import StaticFiles
 from routers import alerts, auth, cameras, cctv, detection, faces, users, video
 from routers.alarm import router as alarm_router
 from routers.attendance import router as attendance_router
+from routers.dashboard import router as dashboard_router
 from routers.documents import router as documents_router
 from routers.enterprise import router as enterprise_router
 from routers.settings import baseline_router
 from routers.settings import router as settings_router
+from routers.tracks import router as tracks_router
 from routers.workflow import router as workflow_router
 from services.yolo_service import load_model
 
@@ -63,6 +65,8 @@ app.include_router(attendance_router)  # GET/POST /attendance/*
 app.include_router(documents_router)  # GET/POST /documents/*
 app.include_router(workflow_router)  # GET /workflow/*
 app.include_router(alarm_router)  # POST /alarm/*
+app.include_router(tracks_router)  # GET /tracks/*
+app.include_router(dashboard_router)  # GET /dashboard/*
 
 # ── /api prefix aggregate router (production single-origin compatibility) ──────
 from fastapi import APIRouter as _APIRouter
@@ -81,6 +85,8 @@ _api_router.include_router(attendance_router)
 _api_router.include_router(documents_router)
 _api_router.include_router(workflow_router)
 _api_router.include_router(alarm_router)
+_api_router.include_router(tracks_router)
+_api_router.include_router(dashboard_router)
 app.include_router(_api_router)
 
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)

@@ -140,6 +140,18 @@ export const alarmApi = {
   test:    ()                  => api.get('/alarm/test'),
 }
 
+// ── Tracks & Live State ───────────────────────────
+export const tracksApi = {
+  listAll:   ()                   => api.get('/tracks'),
+  byCamera:  (cameraId)           => api.get(`/tracks/${cameraId}`),
+  single:    (cameraId, trackId)  => api.get(`/tracks/${cameraId}/${trackId}`),
+}
+
+// ── Dashboard Overview ────────────────────────────
+export const dashboardApi = {
+  summary: () => api.get('/dashboard/summary'),
+}
+
 // ── Platform / Analytics ─────────────────────────
 export const platformApi = {
   models:          ()         => api.get('/platform/models'),
