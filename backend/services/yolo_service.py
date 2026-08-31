@@ -667,7 +667,7 @@ def _run_inference_with(frame: np.ndarray, model, is_ppe: bool) -> List[Dict]:
     _raw_box_count = sum(len(r.boxes) for r in results)
     if _raw_box_count > 0:
         _raw_labels = [model.names[int(box.cls[0])] for r in results for box in r.boxes]
-        print(f"[INFERENCE] raw_boxes={_raw_box_count} labels={_raw_labels}")
+        log.debug("[INFERENCE] raw_boxes=%d labels=%s", _raw_box_count, _raw_labels)
     for r in results:
         for box in r.boxes:
             if is_ppe:
@@ -1316,8 +1316,9 @@ def _run_pipeline(
     _ocr_camera_id = ocr_camera_id
     _ocr_user_id = ocr_user_id
 
-    print(
-        f"[PIPELINE] role={role} | sim={_use_simulation} | ded_helmet={_helmet_model_dedicated} | filters={detection_filters}"
+    log.debug(
+        "[PIPELINE] role=%s | sim=%s | ded_helmet=%s | filters=%s",
+        role, _use_simulation, _helmet_model_dedicated, detection_filters,
     )
 
     # ── Camera Blockage / Tampering Check ────────────────────────────────
@@ -1439,9 +1440,7 @@ def _run_pipeline(
         }
 
     # ── All other roles: general PPE pipeline ───────────────────────
-    print(
-        f"[PIPELINE] role={role} | sim={_use_simulation} | filters={detection_filters}"
-    )
+    log.debug("[PIPELINE] role=%s | sim=%s | filters=%s", role, _use_simulation, detection_filters)
     active_model, active_is_ppe = _get_model_for_role(role)
 
     # Mapping from violation class → its compliant counterpart (model class names)
@@ -1488,9 +1487,12 @@ def _run_pipeline(
             or d["label"] in allowed_compliant  # keep corresponding compliant
         ]
     after_filter = [d["label"] for d in raw]
-    print(
-        f"[FILTER] before={before_filter} | after={after_filter} | filters={detection_filters}"
-    )
+    # Only log when there's something worth seeing (suppresses empty-frame noise)
+    if before_filter or after_filter:
+        log.debug(
+            "[FILTER] before=%s | after=%s | filters=%s",
+            before_filter, after_filter, detection_filters,
+        )
 
     persons = [d for d in raw if d["det_type"] == "person"]
     ppe_dets = [d for d in raw if d["det_type"] in ("violation", "compliant")]

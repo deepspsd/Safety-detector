@@ -24,6 +24,16 @@ class Settings(BaseSettings):
     ALERT_COOLDOWN: int = 3
     FRAME_SKIP: int = 3  # process every Nth frame in video uploads
 
+    # ── Bakery Head-Cap compliance ───────────────────────────────────────────
+    # How many seconds a headcap must be continuously missing before an alert
+    # is fired.  Prevents false alerts from single-frame detection gaps.
+    HEADCAP_MISSING_SECONDS: float = 3.0
+    # After an alert fires for a person, suppress further alerts for this many
+    # seconds (unless they become compliant and then violate again).
+    HEADCAP_ALERT_COOLDOWN: float = 30.0
+    # Minimum YOLO confidence for a Bakery-Head-Cap detection to count as valid.
+    HEADCAP_CONF_THRESHOLD: float = 0.25
+
     # ── Idle tracking limits (seconds) ─────────────────────────────────────
     IDLE_LIMITS: dict = {
         "default": 300,      # 5 min — all floors

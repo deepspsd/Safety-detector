@@ -20,6 +20,7 @@ import asyncio
 import base64
 import datetime
 import json
+import os
 import ssl
 import threading
 import time
@@ -308,8 +309,12 @@ class CameraReader:
     # ── OpenCV generic loop ───────────────────────────────────────────────────
 
     def _opencv_loop(self):
-        """Generic OpenCV VideoCapture loop (RTSP / fallback)."""
-        cap = cv2.VideoCapture(self.url)
+        """Generic OpenCV VideoCapture loop (RTSP / fallback) with TCP transport."""
+        # Force TCP transport for RTSP to prevent UDP packet loss and HEVC/H.264 macroblock tearing
+        if self._is_rtsp:
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay"
+
+        cap = cv2.VideoCapture(self.url, cv2.CAP_FFMPEG if self._is_rtsp else cv2.CAP_ANY)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 8000)
         cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)
@@ -331,12 +336,8 @@ class CameraReader:
             t0 = time.time()
             ret, frame = cap.read()
 
-            if ret and frame is not None:
+            if ret and frame is not None and frame.size > 0:
                 failures = 0
-                for _ in range(2):
-                    ok, f = cap.read()
-                    if ok and f is not None:
-                        frame = f
                 frame_resized = cv2.resize(frame, (INFER_WIDTH, INFER_HEIGHT))
                 with self._lock:
                     self._frame = frame_resized

@@ -70,6 +70,11 @@ _ALERT_COOLDOWN_SECS: float = 90.0
 # Cash class label strings — includes exact model output + common lowercase variants
 _CASH_LABELS = {"Cash", "cash", "banknote", "money", "note", "currency", "rupee", "bill"}
 
+# Minimum confidence to treat a detection as real Cash.
+# The global DETECTION_CONF=0.30 is intentionally low for PPE.
+# Cash false-positives (random boxes labelled Cash) are suppressed here.
+_CASH_MIN_CONF: float = 0.65
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # State machine
@@ -266,6 +271,15 @@ class CashEventTracker:
                 if label not in _CASH_LABELS:
                     continue
 
+                # ── Confidence gate — suppress false positives ──────────────
+                conf = float(det.get("confidence", 0.0))
+                if conf < _CASH_MIN_CONF:
+                    log.debug(
+                        "[CashTracker] low-conf Cash dropped: %.2f < %.2f",
+                        conf, _CASH_MIN_CONF,
+                    )
+                    continue
+
                 # Assign a stable track id from the detection dict
                 raw_tid = det.get("track_id")
                 if raw_tid is None:
@@ -448,15 +462,19 @@ def check_cash_zone(
     frame           : BGR ndarray for snapshot on alert (optional)
     """
     # Extract Cash detections (class label 'Cash' or lowercase variants)
+    # Pre-filter by confidence here too so low-conf detections never reach the tracker
     cash_dets = [
         d for d in detections
         if str(d.get("label", "")).lower() in _CASH_LABELS
+        and float(d.get("confidence", 0.0)) >= _CASH_MIN_CONF
     ]
 
-    # Also accept the numeric class id=14 if label not set
+    # Also accept the numeric class id=14 if label not set (with same conf gate)
     cash_dets += [
         d for d in detections
-        if d.get("class_id") == 14 and d not in cash_dets
+        if d.get("class_id") == 14
+        and d not in cash_dets
+        and float(d.get("confidence", 0.0)) >= _CASH_MIN_CONF
     ]
 
     tracker = get_tracker(camera_id)

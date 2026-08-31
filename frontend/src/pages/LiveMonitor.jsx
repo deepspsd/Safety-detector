@@ -347,7 +347,16 @@ export default function LiveMonitor() {
       }
     }
 
-    if (wsRef.current?.readyState === WebSocket.OPEN) return
+    // ── Close any lingering session before opening a new one ─────────────────
+    // Guard against OPEN *and* CONNECTING/CLOSING states — all three can
+    // leave a dangling backend session if we open a second socket on top.
+    const prev = wsRef.current
+    if (prev) {
+      if (prev.readyState === WebSocket.OPEN || prev.readyState === WebSocket.CONNECTING) {
+        prev.close()
+      }
+      wsRef.current = null
+    }
 
     setFaceResult(null); setCamFps(0)
     const ws = new WebSocket(CCTV_WS_URL)

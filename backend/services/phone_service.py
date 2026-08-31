@@ -29,9 +29,10 @@ log = logging.getLogger("phone_service")
 # ── COCO class IDs ────────────────────────────────────────────────
 PHONE_CLASS_ID = 67
 PERSON_CLASS_ID = 0
+PHONE_PROXY_CLASS_IDS = [67, 65, 73, 32]  # cell phone (67), remote (65), book (73), sports ball (32)
 
 # ── Detection thresholds ──────────────────────────────────────────
-CONF_THRESHOLD = 0.38  # balanced threshold — prevents banknotes/cards from falsely triggering phone detection
+CONF_THRESHOLD = 0.60  # 60% confidence threshold for phone detection
 IMG_SIZE = 960  # higher resolution = much better small-object detection
 
 # ── Ear / head region thresholds ─────────────────────────────────
@@ -132,18 +133,20 @@ def _get_person_phone_status(
 
 def _run_phone_inference(frame: np.ndarray, model) -> Tuple[List[Dict], List[Dict]]:
     """
-    Run COCO model at 960px/conf=0.12 to maximise phone recall.
+    Run COCO model at 960px with phone + proxy classes, followed by
+    focused hand/torso crop inference per person for maximum recall.
     Returns (phones, persons).
     """
     from config import settings
 
+    target_classes = [PERSON_CLASS_ID] + PHONE_PROXY_CLASS_IDS
     results = model(
         frame,
         verbose=False,
         imgsz=IMG_SIZE,
         conf=CONF_THRESHOLD,
         iou=settings.NMS_IOU,
-        classes=[PHONE_CLASS_ID, PERSON_CLASS_ID],
+        classes=target_classes,
     )
     phones, persons = [], []
     for r in results:
@@ -152,14 +155,47 @@ def _run_phone_inference(frame: np.ndarray, model) -> Tuple[List[Dict], List[Dic
             conf = round(float(box.conf[0]), 3)
             x1, y1, x2, y2 = [int(v) for v in box.xyxy[0]]
             det = {
-                "label": model.names[cls_id],
+                "label": "cell phone",
                 "confidence": conf,
                 "bbox": [x1, y1, x2, y2],
             }
-            if cls_id == PHONE_CLASS_ID:
+            if cls_id in PHONE_PROXY_CLASS_IDS:
                 phones.append(det)
             elif cls_id == PERSON_CLASS_ID:
+                det["label"] = model.names[cls_id]
                 persons.append(det)
+
+    # Focused hand/torso crop inference: if persons detected and no phone found on full frame,
+    # crop the person's hand/chest area (20%-85% height) where phones are held
+    if persons and not phones:
+        for p in persons:
+            px1, py1, px2, py2 = p["bbox"]
+            pw, ph = px2 - px1, py2 - py1
+            hy1 = max(0, py1 + int(ph * 0.18))
+            hy2 = min(frame.shape[0], py1 + int(ph * 0.85))
+            hx1 = max(0, px1 - int(pw * 0.15))
+            hx2 = min(frame.shape[1], px2 + int(pw * 0.15))
+            crop = frame[hy1:hy2, hx1:hx2]
+            if crop.size > 0 and crop.shape[0] > 40 and crop.shape[1] > 40:
+                crop_res = model(
+                    crop,
+                    verbose=False,
+                    conf=CONF_THRESHOLD,
+                    iou=settings.NMS_IOU,
+                    classes=target_classes,
+                )
+                for cr in crop_res:
+                    for cb in cr.boxes:
+                        c_cls = int(cb.cls[0])
+                        if c_cls in PHONE_PROXY_CLASS_IDS:
+                            c_conf = round(float(cb.conf[0]), 3)
+                            cx1, cy1, cx2, cy2 = [int(v) for v in cb.xyxy[0]]
+                            phones.append({
+                                "label": "cell phone",
+                                "confidence": c_conf,
+                                "bbox": [hx1 + cx1, hy1 + cy1, hx1 + cx2, hy1 + cy2],
+                            })
+
     return phones, persons
 
 
