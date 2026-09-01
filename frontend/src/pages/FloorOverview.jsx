@@ -22,48 +22,15 @@ const STATUS_COLORS = {
   error:   { bg: 'rgba(239,68,68,0.15)',   border: 'rgba(239,68,68,0.4)',   text: '#f87171' },
 }
 
-const POLL_MS = 2500
+import CameraFullscreenModal from '../components/CameraFullscreenModal'
 
-/** Single camera tile that polls /cameras/{id}/snapshot every POLL_MS */
+const POLL_MS = 3000
+
+/** Single camera tile that renders live MJPEG stream or snapshot fallback */
 function CameraTile({ camera, onSelect }) {
-  const [imgSrc,      setImgSrc]      = useState(null)
-  const [lastUpdated, setLastUpdated] = useState(null)
-  const [pollErr,     setPollErr]     = useState(false)
-  const isMounted = useRef(true)
+  const [streamError, setStreamError] = useState(false)
   const BASE = import.meta.env.VITE_API_BASE_URL?.replace(/\/api$/, '') || ''
-
-  useEffect(() => {
-    isMounted.current = true
-    let tid
-
-    const fetchSnap = async () => {
-      if (!camera.id || camera.status === 'offline') return
-      try {
-        // snapshot returns JSON { frame_b64: "data:image/jpeg;base64,..." }
-        const token = localStorage.getItem('token')
-        const url = `${BASE}/api/cameras/${camera.id}/snapshot?t=${Date.now()}`
-        const res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
-        if (!res.ok) throw new Error(res.status)
-        const data = await res.json()
-        if (!isMounted.current) return
-        if (data.frame_b64) {
-          setImgSrc(prev => { if (prev && prev.startsWith('blob:')) URL.revokeObjectURL(prev); return data.frame_b64 })
-          setLastUpdated(new Date())
-          setPollErr(false)
-        } else {
-          setPollErr(true)
-        }
-      } catch {
-        if (isMounted.current) setPollErr(true)
-      } finally {
-        if (isMounted.current) tid = setTimeout(fetchSnap, POLL_MS)
-      }
-    }
-
-    fetchSnap()
-    return () => { isMounted.current = false; clearTimeout(tid); if (imgSrc && imgSrc.startsWith('blob:')) URL.revokeObjectURL(imgSrc) }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [camera.id, camera.status])
+  const streamUrl = `${BASE}/api/cameras/${camera.id}/stream`
 
   const sc = STATUS_COLORS[camera.status] || STATUS_COLORS.offline
 
@@ -71,22 +38,24 @@ function CameraTile({ camera, onSelect }) {
     <div
       className="camera-tile"
       onClick={() => onSelect(camera)}
-      title={`Open ${camera.name} in Live Monitor`}
+      title={`Inspect ${camera.name}`}
+      style={{ cursor: 'pointer' }}
     >
-      {/* snapshot / placeholder */}
-      <div className="camera-tile-img-wrap">
-        {imgSrc ? (
-          <img src={imgSrc} alt={camera.name} className="camera-tile-img" />
+      {/* stream / placeholder */}
+      <div className="camera-tile-img-wrap" style={{ position: 'relative', background: '#090d16' }}>
+        {camera.status === 'online' && !streamError ? (
+          <img
+            src={streamUrl}
+            alt={camera.name}
+            className="camera-tile-img"
+            onError={() => setStreamError(true)}
+            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          />
         ) : (
           <div className="camera-tile-no-feed">
-            {pollErr
-              ? <WifiOff size={28} color="#f87171" />
-              : camera.status === 'offline'
-                ? <WifiOff size={28} color="#64748b" />
-                : <span className="spinner" style={{ width: 28, height: 28 }} />
-            }
+            <WifiOff size={28} color={camera.status === 'offline' ? '#64748b' : '#f87171'} />
             <span style={{ marginTop: 8, fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              {pollErr ? 'No signal' : camera.status === 'offline' ? 'Offline' : 'Connecting…'}
+              {camera.status === 'offline' ? 'Offline' : 'Connecting feed…'}
             </span>
           </div>
         )}
@@ -112,12 +81,6 @@ function CameraTile({ camera, onSelect }) {
             </div>
           )}
         </div>
-        {lastUpdated && (
-          <span className="camera-tile-time">
-            <Clock size={10} />
-            {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-          </span>
-        )}
       </div>
     </div>
   )
@@ -132,6 +95,7 @@ export default function FloorOverview() {
   const [,              setStats]        = useState(null)
   const [loading,       setLoading]      = useState(true)
   const [floorAlerts,   setFloorAlerts]  = useState({})
+  const [selectedCam,   setSelectedCam]  = useState(null)
 
   const floor = FLOORS.find(f => f.id === floorId) || FLOORS[0]
 
@@ -153,9 +117,9 @@ export default function FloorOverview() {
   useEffect(() => { setLoading(true); load() }, [load])
 
   const handleSelect = (cam) => {
-    // Navigate to live monitor with camera pre-selected via query param
-    navigate(`/monitor?camera=${cam.id}`)
+    setSelectedCam(cam)
   }
+
 
   const onlineCams  = cameras.filter(c => c.status === 'online').length
   const totalCams   = cameras.length
@@ -261,8 +225,16 @@ export default function FloorOverview() {
       {/* Refresh hint */}
       <div style={{ marginTop: 24, display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-muted)', fontSize: '0.72rem' }}>
         <RefreshCw size={11} />
-        Snapshots auto-refresh every {POLL_MS / 1000}s
+        Live feeds auto-streaming via on-premise inference pipeline
       </div>
+
+      {/* In-place fullscreen modal */}
+      {selectedCam && (
+        <CameraFullscreenModal
+          camera={selectedCam}
+          onClose={() => setSelectedCam(null)}
+        />
+      )}
     </div>
   )
 }

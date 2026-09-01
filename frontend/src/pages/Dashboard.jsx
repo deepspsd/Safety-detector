@@ -61,12 +61,25 @@ function liveTime() {
   return new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })
 }
 
+function getWsBaseURL() {
+  const envURL = import.meta.env.VITE_API_BASE_URL
+  if (envURL && !envURL.includes('localhost') && !envURL.includes('127.0.0.1')) {
+    return envURL
+      .replace(/^http/, 'ws')
+      .replace(/\/api\/?$/, '')
+      .replace(/\/$/, '')
+  }
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  return `${proto}://${window.location.host}`
+}
+
 export default function Dashboard() {
   const [stats,      setStats]      = useState(null)
   const [summary,    setSummary]    = useState(null)
   const [loading,    setLoading]    = useState(true)
   const [now,        setNow]        = useState(liveTime())
   const [refreshing, setRefreshing] = useState(false)
+  const [wsOnline,   setWsOnline]   = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -80,12 +93,61 @@ export default function Dashboard() {
     finally { setLoading(false); setRefreshing(false) }
   }, [])
 
-
-  // Auto-refresh every 30s
+  // Auto-refresh fallback every 30s
   useEffect(() => { load() }, [load])
   useEffect(() => {
     const t = setInterval(load, 30000)
     return () => clearInterval(t)
+  }, [load])
+
+  // Real-time WebSocket connection to /ws/state
+  useEffect(() => {
+    let ws = null
+    let reconnectTid = null
+
+    const connectWs = () => {
+      try {
+        const wsUrl = `${getWsBaseURL()}/ws/state`
+        ws = new WebSocket(wsUrl)
+
+        ws.onopen = () => {
+          setWsOnline(true)
+        }
+
+        ws.onmessage = (evt) => {
+          try {
+            const data = JSON.parse(evt.data)
+            if (data.type === 'state_update') {
+              // Update live telemetry without full page reload
+              if (data.live_persons !== undefined) {
+                setStats(prev => prev ? { ...prev, total_persons: data.live_persons } : prev)
+              }
+            } else if (data.type === 'alert') {
+              load() // Reload KPI immediately on new alert
+            }
+          } catch {
+            // non-json keepalive
+          }
+        }
+
+        ws.onerror = () => {
+          setWsOnline(false)
+        }
+
+        ws.onclose = () => {
+          setWsOnline(false)
+          reconnectTid = setTimeout(connectWs, 5000)
+        }
+      } catch {
+        reconnectTid = setTimeout(connectWs, 5000)
+      }
+    }
+
+    connectWs()
+    return () => {
+      if (ws) ws.close()
+      if (reconnectTid) clearTimeout(reconnectTid)
+    }
   }, [load])
 
   // Live clock
@@ -95,6 +157,7 @@ export default function Dashboard() {
   }, [])
 
   const handleRefresh = () => { setRefreshing(true); load() }
+
 
   const compliancePct   = stats?.compliance_percentage ?? 0
   const trendData       = buildTrend(stats?.recent_alerts)
@@ -126,6 +189,21 @@ export default function Dashboard() {
               fontWeight: 700, fontSize: '0.78rem',
             }}>
               🧁 Bakery Food Safety
+            </span>
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+              padding: '2px 8px', borderRadius: 99,
+              background: wsOnline ? 'rgba(16,185,129,0.15)' : 'rgba(100,116,139,0.15)',
+              color: wsOnline ? '#34d399' : '#94a3b8',
+              fontWeight: 600, fontSize: '0.72rem',
+              border: `1px solid ${wsOnline ? 'rgba(16,185,129,0.3)' : 'rgba(100,116,139,0.3)'}`,
+            }}>
+              <span style={{
+                width: 6, height: 6, borderRadius: '50%',
+                background: wsOnline ? '#10b981' : '#94a3b8',
+                boxShadow: wsOnline ? '0 0 6px #10b981' : 'none',
+              }} />
+              {wsOnline ? 'REAL-TIME LIVE' : 'CONNECTING'}
             </span>
             <span style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>{now}</span>
           </p>

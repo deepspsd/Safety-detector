@@ -480,6 +480,53 @@ def startup():
     except Exception as _ie:
         print(f"⚠️  Inference pool startup warning: {_ie}")
 
+    # ── Initialize WebSocket Broadcaster & Periodic Telemetry ─────────────
+    try:
+        import asyncio
+        from services.ws_broadcaster import broadcaster
+
+        try:
+            loop = asyncio.get_event_loop()
+            broadcaster.set_loop(loop)
+        except Exception:
+            pass
+
+        def _telemetry_broadcast_loop():
+            import time
+            from services import camera_manager
+            from services.tracking_layer import tracker as _tracker
+            from database import SessionLocal, AlertCase
+
+            while True:
+                time.sleep(1.0)
+                try:
+                    statuses = camera_manager.list_status()
+                    # Real-time person count across cameras
+                    live_tracks = 0
+                    for (cam_id, tid) in _tracker.all_track_keys():
+                        obs = _tracker.get_track(cam_id, tid)
+                        if obs and (time.time() - obs.last_seen_at.timestamp()) < 5:
+                            live_tracks += 1
+
+                    broadcaster.broadcast_sync({
+                        "type": "state_update",
+                        "timestamp": time.time(),
+                        "cameras": statuses,
+                        "live_persons": live_tracks,
+                    })
+                except Exception:
+                    pass
+
+        telemetry_thread = threading.Thread(
+            target=_telemetry_broadcast_loop,
+            name="telemetry-broadcaster",
+            daemon=True,
+        )
+        telemetry_thread.start()
+        print("✅ WebSocket real-time telemetry broadcaster started")
+    except Exception as _we:
+        print(f"⚠️  WS Broadcaster startup warning: {_we}")
+
     # ── Nightly auto clock-out scheduler (pure threading — no extra dependency) ──
     # Runs at 19:00 IST (UTC+05:30 = 13:30 UTC) every day.
     # Closes all open attendance sessions and sends a Telegram notification.

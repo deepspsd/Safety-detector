@@ -59,16 +59,44 @@ INFER_HEIGHT = 720
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# ── Stream status constants ──────────────────────────────────────────────────
+STREAM_ONLINE     = "ONLINE"
+STREAM_DEGRADED   = "DEGRADED"
+STREAM_OFFLINE    = "OFFLINE"
+STREAM_RECOVERING = "RECOVERING"
+
+# Frames with more than this fraction of green channel dominance are rejected.
+# Real CCTV frames: green never dominates this strongly (unlike H.264 decoder
+# artifacts which produce solid green frames).
+_GREEN_DOMINANT_RATIO = 0.85
+
+# A frame is considered frozen if its hash matches the previous one this many
+# consecutive times at >= 10 fps capture — indicates a genuinely stuck decoder.
+_FROZEN_CONSECUTIVE_MAX = 30  # ~3 s at 10 fps
+
+# How many consecutive bad frames before declaring DEGRADED
+_BAD_FRAME_DEGRADED_THRESH = 5
+
+# How many seconds without any valid frame before OFFLINE
+_OFFLINE_TIMEOUT_SECS = 30.0
+
+
 class CameraReader:
     """
     Background thread that continuously reads and discards all but the LATEST
-    frame from the camera stream.  Only the freshest frame is kept in memory
-    so the inference pipeline never processes stale data.
+    valid frame from the camera stream.  Only fresh, non-corrupted frames are
+    kept in memory so the inference pipeline never processes stale or green data.
 
     Supports:
       • MJPEG/HTTP  (IP Webcam Android: http://ip:8080/video)
       • RTSP        (rtsp://user:pass@ip/stream)
       • JPEG poll   (IP Webcam: http://ip:8080/shot.jpg)
+      • Webcam index (int / "0", "1", ...)
+
+    New in v3.2 — stream health:
+      stream_status   ONLINE | DEGRADED | OFFLINE | RECOVERING
+      bad_frame_count running count of rejected frames (green/frozen/corrupt)
+      decoder_error_count  count of cap.read() failures
     """
 
     # Minimum time between consecutive cap.read() calls when the camera itself
@@ -86,7 +114,16 @@ class CameraReader:
         self._frame_count = 0
         self._last_frame_ts = 0.0
         self._reconnect_count = 0
+        # Stream health counters
+        self.bad_frame_count: int = 0
+        self.decoder_error_count: int = 0
+        self._consecutive_bad: int = 0
+        self._consecutive_frozen: int = 0
+        self._stream_status: str = STREAM_OFFLINE
+        self._last_frame_hash: Optional[bytes] = None
         u = url.lower()
+        # Support integer webcam index passed as string ("0", "1", …)
+        self._is_webcam = u.isdigit() or (len(u) == 1 and u in "0123456789")
         self._is_shot = any(
             k in u for k in ("shot.jpg", "photo.jpg", "snap", "capture")
         )
@@ -113,26 +150,132 @@ class CameraReader:
     def fps(self) -> float:
         return round(self._fps, 1)
 
+    @property
+    def stream_status(self) -> str:
+        """ONLINE | DEGRADED | OFFLINE | RECOVERING."""
+        if self._last_frame_ts == 0.0:
+            return STREAM_OFFLINE
+        if time.time() - self._last_frame_ts > _OFFLINE_TIMEOUT_SECS:
+            return STREAM_OFFLINE
+        if self._consecutive_bad >= _BAD_FRAME_DEGRADED_THRESH:
+            return STREAM_DEGRADED
+        return self._stream_status
+
     def metrics(self) -> dict:
         return {
             "fps": self.fps(),
+            "stream_status": self.stream_status,
+            "bad_frame_count": self.bad_frame_count,
+            "decoder_error_count": self.decoder_error_count,
+            "reconnect_count": self._reconnect_count,
             "last_frame_at": (
                 datetime.datetime.utcfromtimestamp(self._last_frame_ts).isoformat()
                 + "Z"
                 if self._last_frame_ts
                 else None
             ),
-            "reconnect_count": self._reconnect_count,
             "last_error": self._error,
         }
+
+    # ── Frame validation helpers ───────────────────────────────────────────────
+
+    def _is_green_frame(self, frame: np.ndarray) -> bool:
+        """
+        Detect H.264 decoder artifacts: solid green frames produced when the
+        decoder loses sync (typical on RTSP reconnect).
+        Strategy: compute mean of each BGR channel. If green channel is
+        _GREEN_DOMINANT_RATIO times higher than both R and B, reject.
+        Fast: runs on the full frame but only 3 mean ops.
+        """
+        if frame is None or frame.ndim < 3:
+            return False
+        b_mean = float(np.mean(frame[:, :, 0]))
+        g_mean = float(np.mean(frame[:, :, 1]))
+        r_mean = float(np.mean(frame[:, :, 2]))
+        total = b_mean + g_mean + r_mean
+        if total < 1.0:
+            return True  # near-black / all-zero frame → also bad
+        g_frac = g_mean / total
+        return g_frac > _GREEN_DOMINANT_RATIO
+
+    def _is_corrupted_frame(self, frame: np.ndarray) -> bool:
+        """
+        Detect other corruption forms:
+          - Wrong shape (not 3-channel)
+          - All-zero pixels (black frame from failed decode)
+          - Uniform single-color frame (stuck decoder outputting one colour)
+        """
+        if frame is None:
+            return True
+        if frame.ndim != 3 or frame.shape[2] != 3:
+            return True
+        if frame.size == 0:
+            return True
+        # Sample centre pixel area to avoid spending time on full-frame std
+        h, w = frame.shape[:2]
+        cy, cx = h // 2, w // 2
+        patch = frame[max(0, cy-30):cy+30, max(0, cx-30):cx+30]
+        if patch.size == 0:
+            return True
+        # All-zero = black frame from failed decode
+        if np.max(patch) == 0:
+            return True
+        # Near-uniform colour = stuck decoder (std deviation across all channels < 2)
+        if float(np.std(patch)) < 2.0:
+            return True
+        return False
+
+    def _is_frozen_frame(self, frame: np.ndarray) -> bool:
+        """
+        Detect frozen/stuck video by comparing a fast hash of a small
+        centre crop. Same hash N consecutive times → frozen stream.
+        """
+        h, w = frame.shape[:2]
+        cy, cx = h // 2, w // 2
+        sample = frame[max(0, cy-40):cy+40, max(0, cx-40):cx+40]
+        # Use tobytes() hash of a downscaled patch for speed
+        try:
+            small = cv2.resize(sample, (16, 16))
+            fhash = small.tobytes()
+        except Exception:
+            return False
+        if fhash == self._last_frame_hash:
+            self._consecutive_frozen += 1
+        else:
+            self._consecutive_frozen = 0
+            self._last_frame_hash = fhash
+        return self._consecutive_frozen >= _FROZEN_CONSECUTIVE_MAX
+
+    def _accept_frame(self, frame: np.ndarray, source: str = "") -> bool:
+        """
+        Central frame validity gate.  Returns True if frame should be stored
+        and sent to the inference pipeline.  False = bad frame, logged.
+        """
+        if self._is_corrupted_frame(frame):
+            self.bad_frame_count += 1
+            self._consecutive_bad += 1
+            log.debug("[CamReader] %s corrupted frame #%d", source, self.bad_frame_count)
+            return False
+        if self._is_green_frame(frame):
+            self.bad_frame_count += 1
+            self._consecutive_bad += 1
+            log.debug("[CamReader] %s green frame #%d (decoder artifact)", source, self.bad_frame_count)
+            return False
+        if self._is_frozen_frame(frame):
+            self.bad_frame_count += 1
+            self._consecutive_bad += 1
+            log.debug("[CamReader] %s frozen frame #%d", source, self.bad_frame_count)
+            return False
+        self._consecutive_bad = 0
+        return True
 
     # ── Internal read loop ────────────────────────────────────────────────────
 
     def _read_loop(self):
         if self._is_shot:
             self._poll_jpeg_loop()
-        elif self._is_rtsp:
-            self._rtsp_loop()  # OpenCV/FFmpeg handles RTSP well
+        elif self._is_webcam or self._is_rtsp:
+            self._opencv_loop()  # OpenCV/FFmpeg handles RTSP + webcam
         else:
             self._mjpeg_http_loop()  # urllib handles HTTP MJPEG reliably
 
@@ -309,25 +452,32 @@ class CameraReader:
     # ── OpenCV generic loop ───────────────────────────────────────────────────
 
     def _opencv_loop(self):
-        """Generic OpenCV VideoCapture loop (RTSP / fallback) with TCP transport."""
-        # Force TCP transport for RTSP to prevent UDP packet loss and HEVC/H.264 macroblock tearing
+        """Generic OpenCV VideoCapture loop (RTSP / webcam / fallback) with TCP transport."""
+        # Force TCP transport for RTSP to prevent UDP packet loss + H.264 green frames
         if self._is_rtsp:
-            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay"
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+                "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay"
+            )
 
-        cap = cv2.VideoCapture(self.url, cv2.CAP_FFMPEG if self._is_rtsp else cv2.CAP_ANY)
+        # Support webcam index passed as string "0", "1", …
+        src = int(self.url) if self._is_webcam else self.url
+        cap = cv2.VideoCapture(src, cv2.CAP_FFMPEG if self._is_rtsp else cv2.CAP_ANY)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 8000)
-        cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)
+        if not self._is_webcam:
+            cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 8000)
+            cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)
 
         if not cap.isOpened():
             self._error = (
                 f"OpenCV could not open stream: {self.url}\n"
                 f"For RTSP: check credentials and port.\n"
-                f"For HTTP: ensure the IP Webcam app is running."
+                f"For webcam: ensure device index is correct."
             )
+            self._stream_status = STREAM_OFFLINE
             return
 
-        failures = 0
+        self._stream_status = STREAM_RECOVERING
+        consecutive_failures = 0
         MAX_FAIL = 60
         t_fps = time.time()
         fps_frames = 0
@@ -337,8 +487,30 @@ class CameraReader:
             ret, frame = cap.read()
 
             if ret and frame is not None and frame.size > 0:
-                failures = 0
-                frame_resized = cv2.resize(frame, (INFER_WIDTH, INFER_HEIGHT))
+                # ── Frame validation gate ────────────────────────────────────
+                # Resize first (cheaper to validate on smaller frame, and we need
+                # the resized version for inference anyway)
+                try:
+                    frame_resized = cv2.resize(frame, (INFER_WIDTH, INFER_HEIGHT))
+                except cv2.error:
+                    self.decoder_error_count += 1
+                    consecutive_failures += 1
+                    time.sleep(0.05)
+                    continue
+
+                if not self._accept_frame(frame_resized, source=f"cam:{self.url}"):
+                    # Bad frame: do NOT store or send to inference pool
+                    consecutive_failures += 1
+                    if consecutive_failures >= _BAD_FRAME_DEGRADED_THRESH:
+                        self._stream_status = STREAM_DEGRADED
+                    time.sleep(0.05)
+                    continue
+
+                # ── Valid frame accepted ─────────────────────────────────────
+                consecutive_failures = 0
+                self._stream_status = STREAM_ONLINE
+                self._error = None
+                self._last_frame_ts = time.time()
                 with self._lock:
                     self._frame = frame_resized
                     self._frame_count += 1
@@ -349,12 +521,15 @@ class CameraReader:
                     fps_frames = 0
                     t_fps = time.time()
             else:
-                failures += 1
-                if failures >= MAX_FAIL:
+                # cap.read() returned False — decoder or connection failure
+                self.decoder_error_count += 1
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_FAIL:
                     self._error = (
-                        f"Camera stream lost after {MAX_FAIL} failures — "
+                        f"Camera stream lost after {MAX_FAIL} read failures — "
                         f"check URL: {self.url}"
                     )
+                    self._stream_status = STREAM_OFFLINE
                     break
                 time.sleep(0.05)
 
@@ -363,6 +538,7 @@ class CameraReader:
                 time.sleep(self._READ_INTERVAL - spent)
 
         cap.release()
+        self._stream_status = STREAM_OFFLINE
 
     def _poll_jpeg_loop(self):
         """Polling loop for single-frame endpoints like /shot.jpg."""

@@ -372,6 +372,19 @@ class _ManagedCamera:
                 if persons:
                     rule_engine.record_person_seen(self.floor)
 
+                # ── Head-Cap monitor (crop-based inference + temporal smoothing) ─
+                try:
+                    from services.headcap_monitor import headcap_monitor
+                    headcap_monitor.update_camera(
+                        camera_id=self.camera_id,
+                        persons=persons,
+                        raw_dets=raw_dets,
+                        db=db,
+                        frame=frame,
+                    )
+                except Exception as hc_exc:
+                    log.debug(f"[CamMgr] headcap_monitor error (cam={self.camera_id}): {hc_exc}")
+
                 # ── Rule engine — shift-start check (once/day/floor) ─────────
                 rule_engine.check_shift_start(self.camera_id, self.floor, db)
 
@@ -497,35 +510,27 @@ class _ManagedCamera:
                             f"[CamMgr] lift_monitor error (cam={self.camera_id}): {lm_exc}"
                         )
 
-                # ── Cash + stock monitor ───────────────────────────────────────
-                # Triggers on shop floor OR when a cashbox/stock polygon is painted
-                # on ANY floor (e.g. a dedicated cash-counter camera on ground floor).
-                _has_cash_zone = self.floor in ("shop", "bakery") or bool(
-                    active_zones
-                    & {
-                        "cashbox",
-                        "cash_counter",
-                        "vendor_desk",
-                        "payment_desk",
-                        "shop_counter",
-                    }
+                # ── Cash + stock monitor (STRICT CASHBOX ZONE GATE) ───────────
+                # REQ-SHOP-A: only run when a cashbox polygon is ACTUALLY drawn
+                # for this camera. Floor-type alone is insufficient — many shop
+                # cameras have no cashbox in view.
+                _cashbox_polygon = (
+                    (zones or {}).get("cashbox")
+                    or (zones or {}).get("cash_counter")
+                    or (zones or {}).get("payment_desk")
+                    or (zones or {}).get("vendor_desk")
+                    or (zones or {}).get("shop_counter")
                 )
-                if _has_cash_zone:
+                if _cashbox_polygon is not None:
                     try:
                         from services import cash_monitor
 
-                        # v2: passes persons (with track_id) and frame so
-                        # CashEventTracker can do body-zone theft detection
-                        # and embed a snapshot in the alert.
                         cash_monitor.check_cash_zone(
                             db=db,
                             camera_id=self.camera_id,
                             detections=raw_dets,
                             persons=persons,
-                            cashbox_polygon=(
-                                (zones or {}).get("cashbox")
-                                or (zones or {}).get("cash_counter")
-                            ),
+                            cashbox_polygon=_cashbox_polygon,
                             floor=self.floor,
                             frame=frame,
                         )
@@ -539,6 +544,7 @@ class _ManagedCamera:
                         log.debug(
                             f"[CamMgr] cash_monitor error (cam={self.camera_id}): {cm_exc}"
                         )
+
 
                 # ── Cash-in-pocket: now handled inside CashEventTracker ──────────
                 # check_cash_in_pocket() in rule_engine is a no-op shim kept

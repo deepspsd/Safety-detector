@@ -52,7 +52,7 @@ import logging
 import queue
 import threading
 import time
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import cv2
 import numpy as np
@@ -99,10 +99,11 @@ class _InferencePool:
     _WATCHDOG_INTERVAL = 30
 
     def __init__(self) -> None:
-        # { camera_id: queue.Queue(maxsize=_MAX_QUEUE_DEPTH) }
-        self._queues: Dict[int, "queue.Queue[np.ndarray]"] = {}
-        # { camera_id: inference result dict }
-        self._results: Dict[int, dict] = {}
+        # { camera_id_or_crop_key: queue.Queue(maxsize=_MAX_QUEUE_DEPTH) }
+        # Accepts both int (camera IDs) and str (temporary crop keys)
+        self._queues: Dict[Any, "queue.Queue[np.ndarray]"] = {}
+        # { camera_id_or_crop_key: inference result dict }
+        self._results: Dict[Any, dict] = {}
         self._lock = threading.Lock()
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -150,15 +151,24 @@ class _InferencePool:
         except queue.Full:
             pass  # race condition — ignore
 
-    def get_result(self, camera_id: int) -> Optional[dict]:
+    def get_result(self, camera_id: Any) -> Optional[dict]:
         """
-        Return the most recent inference result for this camera.
-        Returns None if no result is available yet (first startup frames).
+        Return the most recent inference result for this camera (or crop key).
+        Returns None if no result is available yet.
         """
         with self._lock:
             return self._results.get(camera_id)
 
-    def remove_camera(self, camera_id: int) -> None:
+    def clear_result(self, key: Any) -> None:
+        """
+        Remove a result and queue from the pool.
+        Used by crop-based head-cap inference to clean up temp keys after reading.
+        """
+        with self._lock:
+            self._queues.pop(key, None)
+            self._results.pop(key, None)
+
+    def remove_camera(self, camera_id: Any) -> None:
         """Clean up state when a camera is stopped."""
         with self._lock:
             self._queues.pop(camera_id, None)

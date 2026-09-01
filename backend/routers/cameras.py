@@ -70,6 +70,96 @@ async def webrtc_offer(
     return answer
 
 
+# ── MJPEG Stream Endpoint ──────────────────────────────────────────────────
+@router.get("/{camera_id}/stream")
+def stream_camera_mjpeg(camera_id: int):
+    """
+    Standard MJPEG stream for camera tiles, floor overview, and modals.
+    Works natively in standard <img> tags without WebSocket complexity.
+    """
+    import cv2
+    import time
+    from fastapi.responses import StreamingResponse
+
+    def iter_frames():
+        blank_frame = None
+        while True:
+            frame = camera_manager.get_latest_frame(camera_id)
+            if frame is not None:
+                ret, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                if ret:
+                    yield (
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n\r\n"
+                        + jpeg.tobytes()
+                        + b"\r\n"
+                    )
+            else:
+                # Generate synthetic waiting frame if camera is loading/reconnecting
+                if blank_frame is None:
+                    import numpy as np
+                    blank = np.zeros((360, 640, 3), dtype=np.uint8)
+                    cv2.putText(
+                        blank,
+                        f"Camera {camera_id} Connecting...",
+                        (140, 180),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8,
+                        (180, 180, 180),
+                        2,
+                    )
+                    _, blank_jpeg = cv2.imencode(".jpg", blank)
+                    blank_frame = blank_jpeg.tobytes()
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n"
+                    + blank_frame
+                    + b"\r\n"
+                )
+            time.sleep(0.066)  # ~15 FPS max for bandwidth efficiency
+
+    return StreamingResponse(
+        iter_frames(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+# ── Diagnostics Endpoint ───────────────────────────────────────────────────
+@router.get("/{camera_id}/diagnostics")
+def get_camera_diagnostics(camera_id: int):
+    """
+    Diagnostic telemetry for camera: stream health, headcap crop states,
+    confidence metrics, and temporal window contents.
+    """
+    from services.headcap_monitor import headcap_monitor
+
+    metrics = camera_manager.get_metrics(camera_id)
+    hc_diags = headcap_monitor.get_diagnostics(camera_id)
+    return {
+        "camera_id": camera_id,
+        "metrics": metrics,
+        "headcap_diagnostics": [
+            {
+                "track_id": d.track_id,
+                "crop_width": d.crop_width,
+                "crop_height": d.crop_height,
+                "crop_bbox": d.crop_bbox,
+                "original_bbox": d.original_bbox,
+                "raw_prediction": d.raw_prediction,
+                "confidence": d.confidence,
+                "smoothed_prediction": d.smoothed_prediction,
+                "window": d.window,
+                "diagnostic_flag": d.diagnostic_flag,
+                "state": d.state,
+                "missing_seconds": d.missing_seconds,
+                "timestamp": d.timestamp,
+            }
+            for d in hc_diags
+        ],
+    }
+
+
+
 # ── HikVision Quick-Add ────────────────────────────────────────────────────
 
 

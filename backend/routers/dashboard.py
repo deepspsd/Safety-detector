@@ -115,3 +115,27 @@ def dashboard_summary(
         "mock_mode": settings.MOCK_MODE,
         "generated_at": datetime.utcnow().isoformat(),
     }
+
+
+from fastapi import WebSocket, WebSocketDisconnect
+from services.ws_broadcaster import broadcaster
+
+
+@router.websocket("/ws/state")
+async def websocket_dashboard_state(websocket: WebSocket):
+    """
+    Real-time platform state stream for Dashboard & Floor Overview.
+    Pushes live camera status, person counts, active alerts, and telemetry.
+    """
+    await broadcaster.connect(websocket)
+    try:
+        while True:
+            # Keep-alive heartbeat & client command listener
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        broadcaster.disconnect(websocket)
+    except Exception:
+        broadcaster.disconnect(websocket)
+

@@ -19,6 +19,7 @@ import Employees from './pages/Employees'
 import Attendance from './pages/Attendance'
 import Documents from './pages/Documents'
 import WorkflowMonitor from './pages/WorkflowMonitor'
+import Diagnostics from './pages/Diagnostics'
 import { useState, useRef } from 'react'
 import { Layers, Bell, LayoutDashboard, Camera, Upload, CheckCircle, XCircle } from 'lucide-react'
 
@@ -267,6 +268,7 @@ function AppRoutes() {
       <Route path="/attendance"       element={<ProtectedRoute><AppLayout><Attendance    /></AppLayout></ProtectedRoute>} />
       <Route path="/documents"        element={<ProtectedRoute><AppLayout><Documents     /></AppLayout></ProtectedRoute>} />
       <Route path="/workflow"         element={<ProtectedRoute><AppLayout><WorkflowMonitor /></AppLayout></ProtectedRoute>} />
+      <Route path="/diagnostics"      element={<ProtectedRoute><AppLayout><Diagnostics /></AppLayout></ProtectedRoute>} />
 
       {/* Settings */}
       <Route path="/settings/cameras"   element={<ProtectedRoute><AppLayout><Cameras   /></AppLayout></ProtectedRoute>} />
