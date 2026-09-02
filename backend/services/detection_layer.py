@@ -162,12 +162,20 @@ def get_detector() -> AbstractDetector:
 
     This factory exists so future adapters (ONNX, TFLite, Triton) can be
     plugged in here without touching calling code.
+    
+    Now uses MultiModelDetector for zone-aware multi-model inference.
     """
     global _detector_instance
     if _detector_instance is None:
-        _detector_instance = YoloDetectionAdapter()
+        # Try to use MultiModelDetector if available
+        try:
+            from services.multi_model_detector import MultiModelDetectionAdapter
+            _detector_instance = MultiModelDetectionAdapter()
+        except ImportError:
+            # Fallback to single YOLO detector
+            _detector_instance = YoloDetectionAdapter()
     return _detector_instance
 
 
 # ── Module-level singleton for backward compatibility ─────────────────────────
-detector = YoloDetectionAdapter()
+detector = get_detector()

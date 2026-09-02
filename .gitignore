@@ -80,3 +80,4 @@ helmet_model.pt
 yolov8l.pt
 yolov8x.pt
 yolov8n-pose.pt
+portable_models_package

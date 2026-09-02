@@ -12,9 +12,11 @@ import time
 from datetime import datetime
 from typing import Dict, Tuple
 
+import json as _json
+
 from services.calibration_service import assess_drift
 from services.context_engine import context_engine
-from services.detection_layer import detector
+from services.detection_layer import get_detector
 from services.health_monitor import collect_camera_health, record
 from services.platform_events import emit
 from services.tracking_layer import tracker
@@ -35,7 +37,31 @@ class EnterpriseRuntime:
         camera = db.query(Camera).filter(Camera.id == camera_id).first()
         if not camera or not camera.ai_enabled:
             return {"detections": [], "tracks": [], "contexts": []}
-        detections = detector.detect(frame)
+
+        det = get_detector()
+        zone_type = camera.zone_type or "default"
+        enabled_models = None
+        if camera.enabled_models_json:
+            try:
+                enabled_models = _json.loads(camera.enabled_models_json)
+            except Exception:
+                enabled_models = None
+
+        if hasattr(det, "detector") and hasattr(det.detector, "detect"):
+            detections = det.detector.detect(
+                frame,
+                zone_type=zone_type,
+                camera_id=camera_id,
+                enabled_models=enabled_models,
+            )
+        elif hasattr(det, "detect"):
+            try:
+                detections = det.detect(frame, zone_type=zone_type)
+            except TypeError:
+                detections = det.detect(frame)
+        else:
+            detections = []
+
         tracks = (
             tracker.update(camera_id, detections) if camera.supports_tracking else []
         )

@@ -238,6 +238,14 @@ class Camera(Base):
     preferred_stream = Column(String(20), nullable=False, default="sub")
     ai_stream = Column(String(20), nullable=False, default="sub")
 
+    # Multi-model AI configuration (Phase 1)
+    # JSON-encoded list of model keys to use for this camera.
+    # e.g. '["ppe_factory_v0_cash", "hairnet_glove_detection", "fall_detection"]'
+    # If NULL, uses zone_type to auto-select models from ZONE_MODEL_MAP.
+    enabled_models_json = Column(Text, nullable=True)
+    # Override global MODEL_REGISTRY conf thresholds per camera
+    model_conf_overrides_json = Column(Text, nullable=True)  # e.g. '{"fall_detection": 0.6}'
+
     # Children
     zones = relationship(
         "ZoneConfig", back_populates="camera", cascade="all, delete-orphan"
@@ -398,6 +406,12 @@ class ZoneConfig(Base):
     calibration_version = Column(Integer, nullable=False, default=0)
     is_active = Column(Boolean, nullable=False, default=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Multi-model AI configuration (Phase 1)
+    # JSON-encoded list of model keys specific to this zone.
+    # e.g. '["ppe_factory_v0_cash", "hairnet_glove_detection"]'
+    # If NULL, inherits from camera's enabled_models_json or zone_type default.
+    zone_models_json = Column(Text, nullable=True)
 
     camera = relationship("Camera", back_populates="zones")
 

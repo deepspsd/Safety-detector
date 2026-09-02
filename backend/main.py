@@ -483,6 +483,7 @@ def startup():
     # ── Initialize WebSocket Broadcaster & Periodic Telemetry ─────────────
     try:
         import asyncio
+        import threading
         from services.ws_broadcaster import broadcaster
 
         try:
@@ -530,7 +531,6 @@ def startup():
     # ── Nightly auto clock-out scheduler (pure threading — no extra dependency) ──
     # Runs at 19:00 IST (UTC+05:30 = 13:30 UTC) every day.
     # Closes all open attendance sessions and sends a Telegram notification.
-    import threading
     from zoneinfo import ZoneInfo
 
     _IST = ZoneInfo("Asia/Kolkata")

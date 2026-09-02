@@ -69,6 +69,19 @@ _ALERT_COOLDOWN_SECS: float = 90.0
 
 # Cash class label strings — includes exact model output + common lowercase variants
 _CASH_LABELS = {"Cash", "cash", "banknote", "money", "note", "currency", "rupee", "bill"}
+_CASH_LABELS.update({f"{v} bgn" for v in (5, 10, 20, 50, 100)})
+_CASH_LABELS.update({f"{v} eur" for v in (5, 10, 20, 50, 100)})
+_CASH_LABELS.update({f"{v} inr" for v in (10, 20, 50, 100, 200, 500, 2000)})
+
+
+def _is_cash_label(label: str) -> bool:
+    if not label:
+        return False
+    lbl = label.lower()
+    if lbl in _CASH_LABELS:
+        return True
+    return any(lbl.endswith(suf) for suf in (" bgn", " eur", " inr", " usd", " gbp", " aed", " pkr", " bdt"))
+
 
 # Minimum confidence to treat a detection as real Cash.
 # The global DETECTION_CONF=0.30 is intentionally low for PPE.
@@ -267,8 +280,8 @@ class CashEventTracker:
             active_ids: set = set()
 
             for det in cash_detections:
-                label = str(det.get("label", "")).lower()
-                if label not in _CASH_LABELS:
+                label = str(det.get("label", ""))
+                if not _is_cash_label(label):
                     continue
 
                 # ── Confidence gate — suppress false positives ──────────────
@@ -465,7 +478,7 @@ def check_cash_zone(
     # Pre-filter by confidence here too so low-conf detections never reach the tracker
     cash_dets = [
         d for d in detections
-        if str(d.get("label", "")).lower() in _CASH_LABELS
+        if _is_cash_label(str(d.get("label", "")))
         and float(d.get("confidence", 0.0)) >= _CASH_MIN_CONF
     ]
 

@@ -341,9 +341,10 @@ class _ManagedCamera:
                 # We read back the latest available result (may be from the
                 # previous tick if the pool is busy) so the rule-engine loop
                 # is never blocked waiting for inference.
+                # NOW WITH MULTI-MODEL SUPPORT: Pass zone_type for model routing
                 from services.inference_pool import inference_pool
 
-                inference_pool.put_frame(self.camera_id, frame)
+                inference_pool.put_frame(self.camera_id, frame, zone_type=camera_zone_type)
                 pool_result = inference_pool.get_result(self.camera_id) or {}
 
                 # Tracking is kept on the enterprise_runtime path so ByteTrack
@@ -384,6 +385,18 @@ class _ManagedCamera:
                     )
                 except Exception as hc_exc:
                     log.debug(f"[CamMgr] headcap_monitor error (cam={self.camera_id}): {hc_exc}")
+
+                # ── Uniform monitor (crop-based inference + temporal smoothing) ──
+                try:
+                    from services.uniform_monitor import uniform_monitor
+                    uniform_monitor.update_camera(
+                        camera_id=self.camera_id,
+                        persons=persons,
+                        db=db,
+                        frame=frame,
+                    )
+                except Exception as um_exc:
+                    log.debug(f"[CamMgr] uniform_monitor error (cam={self.camera_id}): {um_exc}")
 
                 # ── Rule engine — shift-start check (once/day/floor) ─────────
                 rule_engine.check_shift_start(self.camera_id, self.floor, db)

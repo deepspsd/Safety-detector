@@ -174,6 +174,7 @@ class TeachableMachineAdapter(AbstractClassifier):
         input_width: int = 224,
         input_height: int = 224,
         confidence_threshold: float = 0.80,
+        class_aliases: Optional[Dict[str, str]] = None,
     ):
         self.name = name
         self.classes = classes if classes else ["UNKNOWN"]
@@ -181,6 +182,9 @@ class TeachableMachineAdapter(AbstractClassifier):
         self._input_size = (input_width, input_height)
         self._model = None
         self._backend: str = "none"
+        # Maps model output class name → normalized pipeline class name
+        # e.g. {"No-Uniform": "NO_UNIFORM", "Uniform_1": "UNIFORM"}
+        self._class_aliases: Dict[str, str] = class_aliases or {}
         self._load(model_path)
 
     def _load(self, model_path: str) -> None:
@@ -197,6 +201,11 @@ class TeachableMachineAdapter(AbstractClassifier):
 
         if model_path.endswith(".onnx"):
             self._load_onnx(model_path)
+        elif os.path.isdir(model_path) and os.path.exists(
+            os.path.join(model_path, "model.json")
+        ):
+            # Teachable Machine TF.js export (model.json + weights.bin)
+            self._load_tfjs(model_path)
         else:
             self._load_tf(model_path)
 
@@ -228,6 +237,32 @@ class TeachableMachineAdapter(AbstractClassifier):
                 exc,
             )
 
+    def _load_tfjs(self, path: str) -> None:
+        """Load a Teachable Machine TF.js export (model.json + weights.bin)."""
+        try:
+            import tensorflowjs as tfjs  # type: ignore
+
+            model_json = os.path.join(path, "model.json")
+            self._model = tfjs.converters.load_keras_model(model_json)
+            self._backend = "tensorflow"
+            log.info(
+                "TeachableMachineAdapter '%s': loaded TF.js model from %s",
+                self.name,
+                path,
+            )
+        except ImportError:
+            log.warning(
+                "TeachableMachineAdapter '%s': tensorflowjs not installed — "
+                "install with: pip install tensorflowjs. Running as mock.",
+                self.name,
+            )
+        except Exception as exc:
+            log.warning(
+                "TeachableMachineAdapter '%s': TF.js load failed (%s) — using mock",
+                self.name,
+                exc,
+            )
+
     def predict(self, image: np.ndarray) -> ClassificationResult:
         if self._model is None:
             # Fallback to mock output
@@ -240,7 +275,11 @@ class TeachableMachineAdapter(AbstractClassifier):
             inp = np.expand_dims(inp, 0)
 
             if self._backend == "tensorflow":
-                probs = list(self._model(inp)[0].numpy())
+                if hasattr(self._model, "predict"):
+                    raw_out = self._model.predict(inp, verbose=0)
+                    probs = list(raw_out[0])
+                else:
+                    probs = list(self._model(inp)[0].numpy())
             else:  # onnx
                 session = self._model
                 input_name = session.get_inputs()[0].name
@@ -250,11 +289,15 @@ class TeachableMachineAdapter(AbstractClassifier):
             probs = [p / total for p in probs]
             best_idx = int(np.argmax(probs))
             n = min(len(self.classes), len(probs))
+            raw_class = self.classes[best_idx] if best_idx < len(self.classes) else "UNKNOWN"
+            # Apply class aliases (e.g. "No-Uniform" → "NO_UNIFORM")
+            norm_class = self._class_aliases.get(raw_class, raw_class)
             return ClassificationResult(
-                predicted_class=self.classes[best_idx] if best_idx < len(self.classes) else "UNKNOWN",
+                predicted_class=norm_class,
                 confidence=round(float(probs[best_idx]), 4),
                 all_class_probabilities={
-                    self.classes[i]: round(float(probs[i]), 4) for i in range(n)
+                    self._class_aliases.get(self.classes[i], self.classes[i]): round(float(probs[i]), 4)
+                    for i in range(n)
                 },
                 classifier_name=self.name,
                 model_loaded=True,
@@ -442,6 +485,7 @@ def _load_yaml_model_configs() -> Dict[str, Dict]:
             continue
         configs[str(model_id)] = {
             "classes": item.get("classes", []),
+            "class_aliases": item.get("class_aliases") or {},
             "crop_mode": item.get("crop_mode", "full_person"),
             "padding": float(item.get("padding", 0.05)),
             "upper_body_ratio": float(item.get("upper_body_ratio", 0.65)),
@@ -497,7 +541,11 @@ def get_classifier(classifier_name: str) -> AbstractClassifier:
     cfg = get_classifier_config(classifier_name)
     classes = cfg.get("classes", ["POSITIVE", "NEGATIVE"])
     threshold = cfg.get("confidence_threshold", 0.80)
-    model_path = _resolve_model_path(cfg.get("model_path", ""))
+    raw_path = cfg.get("model_path", "")
+    if classifier_name == "uniform" and not raw_path:
+        raw_path = getattr(settings, "UNIFORM_MODEL_DIR", "../training/models")
+    model_path = _resolve_model_path(raw_path)
+    aliases = cfg.get("class_aliases") or {}
 
     if model_path and os.path.exists(model_path):
         return TeachableMachineAdapter(
@@ -507,6 +555,7 @@ def get_classifier(classifier_name: str) -> AbstractClassifier:
             input_width=cfg.get("input_width", 224),
             input_height=cfg.get("input_height", 224),
             confidence_threshold=threshold,
+            class_aliases=aliases,
         )
 
     return MockClassifier(

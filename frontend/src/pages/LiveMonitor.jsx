@@ -29,7 +29,8 @@ const FRAME_INTERVAL = 80 // ms -> ~12.5 fps
 
 // Role rule descriptions for the info panel
 const ROLE_PPE_RULES = {
-  'Bakery Worker':       ['Head Cap required', 'Face Mask required', 'Gloves required', 'No Bangles (food safety)'],
+  'Bakery Worker':       ['Head Cap required', 'Uniform required', 'Face Mask required', 'Gloves required', 'No Bangles (food safety)'],
+  'Factory Worker':      ['Head Cap required', 'Uniform required', 'No Bangles (food safety)'],
   'Doctor':              ['Mask required', 'Gloves required'],
   'Traffic Police':      ['Helmet required'],
   'Construction Worker': ['Hardhat required', 'Safety Vest required', 'Mask required', 'Gloves required', 'Goggles required', 'Safety Shoes required'],
@@ -40,6 +41,7 @@ const ROLE_PPE_RULES = {
 // All filterable PPE classes (used for manual toggle UI)
 const PPE_FILTERS = [
   { id: 'NO-Bakery-Head-Cap', label: 'Head Cap',      icon: '🧢' },
+  { id: 'NO-Uniform',         label: 'Uniform',       icon: '👕' },
   { id: 'Bangles',            label: 'Bangles (ban)', icon: '🚨' },
   { id: 'Cash',               label: 'Cash',          icon: '💵' },
   { id: 'Cylinder',           label: 'Cylinder',      icon: '🛢️' },
@@ -50,20 +52,19 @@ const PPE_FILTERS = [
   { id: 'NO-Goggles',         label: 'Goggles',       icon: '🥽' },
   { id: 'NO-Safety Shoes',    label: 'Safety Shoes',  icon: '👟' },
   { id: 'NO-ID Card',         label: 'ID Card',       icon: '🪪' },
-  { id: 'NO-Uniform',         label: 'Uniform',       icon: '👕' },
 ]
 
 // Role → default filter set sent at WebSocket handshake.
 // MUST match the violation class names the backend model actually emits.
 const ROLE_FILTERS = {
-  'Bakery Worker':       ['NO-Bakery-Head-Cap', 'Bangles', 'NO-Mask'],
+  'Bakery Worker':       ['NO-Bakery-Head-Cap', 'NO-Uniform', 'Bangles', 'NO-Mask'],
   'Construction Worker': ['NO-Hardhat', 'NO-Safety Vest', 'NO-Mask', 'NO-Gloves', 'NO-Goggles', 'NO-Safety Shoes'],
   'Doctor':              ['NO-Mask', 'NO-Gloves'],
   'Traffic Police':      ['NO-Hardhat'],
   'College':             ['NO-ID Card', 'NO-Uniform'],
   'Home':                [],
   'None':                [],   // seeded from saved custom PPE items
-  'Factory Worker':      ['NO-Bakery-Head-Cap', 'Bangles'],
+  'Factory Worker':      ['NO-Bakery-Head-Cap', 'NO-Uniform', 'Bangles'],
 }
 
 // Severity badge colours
@@ -97,10 +98,8 @@ export default function LiveMonitor() {
   const [phoneStatus,    setPhoneStatus]    = useState('safe')
   // Cash monitoring state
   const [cashAlert,      setCashAlert]      = useState(null)  // theft alert message | null
-  // Detection filters — seeded by role. Two-stage initialization:
-  //   1. getFiltersForRole() gives the right initial value immediately if user is already loaded.
-  //   2. useEffect below re-syncs when auth context resolves (async login).
-  //
+  // Active zone state — resolved from camera DB or sent by server
+  const [activeZone,     setActiveZone]     = useState('default')
   // IMPORTANT: Do NOT fall back to PPE_FILTERS.map(f=>f.id) for known roles —
   // that was sending 8 construction filters to Bakery Worker users.
   const getFiltersForRole = (role) => {
@@ -177,11 +176,20 @@ export default function LiveMonitor() {
     ws.onmessage = (e) => {
       const data = JSON.parse(e.data)
       // Ignore status-only messages (connected, filters_updated) without frame data
-      if (data.status === 'connected') { setConnected(true); return }
-      if (data.status === 'filters_updated') return  // ← was erroneously clearing detectionInfo
+      if (data.status === 'connected') {
+        setConnected(true)
+        if (data.zone_type) setActiveZone(data.zone_type)
+        return
+      }
+      if (data.status === 'filters_updated') {
+        if (data.zone_type) setActiveZone(data.zone_type)
+        return
+      }
       if (data.error) { console.warn('[WS] error:', data.error); return }
       // Only process messages that actually have detection results
       if (data.annotated_frame === undefined && data.is_compliant === undefined) return
+      // Update zone from every frame response
+      if (data.zone_type && data.zone_type !== 'default') setActiveZone(data.zone_type)
 
       setFrameCount(f => f + 1)
       if (data.model_mode) setModelMode(data.model_mode)
@@ -215,10 +223,32 @@ export default function LiveMonitor() {
         }
       }
 
+      const _dets = data.detections || []
+      // Worker fall / machine anomaly / object throwing / bangles → fire banner + toast
+      const _fallDet = _dets.find(d => d.label?.toLowerCase().includes('fall'))
+      const _anomalyDet = _dets.find(d => d.label?.toLowerCase().includes('anomaly'))
+      const _throwDet = _dets.find(d => d.label?.toLowerCase().includes('throw'))
+      const _banglesDet = _dets.find(d => d.label?.toLowerCase().includes('bangle'))
+      if (_fallDet) {
+        setCurrentAlert({ message: '🚨 Worker Fall Detected!', severity: 'critical' })
+        addToast('🚨 Worker Fall!', 'A worker fall event was detected.', 'danger', 6000)
+      }
+      if (_anomalyDet) {
+        setCurrentAlert({ message: '⚠️ Machine Anomaly Detected!', severity: 'high' })
+      }
+      if (_throwDet) {
+        setCurrentAlert({ message: '🏃 Object Throwing Detected!', severity: 'high' })
+        addToast('🏃 Object Throwing!', 'Aggressive throwing motion was detected.', 'danger', 5000)
+      }
+      if (_banglesDet) {
+        setCurrentAlert({ message: '🚫 Bangles Detected (Food Safety)!', severity: 'high' })
+        addToast('🚫 Bangles Violation', 'Bangles are not allowed in food production areas.', 'danger', 4000)
+      }
+
       setDetectionInfo({
         isCompliant:      data.is_compliant,
         missing:          data.missing_items || [],
-        detections:       data.detections    || [],
+        detections:       _dets,
         persons:          data.persons       || [],
         violationsCount:  data.violations_count ?? 0,
         personsCount:     data.persons_count    ?? 0,
@@ -375,7 +405,11 @@ export default function LiveMonitor() {
 
     ws.onmessage = (e) => {
       const data = JSON.parse(e.data)
-      if (data.status === 'connected') { setConnected(true); setStreaming(true); return }
+      if (data.status === 'connected') {
+        setConnected(true); setStreaming(true)
+        if (data.zone_type) setActiveZone(data.zone_type)
+        return
+      }
       if (data.error) {
         addToast('CCTV Error', data.error, 'danger')
         ws.close(); setStreaming(false); setConnected(false)
@@ -404,10 +438,33 @@ export default function LiveMonitor() {
         }
       }
 
+      if (data.zone_type && data.zone_type !== 'default') setActiveZone(data.zone_type)
+
+      const _cctvDets = data.detections || []
+      const _cctvFall = _cctvDets.find(d => d.label?.toLowerCase().includes('fall'))
+      const _cctvAnom = _cctvDets.find(d => d.label?.toLowerCase().includes('anomaly'))
+      const _cctvThrow = _cctvDets.find(d => d.label?.toLowerCase().includes('throw'))
+      const _cctvBangles = _cctvDets.find(d => d.label?.toLowerCase().includes('bangle'))
+      if (_cctvFall) {
+        setCurrentAlert({ message: '🚨 Worker Fall Detected!', severity: 'critical' })
+        addToast('🚨 Worker Fall!', 'A worker fall event was detected.', 'danger', 6000)
+      }
+      if (_cctvAnom) {
+        setCurrentAlert({ message: '⚠️ Machine Anomaly Detected!', severity: 'high' })
+      }
+      if (_cctvThrow) {
+        setCurrentAlert({ message: '🏃 Object Throwing Detected!', severity: 'high' })
+        addToast('🏃 Object Throwing!', 'Aggressive throwing motion was detected.', 'danger', 5000)
+      }
+      if (_cctvBangles) {
+        setCurrentAlert({ message: '🚫 Bangles Detected (Food Safety)!', severity: 'high' })
+        addToast('🚫 Bangles Violation', 'Bangles are not allowed in food production areas.', 'danger', 4000)
+      }
+
       setDetectionInfo({
         isCompliant:     data.is_compliant,
         missing:         data.missing_items    || [],
-        detections:      data.detections       || [],
+        detections:      _cctvDets,
         persons:         data.persons          || [],
         violationsCount: data.violations_count ?? 0,
         personsCount:    data.persons_count    ?? 0,
@@ -800,11 +857,21 @@ export default function LiveMonitor() {
               </div>
             )}
 
-            {/* Frame counter + cam FPS */}
+            {/* Frame counter + cam FPS + active zone badge */}
             {streaming && (
               <div style={{
-                position: 'absolute', top: 12, right: 12, display: 'flex', gap: 6
+                position: 'absolute', top: 12, right: 12, display: 'flex', gap: 6, alignItems: 'center'
               }}>
+                {/* Active zone badge */}
+                {activeZone && activeZone !== 'default' && (
+                  <div style={{
+                    background: 'rgba(16,185,129,0.80)', padding: '4px 10px',
+                    borderRadius: 99, fontSize: '0.70rem', color: '#fff', fontWeight: 700,
+                    textTransform: 'uppercase', letterSpacing: '0.05em',
+                  }}>
+                    🏭 {activeZone.replace(/_/g, ' ')}
+                  </div>
+                )}
                 {mode === 'rtsp' && camFps > 0 && (
                   <div style={{
                     background: 'rgba(99,102,241,0.75)', padding: '4px 10px',
@@ -1073,19 +1140,39 @@ export default function LiveMonitor() {
                       {detectionInfo.detections
                         .filter(d => d.label !== 'Person')
                         .map((d, idx) => {
-                          const isCash = d.label?.toLowerCase() === 'cash'
-                          const isCyl = d.label?.toLowerCase().includes('cylinder')
-                          const isBangles = d.label?.toLowerCase().includes('bangles')
-                          const icon = isCash ? '💵' : isCyl ? '🛢️' : isBangles ? '🚨' : '📦'
+                          const lbl = d.label?.toLowerCase() || ''
+                          const isCash    = lbl === 'cash'
+                          const isCyl     = lbl.includes('cylinder')
+                          const isBangles = lbl.includes('bangles')
+                          const isFall    = lbl.includes('fall')
+                          const isAnom    = lbl.includes('anomaly')
+                          const isHairnet = lbl.includes('head-cap') || lbl.includes('hairnet')
+                          const isThrow   = lbl.includes('throwing')
+                          const icon = isCash ? '💵' : isCyl ? '🛢️' : isBangles ? '🚨'
+                            : isFall ? '🚨' : isAnom ? '⚠️' : isHairnet ? '🧢'
+                            : isThrow ? '🤚' : '📦'
+                          const bg = isCash ? 'rgba(234,179,8,0.15)' : isCyl ? 'rgba(6,182,212,0.15)'
+                            : isBangles || isFall ? 'rgba(239,68,68,0.15)'
+                            : isAnom ? 'rgba(245,158,11,0.15)'
+                            : isHairnet ? 'rgba(99,102,241,0.15)'
+                            : isThrow ? 'rgba(249,115,22,0.15)' : 'rgba(255,255,255,0.08)'
+                          const clr = isCash ? '#eab308' : isCyl ? '#06b6d4'
+                            : isBangles || isFall ? '#ef4444'
+                            : isAnom ? '#f59e0b'
+                            : isHairnet ? '#6366f1'
+                            : isThrow ? '#f97316' : 'var(--text-primary)'
+                          const bdr = `1px solid ${isCash ? 'rgba(234,179,8,0.4)' : isCyl ? 'rgba(6,182,212,0.4)'
+                            : isBangles || isFall ? 'rgba(239,68,68,0.4)'
+                            : isAnom ? 'rgba(245,158,11,0.4)'
+                            : isHairnet ? 'rgba(99,102,241,0.4)'
+                            : isThrow ? 'rgba(249,115,22,0.4)' : 'var(--border)'}`
                           return (
                             <span
                               key={idx}
                               style={{
                                 display: 'inline-flex', alignItems: 'center', gap: 4,
                                 padding: '4px 10px', borderRadius: 99, fontSize: '0.75rem', fontWeight: 600,
-                                background: isCash ? 'rgba(234,179,8,0.15)' : isCyl ? 'rgba(6,182,212,0.15)' : isBangles ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.08)',
-                                color: isCash ? '#eab308' : isCyl ? '#06b6d4' : isBangles ? '#ef4444' : 'var(--text-primary)',
-                                border: `1px solid ${isCash ? 'rgba(234,179,8,0.4)' : isCyl ? 'rgba(6,182,212,0.4)' : isBangles ? 'rgba(239,68,68,0.4)' : 'var(--border)'}`
+                                background: bg, color: clr, border: bdr,
                               }}
                             >
                               <span>{icon}</span> {d.label} {Math.round((d.confidence || 0) * 100)}%
@@ -1277,7 +1364,7 @@ function PersonCard({ person, index }) {
       background: isViolator ? 'rgba(220,38,38,0.08)' : 'rgba(16,185,129,0.07)',
       border: `1px solid ${isViolator ? 'rgba(220,38,38,0.25)' : 'rgba(16,185,129,0.2)'}`,
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: isViolator ? 6 : 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: (isViolator || person.has_uniform !== undefined) ? 6 : 0 }}>
         <User size={14} color={isViolator ? 'var(--accent-red)' : 'var(--accent-green)'} />
         <span style={{ fontSize: '0.82rem', fontWeight: 600,
           color: isViolator ? 'var(--accent-red)' : 'var(--accent-green)' }}>
@@ -1287,6 +1374,19 @@ function PersonCard({ person, index }) {
           {(person.confidence * 100).toFixed(0)}% conf
         </span>
       </div>
+      {person.has_uniform !== undefined && (
+        <div style={{ marginBottom: 6, display: 'flex', gap: 6, alignItems: 'center' }}>
+          <span style={{
+            fontSize: '0.70rem', padding: '2px 8px', borderRadius: 99,
+            background: person.has_uniform ? 'rgba(16,185,129,0.15)' : 'rgba(220,38,38,0.2)',
+            color: person.has_uniform ? '#34d399' : '#f87171',
+            fontWeight: 600, border: `1px solid ${person.has_uniform ? 'rgba(16,185,129,0.3)' : 'rgba(220,38,38,0.3)'}`
+          }}>
+            {person.has_uniform ? '👕 Uniform OK' : '👕 No Uniform'}
+            {person.uniform_confidence ? ` (${Math.round(person.uniform_confidence * 100)}%)` : ''}
+          </span>
+        </div>
+      )}
       {isViolator && person.violation_labels?.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
           {person.violation_labels.map((v, j) => (

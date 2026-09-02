@@ -195,7 +195,7 @@ ROLE_RULES: Dict[str, Dict] = {
             "Bakery-Head-Cap",  # cloth cap worn correctly
             "Mask",  # face mask
         ],
-        "required_sim": ["NO-Gloves"],
+        "required_sim": ["NO-Gloves", "NO-Uniform"],
         "severity": "critical",
         "alert_prefix": "🧁 Bakery safety violation",
     },
@@ -208,7 +208,7 @@ ROLE_RULES: Dict[str, Dict] = {
         "required_compliant": [
             "Bakery-Head-Cap",
         ],
-        "required_sim": [],
+        "required_sim": ["NO-Uniform"],
         "severity": "critical",
         "alert_prefix": "🏭 Factory safety violation",
     },
@@ -403,40 +403,29 @@ def load_model():
 
         torch.load = _patched_load
 
-        # Priority: settings.YOLO_MODEL -> ppe_factory_v0_cash.pt -> ppe_factory_v0.pt -> ppe_factory_v1.pt -> ppe.pt
-        _factory_candidates = [
-            settings.YOLO_MODEL,
-            "ppe_factory_v0_cash.pt",
-            "ppe_factory_v0.pt",
-            "ppe_factory_v1.pt",
-            "ppe_factory_v2.pt",
-            "ppe.pt",
-        ]
+        # Load primary model from settings.YOLO_MODEL (default: yolov8x.pt)
+        _candidate = settings.YOLO_MODEL
         _loaded = False
         _backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-        for _candidate in _factory_candidates:
-            # Check candidate directly, then in backend dir, then in training/models
-            _paths_to_try = [
-                _candidate,
-                os.path.join(_backend_dir, _candidate),
-                os.path.join(_backend_dir, "..", "training", "models", _candidate),
-            ]
-            for _p in _paths_to_try:
-                if os.path.isfile(_p):
-                    try:
-                        _model = YOLO(_p)
-                        torch.load = _orig_load
-                        _use_simulation = False
-                        _model_is_ppe = True
-                        _nc = len(_model.names)
-                        log.info(f"✅ PPE model loaded: {_p} ({_nc} classes)")
-                        print(f"✅ PPE model loaded: {_candidate} ({_nc} classes: {list(_model.names.values())})")
-                        _loaded = True
-                        break
-                    except Exception as e:
-                        log.warning(f"{_p} load failed: {e}")
-            if _loaded:
-                break
+        _paths_to_try = [
+            _candidate,
+            os.path.join(_backend_dir, _candidate),
+            os.path.join(_backend_dir, "..", "training", "models", _candidate),
+        ]
+        for _p in _paths_to_try:
+            if os.path.isfile(_p) or not _p.endswith(".pt"):
+                try:
+                    _model = YOLO(_p)
+                    torch.load = _orig_load
+                    _use_simulation = False
+                    _model_is_ppe = "ppe" in _candidate.lower()
+                    _nc = len(_model.names)
+                    log.info(f"✅ Primary YOLO model loaded: {_candidate} ({_nc} classes)")
+                    print(f"✅ Primary YOLO model loaded: {_candidate} ({_nc} classes)")
+                    _loaded = True
+                    break
+                except Exception as e:
+                    log.warning(f"{_p} load failed: {e}")
         if not _loaded:
             torch.load = _orig_load
     except Exception as e:
@@ -1029,6 +1018,90 @@ def _draw_results(
                 cv2.LINE_AA,
             )
 
+    # ── Draw standalone violation / compliant boxes (multi-model) ──
+    # Catches multi-model detections: Worker Fall, Machine Anomaly, Object Throwing,
+    # Bangles, standalone Hair/Gloves from hairnet model, etc.
+    _COLOR_ANOMALY = (60, 20, 220)     # Deep Orange-Red (BGR)
+    _COLOR_THROWING = (180, 40, 200)   # Magenta (BGR)
+    _COLOR_FALL = (40, 40, 220)       # Red (BGR)
+    _COLOR_BANGLES = (20, 120, 220)   # Amber-Red (BGR)
+    _COLOR_HAIRNET_OK = (40, 180, 90) # Teal-Green (BGR)
+    _COLOR_GLOVES_OK = (40, 180, 180) # Cyan (BGR)
+
+    for det in raw_detections:
+        _dt = det.get("det_type", "")
+        if _dt not in ("violation", "compliant"):
+            continue
+        x1, y1, x2, y2 = det["bbox"]
+        lbl = det["label"]
+        conf = det["confidence"]
+        _lbl_lower = lbl.lower()
+
+        # Skip tiny bboxes that match a person bbox exactly — those are rendered
+        # via the per-person enriched section below (red/green person frame).
+        _matches_person = False
+        for _p in enriched_persons:
+            _px1, _py1, _px2, _py2 = _p["bbox"]
+            if _px1 == x1 and _py1 == y1 and _px2 == x2 and _py2 == y2:
+                _matches_person = True
+                break
+        if _matches_person:
+            continue
+
+        # Pick color + emoji based on label
+        if "fall" in _lbl_lower:
+            box_color = _COLOR_FALL
+            prefix = "🚨 "
+        elif "anomaly" in _lbl_lower:
+            box_color = _COLOR_ANOMALY
+            prefix = "⚠️ "
+        elif "throw" in _lbl_lower:
+            box_color = _COLOR_THROWING
+            prefix = "🏃 "
+        elif "bangle" in _lbl_lower:
+            box_color = _COLOR_BANGLES
+            prefix = "🚫 "
+        elif "hair" in _lbl_lower or "head-cap" in _lbl_lower or "head cap" in _lbl_lower:
+            if _dt == "compliant":
+                box_color = _COLOR_HAIRNET_OK
+                prefix = "🧢 "
+            else:
+                box_color = COLOR_VIOLATION
+                prefix = "❌ "
+        elif "glove" in _lbl_lower:
+            if _dt == "compliant":
+                box_color = _COLOR_GLOVES_OK
+                prefix = "🧤 "
+            else:
+                box_color = COLOR_VIOLATION
+                prefix = "❌ "
+        elif _dt == "compliant":
+            box_color = COLOR_COMPLIANT
+            prefix = "✅ "
+        else:
+            box_color = COLOR_VIOLATION
+            prefix = "❗ "
+
+        thickness = 3 if _dt == "violation" else 2
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), box_color, thickness)
+
+        text_str = f"{prefix}{lbl} {conf:.0%}"
+        (tw, th), _ = cv2.getTextSize(text_str, cv2.FONT_HERSHEY_SIMPLEX, 0.50, 1)
+        pill_y1 = max(0, y1 - th - 8)
+        pill_y2 = y1
+        cv2.rectangle(annotated, (x1, pill_y1), (x1 + tw + 8, pill_y2), box_color, -1)
+        _text_color = (255, 255, 255)
+        cv2.putText(
+            annotated,
+            text_str,
+            (x1 + 4, pill_y2 - 4),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.50,
+            _text_color,
+            1,
+            cv2.LINE_AA,
+        )
+
     # ── Draw per-person boxes ───────────────────────────────────
     for person in enriched_persons:
         x1, y1, x2, y2 = person["bbox"]
@@ -1469,6 +1542,65 @@ def _run_pipeline(
                 frame_index=frame_index,
             )
 
+    # ── Zone-Aware Multi-Model Pipeline Injection ────────────────────────
+    # Run specialized models from portable_models_package (hairnet, fall, cash, anomaly)
+    # based on zone_type (auto-resolved from camera_id or ocr_zone_config)
+    try:
+        from services.multi_model_detector import get_multi_model_detector
+        _mm_detector = get_multi_model_detector()
+
+        # Determine zone_type:
+        # process_frame / process_frame_numpy pack zone_type into ocr_zone_config when called
+        _eff_zone = "default"
+        if ocr_zone_config and isinstance(ocr_zone_config, dict):
+            _eff_zone = ocr_zone_config.get("zone_type") or "default"
+
+        _extra_dets = _mm_detector.detect(frame, zone_type=_eff_zone, camera_id=camera_id)
+        for _ed in _extra_dets:
+            _lbl = _ed.label
+            _lbl_lower = _lbl.lower()
+            _dt = "neutral"
+
+            # Determine det_type and standardize labels for client compliance rules
+            if "fall" in _lbl_lower:
+                _lbl = "Worker Fall"
+                _dt = "violation"
+            elif _lbl in ("NO-Hairnet", "no_hairnet", "Hair", "no_hair_cover"):
+                _lbl = "NO-Bakery-Head-Cap"
+                _dt = "violation"
+            elif _lbl in ("Hairnet", "hairnet", "Hair_Cover", "hair_cover_ok"):
+                _lbl = "Bakery-Head-Cap"
+                _dt = "compliant"
+            elif _lbl in ("NO-Glove", "no_gloves", "Back_Palm", "Front_Palm"):
+                _lbl = "NO-Gloves"
+                _dt = "violation"
+            elif _lbl in ("Glove", "gloves", "Hand_Gloves", "gloves_ok"):
+                _lbl = "Gloves"
+                _dt = "compliant"
+            elif "cash" in _lbl_lower or _lbl.endswith(" BGN") or _lbl.endswith(" EUR") or _lbl.endswith(" INR") or "banknote" in _lbl_lower or "rupee" in _lbl_lower:
+                _lbl = "Cash"
+                _dt = "neutral"
+            elif "anomaly" in _lbl_lower:
+                _lbl = "Machine Anomaly"
+                _dt = "violation"
+            elif "throw" in _lbl_lower or _lbl_lower == "object_throwing":
+                _lbl = "Object Throwing"
+                _dt = "violation"
+            elif _lbl_lower == "bangles":
+                _lbl = "Bangles"
+                _dt = "violation"
+            elif _lbl_lower == "person":
+                _dt = "person"
+
+            raw.append({
+                "label": _lbl,
+                "confidence": _ed.confidence,
+                "bbox": _ed.bbox,
+                "det_type": _dt,
+            })
+    except Exception as _mm_err:
+        log.debug(f"[MultiModel] Error during injection: {_mm_err}")
+
     # Strictly filter raw detections to only keep selected classes
     before_filter = [d["label"] for d in raw]
     if detection_filters is not None and len(detection_filters) > 0:
@@ -1551,6 +1683,34 @@ def _run_pipeline(
     enriched = _associate_to_persons(
         persons, ppe_dets, role, detection_filters=detection_filters
     )
+
+    # ── Uniform classifier check on detected persons ──────────────────────────
+    try:
+        from services.uniform_monitor import uniform_monitor
+        _req_uniform = (
+            "NO-Uniform" in (detection_filters or [])
+            or (detection_filters is None and "NO-Uniform" in ROLE_RULES.get(role, {}).get("required_sim", []))
+            or (detection_filters is None and "NO-Uniform" in ROLE_RULES.get(role, {}).get("required_violations", []))
+        )
+        for p in enriched:
+            res, _ = uniform_monitor.classify_person_box(frame, p["bbox"])
+            is_uniform = (res.predicted_class in ("UNIFORM", "Uniform", "Uniform_1", "Uniform_2"))
+            p["uniform_prediction"] = res.predicted_class
+            p["uniform_confidence"] = res.confidence
+            p["has_uniform"] = is_uniform
+
+            if _req_uniform:
+                if not is_uniform:
+                    if "NO-Uniform" not in p["ppe_missing"]:
+                        p["ppe_missing"].append("NO-Uniform")
+                    if "No Uniform" not in p["violation_labels"]:
+                        p["violation_labels"].append("No Uniform")
+                    p["is_compliant"] = False
+                else:
+                    if "Uniform" not in p["ppe_found"]:
+                        p["ppe_found"].append("Uniform")
+    except Exception as _ue:
+        log.debug(f"[YOLO] uniform check error: {_ue}")
 
     # ── Traffic Police: remap already done inside dedicated/strict pipeline ──
     # (no remap needed here anymore)
@@ -1789,6 +1949,7 @@ def process_frame(
     role: str,
     detection_filters: Optional[List[str]] = None,
     no_phone_zone: bool = False,
+    zone_type: Optional[str] = None,
 ) -> Dict:
     """
     Full violation pipeline from base64 frame.
@@ -1797,8 +1958,13 @@ def process_frame(
     frame = decode_frame(b64_frame)
     if frame is None:
         return {"error": "Invalid frame data"}
+    _zone_cfg = {"zone_type": zone_type} if zone_type else None
     return _run_pipeline(
-        frame, role, detection_filters=detection_filters, no_phone_zone=no_phone_zone
+        frame,
+        role,
+        detection_filters=detection_filters,
+        no_phone_zone=no_phone_zone,
+        ocr_zone_config=_zone_cfg,
     )
 
 
@@ -1808,6 +1974,7 @@ def process_frame_numpy(
     detection_filters: Optional[List[str]] = None,
     no_phone_zone: bool = False,
     frame_index: int = -1,
+    zone_type: Optional[str] = None,
 ) -> Dict:
     """
     Full violation pipeline from a numpy frame directly.
@@ -1816,12 +1983,14 @@ def process_frame_numpy(
     """
     if frame is None:
         return {"error": "Invalid frame"}
+    _zone_cfg = {"zone_type": zone_type} if zone_type else None
     return _run_pipeline(
         frame,
         role,
         detection_filters=detection_filters,
         no_phone_zone=no_phone_zone,
         frame_index=frame_index,
+        ocr_zone_config=_zone_cfg,
     )
 
 

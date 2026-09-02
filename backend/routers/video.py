@@ -14,7 +14,7 @@ import uuid
 import cv2
 from config import settings
 from database import User, get_db
-from fastapi import (APIRouter, BackgroundTasks, Depends, File, HTTPException,
+from fastapi import (APIRouter, BackgroundTasks, Depends, File, Form, HTTPException,
                      UploadFile)
 from fastapi.responses import FileResponse
 from routers.auth import get_current_user
@@ -41,7 +41,7 @@ def _safe_fourcc():
     return cv2.VideoWriter_fourcc(*"mp4v")
 
 
-def process_video_job(job_id: str, video_path: str, role: str, user_id: int):
+def process_video_job(job_id: str, video_path: str, role: str, user_id: int, zone_type: str = "default"):
     """Background task: process video frame-by-frame, write annotated video."""
     _job_status[job_id] = {
         "status": "processing",
@@ -103,7 +103,7 @@ def process_video_job(job_id: str, video_path: str, role: str, user_id: int):
                     result = face_service.process_face_frame(b64, user_id, db)
                 else:
                     result = yolo_service.process_frame_numpy(
-                        frame, role, frame_index=frame_num
+                        frame, role, frame_index=frame_num, zone_type=zone_type
                     )
 
                 ts_sec = round(frame_num / fps, 1)
@@ -225,6 +225,7 @@ def process_video_job(job_id: str, video_path: str, role: str, user_id: int):
 async def upload_video(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    zone_type: str = Form("default"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -246,12 +247,13 @@ async def upload_video(
 
     role = current_user.role or "Home"
     background_tasks.add_task(
-        process_video_job, job_id, video_path, role, current_user.id
+        process_video_job, job_id, video_path, role, current_user.id, zone_type
     )
 
     return {
         "job_id": job_id,
         "status": "processing",
+        "zone_type": zone_type,
         "message": "Video upload accepted — violation scanning started",
     }
 

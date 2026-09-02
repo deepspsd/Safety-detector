@@ -130,14 +130,23 @@ class _InferencePool:
         """Return True if the inference worker thread is alive."""
         return self._running and self._thread is not None and self._thread.is_alive()
 
-    def put_frame(self, camera_id: int, frame: np.ndarray) -> None:
+    def put_frame(self, camera_id: int, frame: np.ndarray, zone_type: Optional[str] = None) -> None:
         """
         Submit a frame for inference.  Non-blocking — drops oldest frame if
         the per-camera queue is full so we always process fresh frames.
+        
+        Args:
+            camera_id: Camera ID
+            frame: Frame to process
+            zone_type: Zone type for multi-model routing (e.g., "dough_mixing")
         """
         with self._lock:
             if camera_id not in self._queues:
                 self._queues[camera_id] = queue.Queue(maxsize=_MAX_QUEUE_DEPTH)
+            # Store zone_type for multi-model routing
+            if not hasattr(self, '_camera_zones'):
+                self._camera_zones = {}
+            self._camera_zones[camera_id] = zone_type
             q = self._queues[camera_id]
 
         # Drop oldest frame if queue is full (keep latency low)
@@ -246,17 +255,30 @@ class _InferencePool:
         Main inference loop — runs in a single daemon thread.
 
         Iterates over all registered camera queues in round-robin order,
-        pops one frame per camera per cycle, and runs YOLO inference.
+        pops one frame per camera per cycle, and runs multi-model inference
+        based on each camera's zone_type.
         Sleeps briefly when all queues are empty.
         """
-        # Lazy-import YOLO so the pool can be imported before the model loads.
+        # Lazy-import detector so the pool can be imported before models load
         try:
-            from services.detection_layer import detector
+            from services.multi_model_detector import get_multi_model_detector
+            detector = get_multi_model_detector()
+            log.info("[InferencePool] Multi-model detector loaded successfully")
         except Exception as exc:
-            log.error(f"[InferencePool] Could not import detector: {exc}")
-            return
+            log.error(f"[InferencePool] Could not import multi-model detector: {exc}")
+            # Fallback to single-model detector
+            try:
+                from services.detection_layer import detector
+                log.warning("[InferencePool] Falling back to single-model detector")
+            except Exception as exc2:
+                log.error(f"[InferencePool] Could not import any detector: {exc2}")
+                return
 
         log.info("[InferencePool] Inference loop running")
+        
+        # Initialize camera zones dict if not exists
+        if not hasattr(self, '_camera_zones'):
+            self._camera_zones = {}
 
         while self._running:
             processed_any = False
@@ -285,10 +307,24 @@ class _InferencePool:
                     infer_frame = _resize_for_inference(
                         frame, settings.YOLO_INFERENCE_WIDTH
                     )
-                    detections = detector.detect(infer_frame)
+                    
+                    # Get zone_type for this camera (for multi-model routing)
+                    zone_type = self._camera_zones.get(camera_id)
+                    
+                    # Multi-model detection with zone awareness
+                    if hasattr(detector, 'detect'):
+                        # MultiModelDetector or single detector
+                        if zone_type:
+                            detections = detector.detect(infer_frame, zone_type=zone_type, camera_id=camera_id)
+                        else:
+                            detections = detector.detect(infer_frame)
+                    else:
+                        # Fallback
+                        detections = []
+                    
                     det_dicts = [d.to_dict() for d in detections]
                 except Exception as exc:
-                    log.debug(f"[InferencePool] Inference error cam={camera_id}: {exc}")
+                    log.debug(f"[InferencePool] Inference error cam={camera_id}: {exc}", exc_info=True)
                     det_dicts = []
 
                 with self._lock:

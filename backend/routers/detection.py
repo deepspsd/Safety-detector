@@ -105,11 +105,12 @@ async def detection_websocket(websocket: WebSocket):
         state = {
             "filters": handshake_filters,
             "no_phone_zone": bool(auth_data.get("no_phone_zone", True)),  # default ON
+            "zone_type": auth_data.get("zone_type") or "default",
             "frame_count": 0,
             "alive": True,
         }
 
-        print(f"[WS] Handshake filters ({len(state['filters'])}): {state['filters']}")
+        print(f"[WS] Handshake filters ({len(state['filters'])}): {state['filters']} | zone: {state['zone_type']}")
 
         await websocket.send_json(
             {
@@ -117,6 +118,7 @@ async def detection_websocket(websocket: WebSocket):
                 "role": role,
                 "user": user.name,
                 "active_filters": state["filters"],
+                "zone_type": state["zone_type"],
             }
         )
 
@@ -142,6 +144,13 @@ async def detection_websocket(websocket: WebSocket):
                         print(f"[WS] ✅ FILTER UPDATED: {state['filters']} → {nf}")
                         state["filters"] = nf
 
+                # Read zone_type if sent
+                if "zone_type" in msg:
+                    nz = msg["zone_type"]
+                    if nz and nz != state["zone_type"]:
+                        print(f"[WS] 🏷️ ZONE UPDATED: {state['zone_type']} → {nz}")
+                        state["zone_type"] = nz
+
                 # Read no_phone_zone toggle from every message
                 if "no_phone_zone" in msg:
                     npz = bool(msg["no_phone_zone"])
@@ -159,13 +168,14 @@ async def detection_websocket(websocket: WebSocket):
                         except asyncio.QueueEmpty:
                             pass
                     await frame_queue.put(msg["frame"])
-                elif "filters" in msg:
-                    # Standalone filter-update (no frame) — just acknowledge
+                elif "filters" in msg or "zone_type" in msg:
+                    # Standalone filter/zone update (no frame) — just acknowledge
                     try:
                         await websocket.send_json(
                             {
                                 "status": "filters_updated",
                                 "active_filters": state["filters"],
+                                "zone_type": state["zone_type"],
                             }
                         )
                     except Exception:
@@ -221,6 +231,7 @@ async def detection_websocket(websocket: WebSocket):
                             role,
                             detection_filters=det_filters,
                             no_phone_zone=state["no_phone_zone"],
+                            zone_type=state.get("zone_type", "default"),
                         )
                         # ← await releases event loop; read_messages() runs here
                         result = await loop.run_in_executor(
@@ -237,6 +248,7 @@ async def detection_websocket(websocket: WebSocket):
                             print(
                                 f"[YOLO] Frame#{frame_num} det={det_labels} "
                                 f"missing={missing} filters_used={det_filters} "
+                                f"zone={state.get('zone_type')} "
                                 f"compliant={result.get('is_compliant')}"
                             )
 
@@ -265,10 +277,14 @@ async def detection_websocket(websocket: WebSocket):
                         "persons": result.get("persons", []),
                         "model_mode": result.get("model_mode", "unknown"),
                         "active_filters": state["filters"],
+                        "zone_type": state.get("zone_type", "default"),
                         # Phone detection fields
                         "phone_status": result.get("phone_status", "safe"),
                         "phone_detected": result.get("phone_detected", False),
                         "phone_alert": result.get("phone_alert"),
+                        # Uniform detection fields
+                        "uniform_detected": any(p.get("has_uniform") for p in result.get("persons", [])),
+                        "uniform_violation": any(not p.get("has_uniform", True) for p in result.get("persons", [])),
                     }
 
                     # ── Save PPE alert (cooldown + confidence gate) ─────

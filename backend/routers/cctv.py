@@ -597,7 +597,17 @@ def _run_combined_inference(
     ppe_result = {}
     face_result = {}
 
-    # --- PPE / YOLO detection ------------------------------------------------
+    # --- PPE / YOLO detection (now with zone-aware multi-model) --------------
+    _cam_zone = "default"
+    if camera_id is not None and db is not None:
+        try:
+            from database import Camera as CameraModel
+            cam_obj = db.query(CameraModel).filter(CameraModel.id == camera_id).first()
+            if cam_obj and cam_obj.zone_type:
+                _cam_zone = cam_obj.zone_type
+        except Exception:
+            pass
+
     if role != "Home":
         ppe_result = yolo_service.process_frame_numpy(
             frame,
@@ -605,6 +615,7 @@ def _run_combined_inference(
             det_filters,
             no_phone_zone,
             frame_idx,
+            zone_type=_cam_zone,
         )
     else:
         # Home role → PPE pipeline still runs (for phone detection)
@@ -614,6 +625,7 @@ def _run_combined_inference(
             [],  # no PPE requirements
             no_phone_zone,
             frame_idx,
+            zone_type=_cam_zone,
         )
 
     # --- Cash monitoring (CashEventTracker state machine) --------------------
@@ -859,10 +871,17 @@ async def cctv_detection_websocket(websocket: WebSocket):
             )
 
         elif camera_url:
-            # ── LEGACY MODE: open a dedicated CameraReader for this session ──
-            display_url = camera_url
-            print(f"\n[CCTV-v2] ===== LEGACY SESSION =====")
-            print(f"[CCTV-v2] User: {user.name} | Role: {role} | URL: {camera_url}")
+            # ── LEGACY / DIRECT URL MODE: Check if DB matches this RTSP URL to inherit its zone & camera_id ──
+            from database import Camera as CameraModel
+            db_cam = db.query(CameraModel).filter(CameraModel.rtsp_url == camera_url).first()
+            if db_cam and camera_manager.is_running(db_cam.id):
+                managed_camera_id = db_cam.id
+                display_url = f"managed:{managed_camera_id}"
+                print(f"[CCTV-v3] Auto-mapped RTSP URL to managed CameraID: {managed_camera_id} (zone: {db_cam.zone_type})")
+            else:
+                display_url = camera_url
+                print(f"\n[CCTV-v2] ===== LEGACY SESSION =====")
+                print(f"[CCTV-v2] User: {user.name} | Role: {role} | URL: {camera_url}")
 
         else:
             await websocket.send_json({"error": "camera_id or camera_url is required"})
@@ -1039,6 +1058,9 @@ async def cctv_detection_websocket(websocket: WebSocket):
                         "cash_detected": result.get("cash_detected", False),
                         "cash_alert":    result.get("cash_alert"),
                         "cash_alert_saved": False,  # set True below if alert was saved
+                        # Uniform monitoring
+                        "uniform_detected": any(p.get("has_uniform") for p in result.get("persons", [])),
+                        "uniform_violation": any(not p.get("has_uniform", True) for p in result.get("persons", [])),
                     }
 
                     # ── PPE alert save ─────────────────────────────────────
