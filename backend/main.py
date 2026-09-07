@@ -368,6 +368,55 @@ def _run_migrations() -> None:
         ],
     )
 
+    # v6: event-based notification tracking tables
+    _migrate_tables(
+        engine,
+        [
+            """CREATE TABLE IF NOT EXISTS anomaly_events (
+                id INTEGER PRIMARY KEY,
+                event_id VARCHAR(100) NOT NULL UNIQUE,
+                camera_id INTEGER NOT NULL REFERENCES cameras(id),
+                track_id VARCHAR(100) NOT NULL,
+                anomaly_type VARCHAR(200) NOT NULL,
+                severity VARCHAR(20) NOT NULL,
+                state VARCHAR(30) NOT NULL,
+                first_detected_at DATETIME NOT NULL,
+                last_seen_at DATETIME NOT NULL,
+                confirmed_at DATETIME,
+                resolved_at DATETIME,
+                duration_seconds FLOAT NOT NULL DEFAULT 0,
+                camera_name VARCHAR(200),
+                floor VARCHAR(100),
+                notification_sent BOOLEAN NOT NULL DEFAULT 0,
+                notification_sent_at DATETIME,
+                notification_attempts INTEGER NOT NULL DEFAULT 0,
+                notification_status VARCHAR(50) NOT NULL DEFAULT 'pending',
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                INDEX idx_anomaly_events_camera (camera_id),
+                INDEX idx_anomaly_events_state (state),
+                INDEX idx_anomaly_events_track (camera_id, track_id, anomaly_type)
+            )""",
+            """CREATE TABLE IF NOT EXISTS notification_queue (
+                id INTEGER PRIMARY KEY,
+                event_id VARCHAR(100) NOT NULL REFERENCES anomaly_events(event_id),
+                camera_id INTEGER NOT NULL REFERENCES cameras(id),
+                anomaly_type VARCHAR(200) NOT NULL,
+                severity VARCHAR(20) NOT NULL,
+                message TEXT NOT NULL,
+                status VARCHAR(30) NOT NULL DEFAULT 'queued',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_attempt_at DATETIME,
+                error_message TEXT,
+                created_at DATETIME NOT NULL,
+                delivered_at DATETIME,
+                INDEX idx_notification_queue_status (status),
+                INDEX idx_notification_queue_event (event_id)
+            )""",
+        ],
+        name_from_sql=True,
+    )
+
 
 def _migrate_tables(engine, statements, *, name_from_sql: bool = False) -> None:
     """Execute CREATE TABLE IF NOT EXISTS statements, swallowing 'already exists'."""
@@ -533,6 +582,41 @@ def startup():
     except Exception as _we:
         print(f"⚠️  WS Broadcaster startup warning: {_we}")
 
+    # ── Start Event-based Notification System ─────────────────────────────────
+    # EventManager + AlertManager handle 2-minute confirmation before FCM push
+    try:
+        from services.notification_service import get_event_manager, get_alert_manager
+        
+        event_mgr = get_event_manager()
+        alert_mgr = get_alert_manager()
+        
+        # Start alert manager worker thread
+        alert_mgr.start_worker()
+        
+        # Start event manager periodic update thread
+        def _event_manager_update_loop():
+            import time
+            while True:
+                time.sleep(1.0)  # Update every second
+                try:
+                    # Update all active events and get newly confirmed ones
+                    confirmed_events = event_mgr.update_active_events()
+                    # Queue notifications for confirmed events
+                    for event in confirmed_events:
+                        alert_mgr.queue_notification(event)
+                except Exception as exc:
+                    print(f"⚠️  EventManager update error: {exc}")
+        
+        event_thread = threading.Thread(
+            target=_event_manager_update_loop,
+            name="event-manager-updater",
+            daemon=True,
+        )
+        event_thread.start()
+        print("✅ Event-based notification system started (2-min confirmation)")
+    except Exception as _ne:
+        print(f"⚠️  Notification system startup warning: {_ne}")
+
     # ── Nightly auto clock-out scheduler (pure threading — no extra dependency) ──
     # Runs at 19:00 IST (UTC+05:30 = 13:30 UTC) every day.
     # Closes all open attendance sessions and sends a Telegram notification.
@@ -643,7 +727,16 @@ def shutdown():
     """Gracefully stop all camera reader threads and shared inference pool on server shutdown."""
     from services import camera_manager
     from services.inference_pool import inference_pool
+    from services.notification_service import get_alert_manager
 
     camera_manager.stop_all()
     inference_pool.stop()
+    
+    # Stop alert manager worker
+    try:
+        alert_mgr = get_alert_manager()
+        alert_mgr.stop_worker()
+    except Exception:
+        pass
+    
     print("🛑 Safety Monitor: all camera readers and inference pool stopped")

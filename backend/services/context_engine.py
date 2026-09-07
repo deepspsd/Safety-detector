@@ -12,6 +12,7 @@ from services import zone_service
 from services.detection_layer import Detection
 from services.platform_events import emit
 from services.tracking_layer import TrackObservation
+from services.notification_service import get_event_manager, get_alert_manager
 
 
 @dataclass
@@ -152,6 +153,12 @@ class ContextEngine:
             if context.zone_id is not None:
                 emit("ZONE_ENTERED", **base)
         signal_base = {key: value for key, value in base.items() if key != "payload"}
+        
+        # ── Feed violations into EventManager ─────────────────────────────────
+        # Process PPE violations through event confirmation system
+        event_mgr = get_event_manager()
+        alert_mgr = get_alert_manager()
+        
         for label in context.ppe["missing"]:
             emit(
                 "PPE_MISSING",
@@ -159,6 +166,21 @@ class ContextEngine:
                 **signal_base,
                 payload={**context.to_dict(), "label": label},
             )
+            
+            # Feed into EventManager for 2-minute confirmation
+            confirmed_event = event_mgr.process_detection(
+                camera_id=context.camera_id,
+                track_id=context.track_id,
+                anomaly_type=label,
+                severity="high",
+                camera_name=None,  # Will be populated by AlertManager from DB
+                floor=context.zone_name,
+            )
+            
+            # If event just became confirmed, queue notification
+            if confirmed_event:
+                alert_mgr.queue_notification(confirmed_event)
+        
         for label in context.ppe["violations"]:
             emit(
                 "OBJECT_POLICY_SIGNAL",
@@ -166,6 +188,19 @@ class ContextEngine:
                 **signal_base,
                 payload={**context.to_dict(), "label": label},
             )
+            
+            # Feed violations (bangles, etc.) into EventManager
+            confirmed_event = event_mgr.process_detection(
+                camera_id=context.camera_id,
+                track_id=context.track_id,
+                anomaly_type=label,
+                severity="critical",
+                camera_name=None,
+                floor=context.zone_name,
+            )
+            
+            if confirmed_event:
+                alert_mgr.queue_notification(confirmed_event)
 
     @staticmethod
     def _persist_context(context: TrackContext, db) -> None:

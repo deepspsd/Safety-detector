@@ -290,6 +290,18 @@ class Settings(BaseSettings):
     # Seconds between repeated push notifications for the same (camera, issue_type).
     FCM_NOTIFICATION_COOLDOWN_SEC: int = 120
 
+    # ── Event-based notification system ──────────────────────────────────
+    # How long an anomaly must be continuously detected before confirmation (seconds)
+    EVENT_CONFIRMATION_DURATION: float = 120.0  # 2 minutes
+    # Grace period: how long to keep event active after last detection (seconds)
+    EVENT_GRACE_PERIOD: float = 5.0  # 5 seconds of missed detections allowed
+    # Minimum time between notifications for the same event (seconds)
+    EVENT_NOTIFICATION_COOLDOWN: float = 300.0  # 5 minutes between repeated notifications
+    # Maximum event duration before auto-resolve (seconds) - prevents zombie events
+    EVENT_MAX_DURATION: float = 3600.0  # 1 hour
+    # Cleanup: purge resolved events older than this (seconds)
+    EVENT_CLEANUP_AGE: float = 86400.0  # 24 hours
+
     # ── Security ────────────────────────────────────────────────────────────
     APP_ENV: str = "development"
     # Comma-separated allowed CORS origins (empty = allow all, dev only).
