@@ -38,10 +38,10 @@ class Settings(BaseSettings):
     # yolov8x.pt          → High-accuracy COCO model (person, cell phone, objects)
     # hairnet, fall, anomaly, throwing models loaded via MultiModelRegistry
     YOLO_MODEL: str = "yolov8x.pt"
-    DETECTION_CONF: float = 0.60
+    DETECTION_CONF: float = 0.25  # Lowered from 0.60 to 0.25 for better person detection
     NMS_IOU: float = 0.40
     IOU_PERSON_PPE: float = 0.10
-    MIN_VIOLATION_CONF: float = 0.60
+    MIN_VIOLATION_CONF: float = 0.40  # Lowered from 0.60 to 0.40
     ALERT_COOLDOWN: int = 3
     FRAME_SKIP: int = 3  # process every Nth frame in video uploads
 
@@ -58,7 +58,7 @@ class Settings(BaseSettings):
             "type": "yolo",
             "enabled": True,
             "priority": 0,  # PRIMARY - person detection, vehicles, objects
-            "conf_threshold": 0.50,
+            "conf_threshold": 0.25,  # Lowered from 0.50 to 0.25 for better person detection
             "target_fps": 10,
             "zones": ["*"],  # All zones
             "description": "YOLOv8x COCO - General object detection (person, vehicle, phone, etc.)",
@@ -73,7 +73,7 @@ class Settings(BaseSettings):
             "type": "yolo",
             "enabled": True,
             "priority": 1,
-            "conf_threshold": 0.50,
+            "conf_threshold": 0.35,  # Lowered from 0.50 to 0.35
             "target_fps": 5,
             "zones": ["*", "dough_mixing", "oven", "packing", "biscuit_cutting", "entrance", "dough_table", "gas_section", "shop", "shop_counter", "store", "default"],
             "description": "Food safety - hairnet, gloves, hand detection",
@@ -100,7 +100,7 @@ class Settings(BaseSettings):
             "priority": 2,
             "conf_threshold": 0.50,
             "target_fps": 3,
-            "zones": ["shop_counter", "shop", "cashbox", "cash", "default"],
+            "zones": ["shop_counter", "shop", "cashbox", "cash"],
             "description": "Cash monitoring - banknote detection (EUR/BGN/currency)",
             "classes": {
                 0: "5 BGN", 1: "10 BGN", 2: "20 BGN", 3: "50 BGN", 4: "100 BGN",
@@ -173,7 +173,7 @@ class Settings(BaseSettings):
         "ground":           ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
         "first_floor":      ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
         "second_floor":     ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
-        "default":          ["yolov8x_coco", "hairnet_glove_detection", "fall_detection", "cash_detection"],
+        "default":          ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
     }
 
     # ── Model Performance Tuning ────────────────────────────────────────────

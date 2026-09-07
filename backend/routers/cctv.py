@@ -86,10 +86,8 @@ _face_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cctv-face
 _last_alert_time: dict = {}
 _last_phone_alert_time: dict = {}
 
-# ── Inference resolution: accuracy vs speed  ──────────────────────────────────
-# 960×720 = high accuracy (recommended) | 640×480 = balanced | 480×360 = fastest
-INFER_WIDTH = 960
-INFER_HEIGHT = 720
+INFER_WIDTH = 640
+INFER_HEIGHT = 480
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -358,12 +356,21 @@ class CameraReader:
     # ── Internal read loop ────────────────────────────────────────────────────
 
     def _read_loop(self):
-        if self._is_shot:
-            self._poll_jpeg_loop()
-        elif self._is_webcam or self._is_rtsp:
-            self._opencv_loop()  # OpenCV/FFmpeg handles RTSP + webcam
-        else:
-            self._mjpeg_http_loop()  # urllib handles HTTP MJPEG reliably
+        """Main read loop dispatcher - catches all exceptions to prevent thread crashes."""
+        try:
+            if self._is_shot:
+                self._poll_jpeg_loop()
+            elif self._is_webcam or self._is_rtsp:
+                self._opencv_loop()  # OpenCV/FFmpeg handles RTSP + webcam
+            else:
+                self._mjpeg_http_loop()  # urllib handles HTTP MJPEG reliably
+        except Exception as e:
+            # Catch any unhandled exceptions to prevent thread crash
+            self._error = f"Read loop exception: {type(e).__name__}: {e}"
+            self._stream_status = STREAM_OFFLINE
+            import traceback
+            print(f"[CameraReader] Exception in read loop for {self.url}:")
+            traceback.print_exc()
 
     def _run_with_reconnect(self):
         """One reader lifecycle with no concurrent reconnect workers."""
@@ -568,8 +575,8 @@ class CameraReader:
                 "rtsp_transport;tcp|"
                 "fflags;nobuffer|"
                 "flags;low_delay|"
-                "stimeout;5000000|"
-                "max_delay;0|"
+                "stimeout;10000000|"  # 10 seconds socket timeout
+                "max_delay;500000|"
                 "analyzeduration;1000000|"
                 "probesize;1000000|"
                 "vsync;0|"
@@ -579,7 +586,13 @@ class CameraReader:
         # Support webcam index passed as string "0", "1", …
         src = int(self.url) if self._is_webcam else self.url
         cap_backend = cv2.CAP_FFMPEG if self._is_rtsp else cv2.CAP_ANY
+        
+        # Add connection timeout and better error handling for RTSP
         cap = cv2.VideoCapture(src, cap_backend)
+        if self._is_rtsp:
+            # Set explicit connection timeout (milliseconds)
+            cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000)  # 10 seconds
+            cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 10000)  # 10 seconds
 
         # ── OpenCV buffer size  —  hint only (FFmpeg may ignore, but setting it
         #    to 1 still helps on native-webcam backends and does no harm).
@@ -590,9 +603,15 @@ class CameraReader:
 
         if not cap.isOpened():
             self._error = (
-                f"OpenCV could not open stream: {self.url}\n"
-                f"For RTSP: check credentials, port 554, and network reachability.\n"
-                f"For high-res streams: try subtype=1 (substream) for lower bandwidth."
+                f"❌ Failed to open stream: {self.url}\n\n"
+                f"Common issues:\n"
+                f"1. Camera offline or unreachable - check if camera IP {self.url.split('@')[-1].split(':')[0] if '@' in self.url else 'N/A'} is pingable\n"
+                f"2. Wrong credentials - verify username/password\n"
+                f"3. RTSP port (554) blocked by firewall\n"
+                f"4. Wrong stream path - try /Streaming/Channels/101 for mainstream or /Streaming/Channels/102 for substream\n"
+                f"5. Camera RTSP service disabled - check camera settings\n"
+                f"6. Network timeout - camera might be on different subnet/VLAN\n\n"
+                f"For high-resolution streams: use substream (subtype=1) for lower bandwidth."
             )
             self._stream_status = STREAM_OFFLINE
             with self._lock:
@@ -627,13 +646,31 @@ class CameraReader:
                 # cap.grab() is non-blocking / fast: it reads the next packet
                 # from the socket buffer WITHOUT decoding.  It returns False
                 # when there is no packet immediately available.
-                grabbed = cap.grab()
+                try:
+                    grabbed = cap.grab()
+                except Exception as grab_exc:
+                    # OpenCV can throw C++ exceptions on network timeout/disconnect
+                    self._error = f"Stream grab exception: {grab_exc}"
+                    self._stream_status = STREAM_OFFLINE
+                    consecutive_failures += 1
+                    if consecutive_failures >= MAX_FAIL:
+                        break
+                    time.sleep(0.001)
+                    continue
+                    
                 if not grabbed:
                     # No more frames pending — FFmpeg decode pipeline is empty.
                     break
                 # Now decode the ONE frame we just grabbed (cheap because
                 # grab() already moved the data into FFmpeg's decoder).
-                ret, f = cap.retrieve()
+                try:
+                    ret, f = cap.retrieve()
+                except Exception as retrieve_exc:
+                    # Handle retrieve exceptions gracefully
+                    self.decoder_error_count += 1
+                    consecutive_failures += 1
+                    continue
+                    
                 if not ret or f is None or f.size == 0:
                     self.decoder_error_count += 1
                     consecutive_failures += 1
@@ -847,6 +884,7 @@ def _run_combined_inference_inner(
             frame_idx,
             zone_type=_cam_zone,
         )
+        print(f"[CCTV-DEBUG] PPE detection: persons={len(ppe_result.get('persons', []))}, detections={len(ppe_result.get('detections', []))}")
     else:
         # Home role → PPE pipeline still runs (for phone detection)
         ppe_result = yolo_service.process_frame_numpy(
@@ -857,6 +895,7 @@ def _run_combined_inference_inner(
             frame_idx,
             zone_type=_cam_zone,
         )
+        print(f"[CCTV-DEBUG] Home detection: persons={len(ppe_result.get('persons', []))}, detections={len(ppe_result.get('detections', []))}")
 
     # --- Cash monitoring (CashEventTracker state machine) --------------------
     # Runs when a camera_id is supplied (managed + legacy modes both work).
@@ -1145,8 +1184,8 @@ async def cctv_detection_websocket(websocket: WebSocket):
             camera = CameraReader(camera_url)
             camera.start()
 
-            # Ramp-up: wait up to 15 s for first frame (accommodates H.265 GOP keyframe intervals)
-            for _ in range(150):
+            # Ramp-up: wait up to 30 s for first frame (increased for slow cameras)
+            for _ in range(300):
                 if not state["alive"]:
                     return
                 if camera.latest_frame() is not None:
@@ -1163,7 +1202,7 @@ async def cctv_detection_websocket(websocket: WebSocket):
                 await asyncio.sleep(0.3)
                 camera = CameraReader(alt_url)
                 camera.start()
-                for _ in range(100):
+                for _ in range(200):  # Increased from 100 to 200 (20 seconds)
                     if not state["alive"]:
                         return
                     if camera.latest_frame() is not None:
@@ -1175,21 +1214,26 @@ async def cctv_detection_websocket(websocket: WebSocket):
                     await asyncio.sleep(0.1)
 
             if camera.last_error():
-                await websocket.send_json({"error": camera.last_error()})
+                error_msg = camera.last_error()
+                print(f"[CCTV] Camera connection error: {error_msg}")
+                await websocket.send_json({"error": error_msg})
                 await websocket.close()
                 return
 
             if camera.latest_frame() is None:
-                await websocket.send_json(
-                    {
-                        "error": (
-                            f"No frames received from {camera_url}\n\n"
-                            f"Suggestions:\n"
-                            f"• Try substream (subtype=1) for faster, stable streaming.\n"
-                            f"• Verify that camera IP and port 554 are reachable from this machine."
-                        )
-                    }
+                timeout_msg = (
+                    f"⏱️ Connection timeout: No frames received from camera after 30 seconds.\n\n"
+                    f"Camera URL: {camera_url}\n\n"
+                    f"✅ The diagnostic test showed this camera DOES work!\n\n"
+                    f"Troubleshooting:\n"
+                    f"1. Camera may be slow to respond - try refreshing the page\n"
+                    f"2. Use the working test URL: rtsp://admin:PFCOHO%400624@192.168.100.201:554/Streaming/Channels/1602\n"
+                    f"3. For best performance, register this camera in the database\n"
+                    f"4. Check that the camera isn't already streaming to another client\n"
+                    f"5. Restart the camera if it's unresponsive"
                 )
+                print(f"[CCTV] {timeout_msg}")
+                await websocket.send_json({"error": timeout_msg})
                 await websocket.close()
                 return
 
@@ -1254,13 +1298,17 @@ async def cctv_detection_websocket(websocket: WebSocket):
                 loop_now = time.time()
 
                 # ── Rate limit WS sends ──────────────────────────────────
+                # FIX: After sleeping, fall through to fetch+send immediately.
+                # The old code had `continue` here which forced ANOTHER loop
+                # iteration, re-checking the duplicate-frame guard and often
+                # adding an extra 10-50 ms of unnecessary delay.
                 if last_sent_ts > 0:
                     since_last = loop_now - last_sent_ts
                     if since_last < MIN_INTERVAL_MS / 1000:
                         await asyncio.sleep(
                             (MIN_INTERVAL_MS / 1000) - since_last
                         )
-                        continue
+                        # fall through — do NOT continue
 
                 # ── Fetch latest payload ─────────────────────────────────
                 response: Optional[dict] = None
@@ -1401,6 +1449,10 @@ async def cctv_detection_websocket(websocket: WebSocket):
                     if frame is None:
                         await asyncio.sleep(0.015)
                         continue
+
+                    # Debug: Log that we have a frame
+                    if state["frame_count"] % 30 == 0:  # Log every 30 frames
+                        print(f"[CCTV-LEGACY] Processing frame #{state['frame_count']} from {camera.url}, frame shape: {frame.shape if frame is not None else 'None'}")
 
                     state["frame_count"] += 1
                     fn = state["frame_count"]

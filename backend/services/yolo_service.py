@@ -234,6 +234,24 @@ _phone_model = None  # dedicated phone detection model (COCO class 67)
 _use_simulation = False
 _model_is_ppe = False  # True when ppe.pt loaded (vs generic COCO)
 
+
+# ─────────────────────────────────────────────────────────────────
+# Public accessors for model state (used by check_models.py)
+# ─────────────────────────────────────────────────────────────────
+def get_model():
+    """Public accessor for the primary YOLO model."""
+    return _model
+
+
+def get_helmet_model():
+    """Public accessor for the helmet detection model."""
+    return _helmet_model
+
+
+def get_phone_model():
+    """Public accessor for the phone detection model."""
+    return _phone_model
+
 # ─────────────────────────────────────────────────────────────────
 # ByteTrack tracker registry  (one tracker instance per camera_id)
 # ─────────────────────────────────────────────────────────────────
@@ -417,6 +435,8 @@ def load_model():
         for _p in _paths_to_try:
             if os.path.isfile(_p) or not _p.endswith(".pt"):
                 try:
+                    # BUG FIX: Explicitly declare global here to ensure assignment works
+                    global _model, _use_simulation, _model_is_ppe
                     _model = YOLO(_p)
                     torch.load = _orig_load
                     _use_simulation = False
@@ -451,6 +471,21 @@ def load_model():
             _use_simulation = True
             print("ℹ️  Running in SIMULATION mode. Place ppe.pt in backend/")
             return
+
+    # ── Warm-up: run one blank inference to trigger JIT compilation ────────
+    # Without this, the FIRST live frame pays the PyTorch JIT cost (~2-5s).
+    # A tiny black 640×640 frame is enough to trigger compilation with zero
+    # visual impact.  Runs synchronously here so it completes before the
+    # first WebSocket connection arrives.
+    if _model is not None and not _use_simulation:
+        try:
+            import numpy as _np
+            _warmup_frame = _np.zeros((640, 640, 3), dtype=_np.uint8)
+            list(_model(_warmup_frame, verbose=False, imgsz=640, stream=True))
+            log.info("[YOLO] Warm-up inference complete")
+            print("ℹ️  YOLO warm-up complete (first frame JIT cost eliminated)")
+        except Exception as _we:
+            log.warning(f"[YOLO] Warm-up skipped: {_we}")
 
     # ── 2. Load dedicated helmet model for Traffic Police ─────────
     # Runs in a background thread to NEVER block server startup.
@@ -613,6 +648,49 @@ def _center_in_box(box_small: List[int], box_large: List[int]) -> bool:
     return box_large[0] <= cx <= box_large[2] and box_large[1] <= cy <= box_large[3]
 
 
+def _deduplicate_person_boxes(
+    persons: List[Dict], iou_thresh: float = 0.35, contain_thresh: float = 0.65
+) -> List[Dict]:
+    """
+    Deduplicate overlapping person bounding boxes.
+    Handles duplicate detections from multiple models (e.g. YOLO PPE + YOLO COCO)
+    or multi-scale person boxes (torso box vs full body box for the same human).
+    """
+    if len(persons) <= 1:
+        return persons
+
+    # Sort by confidence descending
+    sorted_p = sorted(persons, key=lambda p: p.get("confidence", 0.0), reverse=True)
+    kept: List[Dict] = []
+
+    for p in sorted_p:
+        box1 = p["bbox"]
+        area1 = max(1, (box1[2] - box1[0]) * (box1[3] - box1[1]))
+        is_dup = False
+
+        for k in kept:
+            box2 = k["bbox"]
+            area2 = max(1, (box2[2] - box2[0]) * (box2[3] - box2[1]))
+
+            xA, yA = max(box1[0], box2[0]), max(box1[1], box2[1])
+            xB, yB = min(box1[2], box2[2]), min(box1[3], box2[3])
+            inter = max(0, xB - xA) * max(0, yB - yA)
+
+            if inter > 0:
+                union = area1 + area2 - inter
+                iou = inter / float(union) if union > 0 else 0.0
+                containment = inter / float(min(area1, area2))
+
+                if iou > iou_thresh or containment > contain_thresh:
+                    is_dup = True
+                    break
+
+        if not is_dup:
+            kept.append(p)
+
+    return kept
+
+
 def _belongs_to_person(person_box: List[int], item_box: List[int]) -> bool:
     """
     True if item_box can be assigned to person_box.
@@ -637,12 +715,18 @@ def _run_inference_with(frame: np.ndarray, model, is_ppe: bool) -> List[Dict]:
 
     Returns flat list: {label, confidence, bbox:[x1,y1,x2,y2], det_type}
     """
-    results = model(
+    # imgsz=640: tell YOLO the target inference size explicitly so it does NOT
+    # resize internally on every call (saves a full BGR copy + resize on CPU).
+    # stream=True: returns a generator instead of building a list of Result
+    # objects, reducing peak RAM allocation per inference call.
+    results = list(model(
         frame,
         verbose=False,
+        imgsz=640,
         conf=max(0.40, getattr(settings, "DETECTION_CONF", 0.50)),
         iou=settings.NMS_IOU,
-    )
+        stream=True,
+    ))
     detections = []
     _raw_box_count = sum(len(r.boxes) for r in results)
     if _raw_box_count > 0:
@@ -1286,6 +1370,7 @@ def _run_traffic_police_strict_ppe(
 
     persons = [d for d in raw if d["det_type"] == "person"]
     ppe_dets = [d for d in raw if d["det_type"] in ("violation", "compliant")]
+    persons = _deduplicate_person_boxes(persons)
 
     # Fallback: create one synthetic person spanning all PPE detections if no Person class
     if not persons and ppe_dets:
@@ -1636,6 +1721,9 @@ def _run_pipeline(
     persons = [d for d in raw if d["det_type"] == "person"]
     ppe_dets = [d for d in raw if d["det_type"] in ("violation", "compliant")]
 
+    # Deduplicate overlapping person detections (merges multi-model & multi-scale duplicates)
+    persons = _deduplicate_person_boxes(persons)
+
     # ── ByteTrack: assign stable track_id to each person (no-op if camera_id is None) ──
     if camera_id is not None:
         persons = _apply_tracking(camera_id, persons)
@@ -1693,6 +1781,9 @@ def _run_pipeline(
                 )
         except Exception as _coco_err:
             log.warning(f"[COCO FALLBACK] person detection failed: {_coco_err}")
+
+    # Deduplicate once more in case fallback or synthetic added overlapping boxes
+    persons = _deduplicate_person_boxes(persons)
 
     enriched = _associate_to_persons(
         persons, ppe_dets, role, detection_filters=detection_filters

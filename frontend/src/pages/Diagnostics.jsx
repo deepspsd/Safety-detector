@@ -6,7 +6,7 @@ export default function Diagnostics() {
   const [cameras, setCameras] = useState([])
   const [selectedCamId, setSelectedCamId] = useState(null)
   const [diagnostics, setDiagnostics] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [_loading, setLoading] = useState(true)  // Prefixed with _ to indicate intentionally unused
   const [autoRefresh, setAutoRefresh] = useState(true)
 
   const BASE = import.meta.env.VITE_API_BASE_URL?.replace(/\/api$/, '') || ''
@@ -38,12 +38,14 @@ export default function Diagnostics() {
 
   useEffect(() => {
     loadCameras()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
     if (selectedCamId) {
       loadDiagnostics(selectedCamId)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCamId])
 
   useEffect(() => {

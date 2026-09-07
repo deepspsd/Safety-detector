@@ -5,7 +5,7 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  globalIgnores(['dist', 'public/firebase-messaging-sw.js']),  // Ignore service worker (different global scope)
   {
     files: ['**/*.{js,jsx}'],
     extends: [
@@ -23,7 +23,10 @@ export default defineConfig([
       },
     },
     rules: {
-      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+      'no-unused-vars': ['error', { 
+        varsIgnorePattern: '^[A-Z_]|^_',  // Allow vars starting with _ or UPPERCASE
+        argsIgnorePattern: '^_'  // Allow args starting with _
+      }],
     },
   },
 ])

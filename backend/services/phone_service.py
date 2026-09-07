@@ -177,13 +177,15 @@ def _run_phone_inference(frame: np.ndarray, model) -> Tuple[List[Dict], List[Dic
             hx2 = min(frame.shape[1], px2 + int(pw * 0.15))
             crop = frame[hy1:hy2, hx1:hx2]
             if crop.size > 0 and crop.shape[0] > 40 and crop.shape[1] > 40:
-                crop_res = model(
+                crop_res = list(model(
                     crop,
                     verbose=False,
+                    imgsz=640,
                     conf=CONF_THRESHOLD,
                     iou=settings.NMS_IOU,
                     classes=target_classes,
-                )
+                    stream=True,
+                ))
                 for cr in crop_res:
                     for cb in cr.boxes:
                         c_cls = int(cb.cls[0])

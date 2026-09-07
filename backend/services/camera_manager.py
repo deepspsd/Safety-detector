@@ -369,10 +369,17 @@ class _ManagedCamera:
                 continue
 
             # ── Rate-limit: cap at ~15 fps to conserve CPU ───────────
+            # NOTE: We only skip+sleep when genuinely ahead of the cap.
+            # We do NOT sleep before running inference — YOLO is the natural
+            # rate-limiter (200 ms/frame → 5 fps; 66 ms/frame → 15 fps).
+            # The old code slept BEFORE inference, adding 66 ms of dead time
+            # on top of YOLO latency. Now we skip the sleep and just run YOLO
+            # immediately on the newest frame.
             since_last = cycle_start - last_sent_ts
             if since_last < self._STREAM_MIN_INTERVAL_S and last_sent_ts > 0:
                 self._stream_dropped += 1
-                time.sleep(self._STREAM_MIN_INTERVAL_S - since_last)
+                # Brief spin-yield so other threads get CPU; no long sleep.
+                time.sleep(0.002)
                 continue
 
             # ── Run the combined inference pipeline ───────────────────
@@ -414,16 +421,18 @@ class _ManagedCamera:
                 )
 
                 # ── Face recognition ───────────────────────────────────
-                #    Rate-limited 1× per 2 s inside face_service already;
-                #    passing user_id=1 = system/shared encodings.
+                #    Rate-limited to 1× per 2 s via _last_face_rec_ts so
+                #    face_recognition (dlib, CPU-heavy) never runs every frame.
                 face_result: Optional[dict] = None
-                try:
-                    if db is not None:
+                _face_now = time.time()
+                if db is not None and (_face_now - self._last_face_rec_ts) >= 2.0:
+                    try:
                         face_result = face_service.process_face_numpy(
                             frame_bgr=frame, user_id=1, db=db
                         )
-                except Exception:
-                    face_result = None
+                        self._last_face_rec_ts = _face_now
+                    except Exception:
+                        face_result = None
 
                 # ── Cash monitoring ────────────────────────────────────
                 _cash_alert_msg = None
@@ -458,25 +467,29 @@ class _ManagedCamera:
                 #     contract is 100 % unchanged.
                 ann_b64 = ppe_result.get("annotated_frame")
 
-                # Overlay face recognition boxes on top of PPE annotation
-                # if both are present (same logic as in cctv._overlay_faces).
-                if ann_b64 and face_result and face_result.get("faces"):
+                # Overlay face recognition boxes on top of PPE annotation.
+                # FIX: Work on numpy directly — avoid decode→overlay→re-encode
+                # round-trip (was wasting 20-40 ms per frame).  We extract the
+                # annotated numpy from ppe_result if available; if not, fall back
+                # to decoding ann_b64 once and encoding once.
+                import base64
+                import cv2 as _cv2
+                if face_result and face_result.get("faces"):
                     try:
-                        import base64
-                        import cv2 as _cv2
-                        raw = ann_b64.split(",")[1] if "," in ann_b64 else ann_b64
-                        arr = np.frombuffer(base64.b64decode(raw), np.uint8)
-                        ann_frame = _cv2.imdecode(arr, _cv2.IMREAD_COLOR)
-                        if ann_frame is not None:
-                            ann_frame = _overlay_faces_stream(
-                                ann_frame, face_result
-                            )
-                            _, buf = _cv2.imencode(
-                                ".jpg", ann_frame, [_cv2.IMWRITE_JPEG_QUALITY, 90]
+                        # Prefer raw numpy if YOLO stored it (avoids decode)
+                        _ann_np = ppe_result.get("_annotated_frame_np")
+                        if _ann_np is None and ann_b64:
+                            _raw = ann_b64.split(",")[1] if "," in ann_b64 else ann_b64
+                            _arr = np.frombuffer(base64.b64decode(_raw), np.uint8)
+                            _ann_np = _cv2.imdecode(_arr, _cv2.IMREAD_COLOR)
+                        if _ann_np is not None:
+                            _ann_np = _overlay_faces_stream(_ann_np, face_result)
+                            _, _buf = _cv2.imencode(
+                                ".jpg", _ann_np, [_cv2.IMWRITE_JPEG_QUALITY, 85]
                             )
                             ann_b64 = (
                                 "data:image/jpeg;base64,"
-                                + base64.b64encode(buf).decode()
+                                + base64.b64encode(_buf).decode()
                             )
                     except Exception:
                         pass  # keep PPE-only annotation on error

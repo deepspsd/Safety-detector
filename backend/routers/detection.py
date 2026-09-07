@@ -268,8 +268,12 @@ async def detection_websocket(websocket: WebSocket):
                     _payee_det = False
                     _payee_snap = None
                     _payee_id = None
-                    _has_cash = result.get("cash_detected") or any(
-                        "cash" in str(d.get("label", "")).lower() for d in detections
+                    _zone = str(state.get("zone_type", "default")).lower()
+                    _is_cash_zone = _zone in ("shop", "shop_counter", "cashbox", "cash")
+                    _has_cash = _is_cash_zone and (
+                        result.get("cash_detected") or any(
+                            "cash" in str(d.get("label", "")).lower() for d in detections
+                        )
                     )
                     if _has_cash:
                         try:
@@ -280,7 +284,7 @@ async def detection_websocket(websocket: WebSocket):
                                 camera_id=9999,  # virtual webcam ID
                                 detections=detections,
                                 persons=result.get("persons", []),
-                                floor="shop",
+                                floor="shop" if _is_cash_zone else _zone,
                                 frame=raw_f,
                             )
                             if _c_res.get("theft_alert"):

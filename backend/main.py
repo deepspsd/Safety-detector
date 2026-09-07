@@ -392,14 +392,11 @@ def _run_migrations() -> None:
                 notification_attempts INTEGER NOT NULL DEFAULT 0,
                 notification_status VARCHAR(50) NOT NULL DEFAULT 'pending',
                 created_at DATETIME NOT NULL,
-                updated_at DATETIME NOT NULL,
-                INDEX idx_anomaly_events_camera (camera_id),
-                INDEX idx_anomaly_events_state (state),
-                INDEX idx_anomaly_events_track (camera_id, track_id, anomaly_type)
+                updated_at DATETIME NOT NULL
             )""",
             """CREATE TABLE IF NOT EXISTS notification_queue (
                 id INTEGER PRIMARY KEY,
-                event_id VARCHAR(100) NOT NULL REFERENCES anomaly_events(event_id),
+                event_id VARCHAR(100) NOT NULL,
                 camera_id INTEGER NOT NULL REFERENCES cameras(id),
                 anomaly_type VARCHAR(200) NOT NULL,
                 severity VARCHAR(20) NOT NULL,
@@ -409,13 +406,24 @@ def _run_migrations() -> None:
                 last_attempt_at DATETIME,
                 error_message TEXT,
                 created_at DATETIME NOT NULL,
-                delivered_at DATETIME,
-                INDEX idx_notification_queue_status (status),
-                INDEX idx_notification_queue_event (event_id)
+                delivered_at DATETIME
             )""",
         ],
         name_from_sql=True,
     )
+    
+    # v6b: Create indexes separately (SQLite doesn't support INDEX inside CREATE TABLE)
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_anomaly_events_camera ON anomaly_events(camera_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_anomaly_events_state ON anomaly_events(state)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_anomaly_events_track ON anomaly_events(camera_id, track_id, anomaly_type)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_notification_queue_status ON notification_queue(status)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_notification_queue_event ON notification_queue(event_id)"))
+            conn.commit()
+        except Exception as idx_err:
+            log.debug(f"Index creation info: {idx_err}")
 
 
 def _migrate_tables(engine, statements, *, name_from_sql: bool = False) -> None:

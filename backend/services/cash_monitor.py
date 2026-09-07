@@ -243,6 +243,24 @@ def _fire_alert(db, camera_id: int, message: str, severity: str, issue: str,
         from services.rule_engine import _get_rule_engine_user_id
 
         user_id = _get_rule_engine_user_id(db)
+
+        # Guard: camera_id must refer to an existing row or the INSERT will
+        # trigger a FK constraint failure that poisons the SQLAlchemy session
+        # and breaks ALL subsequent DB operations on the same connection
+        # (including the WebSocket annotation thread).  Use None when the
+        # camera doesn't exist (e.g. sentinel id 9999 used by cash_monitor).
+        _safe_cam_id: Optional[int] = camera_id
+        if camera_id is not None:
+            try:
+                from database import Camera as _CameraModel
+                _exists = db.query(_CameraModel.id).filter(
+                    _CameraModel.id == camera_id
+                ).first()
+                if _exists is None:
+                    _safe_cam_id = None
+            except Exception:
+                _safe_cam_id = None
+
         save_alert(
             db=db,
             user_id=user_id,
@@ -252,10 +270,16 @@ def _fire_alert(db, camera_id: int, message: str, severity: str, issue: str,
             detected_issue=issue,
             confidence=None,
             snapshot_b64=snapshot_b64,
-            camera_id=camera_id,
+            camera_id=_safe_cam_id,
         )
     except Exception as exc:
         log.error("[CashMonitor] _fire_alert failed: %s", exc)
+        # CRITICAL: roll back the poisoned transaction so the session remains
+        # usable for subsequent calls (avoids cascading WS session crash).
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -394,17 +418,27 @@ class CashEventTracker:
             if frame is not None and person_detections and cash_detections:
                 payee = self._identify_payee(person_detections, vendor_polygon, cashbox_polygon)
                 if payee is not None:
-                    payee_tid = str(payee.get("track_id", "payee"))
-                    if now - self.last_payee_time >= 30.0:  # 30s cooldown
-                        snap = _crop_person(frame, payee.get("bbox", []))
-                        if snap:
-                            self.last_payee_snapshot = snap
-                            self.last_payee_time = now
-                            self.last_payee_id = payee_tid
-                            self._fire_payee_alert(db, payee_tid, snap)
-                            for t in self._tracks.values():
-                                if t.state == CashState.PENDING:
-                                    t.state = CashState.PAYEE_HANDOVER
+                    # Verify cash is physically near the payee (handover interaction)
+                    p_box = payee.get("bbox", [])
+                    p_cx, p_cy = _centroid(p_box)
+                    p_w = max(50, p_box[2] - p_box[0]) if len(p_box) >= 4 else 100
+                    cash_near = any(
+                        ((_centroid(c.get("bbox", [0, 0, 0, 0]))[0] - p_cx) ** 2 +
+                         (_centroid(c.get("bbox", [0, 0, 0, 0]))[1] - p_cy) ** 2) ** 0.5 < p_w * 2.0
+                        for c in cash_detections if c.get("bbox")
+                    )
+                    if cash_near:
+                        payee_tid = str(payee.get("track_id", "payee"))
+                        if now - self.last_payee_time >= 30.0:  # 30s cooldown
+                            snap = _crop_person(frame, payee.get("bbox", []))
+                            if snap:
+                                self.last_payee_snapshot = snap
+                                self.last_payee_time = now
+                                self.last_payee_id = payee_tid
+                                self._fire_payee_alert(db, payee_tid, snap)
+                                for t in self._tracks.values():
+                                    if t.state == CashState.PENDING:
+                                        t.state = CashState.PAYEE_HANDOVER
 
             # ── Check for disappeared cash that was in body zone ──────────
             if is_cash_floor:
@@ -490,8 +524,8 @@ class CashEventTracker:
             # Heuristic: person furthest from the camera/center
             return max(person_detections, key=lambda p: _centroid(p["bbox"])[0])
 
-        # 3. Single person
-        return person_detections[0]
+        # 3. Single person without a configured vendor_polygon cannot be a vendor payee handover
+        return None
 
     def _fire_payee_alert(
         self,

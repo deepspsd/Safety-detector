@@ -186,7 +186,10 @@ export default function LiveMonitor() {
         if (data.zone_type) setActiveZone(data.zone_type)
         return
       }
-      if (data.error) { console.warn('[WS] error:', data.error); return }
+      if (data.error) {
+        console.warn('[WS] error:', data.error)
+        return
+      }
       // Only process messages that actually have detection results
       if (data.annotated_frame === undefined && data.is_compliant === undefined) return
       // Update zone from every frame response

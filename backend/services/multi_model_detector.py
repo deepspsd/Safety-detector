@@ -292,13 +292,15 @@ class MultiModelDetector:
         model = model_info.model
         
         target_classes = list(model_info.classes.keys()) if model_info.classes else None
-        results = model(
+        results = list(model(
             frame,
             verbose=False,
+            imgsz=640,
             conf=model_info.conf_threshold,
             iou=settings.NMS_IOU,
             classes=target_classes,
-        )
+            stream=True,
+        ))
 
         detections = []
         for result in results:

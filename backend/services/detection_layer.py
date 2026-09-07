@@ -117,12 +117,14 @@ class YoloDetectionAdapter(AbstractDetector):
         if model is None:
             return []
         try:
-            results = model(
+            results = list(model(
                 frame,
                 verbose=False,
+                imgsz=640,
                 conf=yolo_service.settings.DETECTION_CONF,
                 iou=yolo_service.settings.NMS_IOU,
-            )
+                stream=True,
+            ))
         except Exception:
             return []
 
