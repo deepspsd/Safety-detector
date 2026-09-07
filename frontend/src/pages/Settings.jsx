@@ -31,7 +31,7 @@ const ROLE_PPE = {
 }
 
 export default function Settings() {
-  const { user, updateUser, customPpeItems, setCustomPpeItems, noPhoneZone: savedNoPhoneZone, setNoPhoneZone } = useAuth()
+  const { user, updateUser, customPpeItems, setCustomPpeItems, noPhoneZone: savedNoPhoneZone, setNoPhoneZone, setupFCM } = useAuth()
   const { addToast }         = useToast()
   const { toggle, isDark } = useTheme()
 
@@ -48,6 +48,61 @@ export default function Settings() {
   const [customPpe, setCustomPpe] = useState(customPpeItems || [])
   // Phone zone — local copy editable in the Phone tab
   const [noPhoneZoneLocal, setNoPhoneZoneLocal] = useState(!!savedNoPhoneZone)
+
+  // ── Push Notification (FCM) state ────────────────────────────
+  const [notificationPermission, setNotificationPermission] = useState(
+    typeof Notification !== 'undefined' ? Notification.permission : 'default'
+  )
+  const [fcmLoading, setFcmLoading] = useState(false)
+  const [fcmTestLoading, setFcmTestLoading] = useState(false)
+  const [fcmStatus, setFcmStatus] = useState('')
+
+  const handleEnableFCM = async () => {
+    setFcmLoading(true)
+    setFcmStatus('Requesting permission and registering FCM token...')
+    try {
+      if (setupFCM) {
+        const token = await setupFCM()
+        if (token) {
+          setNotificationPermission('granted')
+          setFcmStatus('✅ Device registered! FCM token saved to backend.')
+          addToast('Push Registered', 'This device will now receive safety alerts', 'success')
+        } else {
+          setFcmStatus('⚠️ Could not register device. Please check browser permissions.')
+          addToast('Registration Incomplete', 'Check browser permission or VAPID key', 'warning')
+        }
+      }
+    } catch (err) {
+      setFcmStatus(`❌ Error: ${err.message || err}`)
+      addToast('Error', 'Failed to enable push notifications', 'error')
+    } finally {
+      setFcmLoading(false)
+    }
+  }
+
+  const handleSendTestAlert = async () => {
+    setFcmTestLoading(true)
+    try {
+      const res = await fetch('/api/users/me/fcm-test', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem('token')}`,
+        },
+      })
+      const data = await res.json()
+      if (data.success) {
+        addToast('Test Alert Sent', 'Check your device for the push notification!', 'success')
+        setFcmStatus('✅ Test alert sent successfully from backend!')
+      } else {
+        addToast('No Device Found', 'Click "Enable / Re-register Push" first to register this device.', 'warning')
+        setFcmStatus('⚠️ No registered devices in database. Register this device first.')
+      }
+    } catch (err) {
+      addToast('Test Failed', err.message || 'Server error', 'error')
+    } finally {
+      setFcmTestLoading(false)
+    }
+  }
   // editing state for inline label rename
   const [editingFaceId,    setEditingFaceId]    = useState(null)
   const [editingFaceLabel, setEditingFaceLabel] = useState('')
@@ -591,9 +646,59 @@ export default function Settings() {
                 onClick={() => setConf('notify_sound', !config.notify_sound)} />
             </div>
           </div>
-          <button className="btn btn-primary" style={{ marginTop: 20 }} onClick={saveConfig} disabled={saving}>
-            Save Preferences
-          </button>
+
+          <div style={{ display: 'flex', gap: 12, marginTop: 20 }}>
+            <button className="btn btn-primary" onClick={saveConfig} disabled={saving}>
+              Save Preferences
+            </button>
+          </div>
+
+          {/* ── FCM Mobile Push Notifications Card ── */}
+          <div style={{ marginTop: 28, paddingTop: 20, borderTop: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>📱 Mobile & Browser Push Notifications</div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: 2 }}>
+                  Receive background safety alerts on your phone or PC via Firebase Cloud Messaging
+                </div>
+              </div>
+              <span className={`badge ${notificationPermission === 'granted' ? 'badge-success' : 'badge-warning'}`} style={{ padding: '4px 10px', borderRadius: 20, fontSize: '0.72rem' }}>
+                {notificationPermission === 'granted' ? '🔔 Permission Granted' : notificationPermission === 'denied' ? '🚫 Permission Denied' : '⚠️ Not Enabled'}
+              </span>
+            </div>
+
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 16 }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={handleEnableFCM}
+                disabled={fcmLoading}
+                style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+              >
+                {fcmLoading ? '⏳ Registering Device...' : '🔔 Enable / Re-register Push'}
+              </button>
+
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleSendTestAlert}
+                disabled={fcmTestLoading}
+                style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+              >
+                {fcmTestLoading ? '⏳ Sending Alert...' : '🚀 Send Test Alert to Device'}
+              </button>
+            </div>
+
+            {fcmStatus && (
+              <div style={{ marginTop: 12, fontSize: '0.8rem', padding: '8px 12px', borderRadius: 8, background: fcmStatus.includes('✅') ? 'rgba(16,185,129,0.1)' : 'rgba(245,158,11,0.1)', color: fcmStatus.includes('✅') ? '#10b981' : '#f59e0b' }}>
+                {fcmStatus}
+              </div>
+            )}
+
+            <div style={{ marginTop: 14, fontSize: '0.73rem', color: 'var(--text-secondary)', background: 'rgba(255,255,255,0.03)', padding: '10px 14px', borderRadius: 8, lineHeight: 1.5 }}>
+              💡 <b>To get alerts on your phone:</b> Open the ngrok HTTPS link on your phone (<code>https://rudder-duplex-shortly.ngrok-free.dev</code>), log in, go to Settings → Alerts, and tap <b>"Enable / Re-register Push"</b>. Allow browser notifications when prompted.
+            </div>
+          </div>
         </div>
       )}
 

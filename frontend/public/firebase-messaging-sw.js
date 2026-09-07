@@ -5,52 +5,44 @@
 importScripts('https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js');
 importScripts('https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js');
 
-// Firebase config is sent from the main thread via postMessage after SW registration.
-// This avoids bundler limitations in SW scope.
-let _messaging = null;
+// Statically initialize Firebase so SW is ready immediately on background push events
+const firebaseConfig = {
+  apiKey: "AIzaSyBNli_ad-hpmsl5I31pS6covB18Fs0nsQs",
+  authDomain: "occusafe-4f0c8.firebaseapp.com",
+  projectId: "occusafe-4f0c8",
+  messagingSenderId: "983747723184",
+  appId: "1:983747723184:web:3313be9d9d8b741e642075",
+};
 
-function _attachHandlers() {
-  // ── Background push received ────────────────────────────────────────────
-  _messaging.onBackgroundMessage((payload) => {
-    console.log('[SW] Background FCM received:', payload);
-    const { title, body } = payload.notification || {};
-    const severity = payload.data?.severity || 'medium';
+firebase.initializeApp(firebaseConfig);
+const messaging = firebase.messaging();
 
-    self.registration.showNotification(title || '🚨 Safety Alert', {
-      body: body || 'Safety alert triggered.',
-      icon: '/pwa-192x192.png',
-      badge: '/pwa-192x192.png',
-      vibrate: severity === 'critical' ? [200, 100, 200, 100, 200] : [200, 100, 200],
-      data: payload.data || {},
-      actions: [
-        { action: 'view',    title: '👁️ View Alert' },
-        { action: 'dismiss', title: 'Dismiss' },
-      ],
-      // Collapse repeated alerts of same type — no spam
-      tag: `safety-alert-${payload.data?.detected_issue || 'generic'}`,
-      renotify: true,
-    });
+// ── Background push received ────────────────────────────────────────────────
+messaging.onBackgroundMessage((payload) => {
+  console.log('[SW] Background FCM received:', payload);
+  const title = payload.notification?.title || payload.data?.title || '🚨 Safety Alert';
+  const body = payload.notification?.body || payload.data?.body || payload.data?.message || 'Safety alert triggered.';
+  const severity = payload.data?.severity || 'medium';
+
+  self.registration.showNotification(title, {
+    body: body,
+    icon: '/pwa-192x192.png',
+    badge: '/pwa-192x192.png',
+    vibrate: severity === 'critical' ? [200, 100, 200, 100, 200] : [200, 100, 200],
+    data: payload.data || {},
+    actions: [
+      { action: 'view',    title: '👁️ View Alert' },
+      { action: 'dismiss', title: 'Dismiss' },
+    ],
+    tag: `safety-alert-${payload.data?.detected_issue || 'generic'}`,
+    renotify: true,
   });
-}
+});
 
-function _initIfNeeded(config) {
-  if (_messaging || !config || !config.apiKey) return;
-  try {
-    if (!firebase.apps.length) {
-      firebase.initializeApp(config);
-    }
-    _messaging = firebase.messaging();
-    _attachHandlers();
-    console.log('[SW] Firebase initialized ✅');
-  } catch (e) {
-    console.error('[SW] Firebase init failed:', e);
-  }
-}
-
-// Receive config from main thread
+// Optional message event listener for compatibility
 self.addEventListener('message', (event) => {
-  if (event.data && event.data.type === 'FIREBASE_CONFIG') {
-    _initIfNeeded(event.data.config);
+  if (event.data?.type === 'SKIP_WAITING') {
+    self.skipWaiting();
   }
 });
 
@@ -67,3 +59,4 @@ self.addEventListener('notificationclick', (event) => {
     })
   );
 });
+

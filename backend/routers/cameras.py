@@ -76,47 +76,97 @@ def stream_camera_mjpeg(camera_id: int):
     """
     Standard MJPEG stream for camera tiles, floor overview, and modals.
     Works natively in standard <img> tags without WebSocket complexity.
+
+    Low-latency guarantees (same latest-only discipline as WebSocket):
+      • Each connected client generator tracks the capture timestamp of the
+        last frame it actually yielded.
+      • If the latest reader frame has the SAME capture epoch as the last
+        one yielded, the ENTIRE encode + yield step is skipped — no wasted
+        CPU/JPEG work, no duplicate multipart parts pushed over slow sockets.
+      • Output is capped at ~12 FPS (min ~83 ms between yields).  Higher
+        rates are unnecessary for <img> tile viewing and just waste bandwidth.
+      • Blank/placeholder frames are produced once and cached; a frozen
+        camera does not re-encode the same synthetic placeholder.
     """
     import cv2
     import time
     from fastapi.responses import StreamingResponse
 
+    # Minimum interval between yields → caps output at ~12 fps.
+    _MIN_YIELD_INTERVAL_S = 1.0 / 12.0
+
     def iter_frames():
-        blank_frame = None
+        blank_frame: Optional[bytes] = None
+        last_blank_yielded_at: float = 0.0
+        last_capture_ts: float = 0.0  # capture epoch we already yielded
+        last_yield_at: float = 0.0
+
         while True:
-            frame = camera_manager.get_latest_frame(camera_id)
+            frame, capture_ts = camera_manager.get_latest_frame_with_ts(camera_id)
+
+            # ── Live frame path ───────────────────────────────────────
             if frame is not None:
-                ret, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                # Duplicate-skip: no encode if the reader hasn't produced a
+                # newer frame since the one we last yielded.  Without this,
+                # a 5 fps reader under a 12 fps generator would encode the
+                # same raw capture JPEG 2-3 times per second.
+                if capture_ts > 0 and capture_ts <= last_capture_ts:
+                    now = time.time()
+                    sleep_s = max(0.0, _MIN_YIELD_INTERVAL_S - (now - last_yield_at))
+                    if sleep_s > 0:
+                        time.sleep(sleep_s)
+                    continue
+
+                ret, jpeg = cv2.imencode(
+                    ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70]
+                )
                 if ret:
+                    last_capture_ts = capture_ts if capture_ts > 0 else last_capture_ts
+                    last_yield_at = time.time()
                     yield (
                         b"--frame\r\n"
                         b"Content-Type: image/jpeg\r\n\r\n"
                         + jpeg.tobytes()
                         + b"\r\n"
                     )
-            else:
-                # Generate synthetic waiting frame if camera is loading/reconnecting
-                if blank_frame is None:
-                    import numpy as np
-                    blank = np.zeros((360, 640, 3), dtype=np.uint8)
-                    cv2.putText(
-                        blank,
-                        f"Camera {camera_id} Connecting...",
-                        (140, 180),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.8,
-                        (180, 180, 180),
-                        2,
-                    )
-                    _, blank_jpeg = cv2.imencode(".jpg", blank)
-                    blank_frame = blank_jpeg.tobytes()
+                # Rate-limit: respect 12 fps cap even when reader feeds faster.
+                remaining = _MIN_YIELD_INTERVAL_S - (time.time() - last_yield_at)
+                if remaining > 0:
+                    time.sleep(remaining)
+                continue
+
+            # ── Blank/placeholder path ─────────────────────────────────
+            # Generate synthetic waiting frame if camera is loading/reconnecting.
+            if blank_frame is None:
+                import numpy as np
+
+                blank = np.zeros((360, 640, 3), dtype=np.uint8)
+                cv2.putText(
+                    blank,
+                    f"Camera {camera_id} Connecting...",
+                    (140, 180),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (180, 180, 180),
+                    2,
+                )
+                _, blank_jpeg = cv2.imencode(".jpg", blank)
+                blank_frame = blank_jpeg.tobytes()
+
+            # Only yield the same blank placeholder ~4 fps to save bandwidth
+            # on a permanently-offline camera.
+            now = time.time()
+            if now - last_blank_yielded_at >= 0.25:
+                last_blank_yielded_at = now
+                last_yield_at = now
+                last_capture_ts = 0.0
                 yield (
                     b"--frame\r\n"
                     b"Content-Type: image/jpeg\r\n\r\n"
                     + blank_frame
                     + b"\r\n"
                 )
-            time.sleep(0.066)  # ~15 FPS max for bandwidth efficiency
+            time.sleep(_MIN_YIELD_INTERVAL_S)
 
     return StreamingResponse(
         iter_frames(),

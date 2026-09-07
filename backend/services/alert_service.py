@@ -317,9 +317,10 @@ def _fire_push(
     camera_name: str | None,
     detected_issue: str | None,
     snapshot_b64: str | None,
+    camera_id: int | None = None,
 ) -> None:
     """
-    Background-safe push dispatch.  Tries ntfy first, Telegram as fallback.
+    Background-safe push dispatch via FCM.
     Failures are logged, never raised.
     """
     try:
@@ -332,6 +333,7 @@ def _fire_push(
             camera_name=camera_name,
             detected_issue=detected_issue,
             snapshot_b64=snapshot_b64,
+            camera_id=camera_id,
         )
     except Exception as exc:
         log.error(f"[alert_service] Push dispatch error: {exc}")

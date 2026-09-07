@@ -33,14 +33,25 @@ if ('serviceWorker' in navigator) {
         .catch(err => console.warn('SW registration failed:', err))
     })
   } else {
-    // Disable SW in development so it doesn't cache our JS bundles
-    // and break Vite's HMR or dev API routing.
+    // In development, unregister sw.js (cache worker) so it doesn't cache JS bundles,
+    // but KEEP firebase-messaging-sw.js active so push notifications work!
     navigator.serviceWorker.getRegistrations().then(regs => {
       for (const reg of regs) {
-        reg.unregister()
-        console.log('🗑️ Unregistered DEV Service Worker to prevent caching bugs')
+        const scriptURL = reg.active?.scriptURL || reg.installing?.scriptURL || reg.waiting?.scriptURL || ''
+        if (!scriptURL.includes('firebase-messaging-sw')) {
+          reg.unregister()
+          console.log('🗑️ Unregistered DEV Cache Service Worker:', scriptURL)
+        }
       }
     })
+    // Clear old caches that may be holding stale 503 "Offline" pages
+    if ('caches' in window) {
+      caches.keys().then(keys => {
+        for (const k of keys) {
+          if (k.startsWith('safeguard-ai')) caches.delete(k)
+        }
+      })
+    }
   }
 }
 

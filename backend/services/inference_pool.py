@@ -61,11 +61,15 @@ log = logging.getLogger("inference_pool")
 
 # ── Tuning ───────────────────────────────────────────────────────────────────
 # How many frames may accumulate per camera before the oldest is dropped.
-# Keeps latency low when inference is slow — we always want the freshest frame.
-_MAX_QUEUE_DEPTH = 2
+# LATEST-FRAME-ONLY discipline: maxsize=1 → every NEW frame overwrites the
+# single pending slot.  Ensures inference never processes stale frames.
+_MAX_QUEUE_DEPTH = 1
 
 # How long (seconds) the worker sleeps when the queue is empty.
-_IDLE_SLEEP = 0.05
+_IDLE_SLEEP = 0.033
+
+# Rolling FPS window for per-camera inference FPS estimate.
+_FPS_WINDOW_SECONDS = 5.0
 
 
 def _resize_for_inference(frame: np.ndarray, target_width: int) -> np.ndarray:
@@ -104,11 +108,48 @@ class _InferencePool:
         self._queues: Dict[Any, "queue.Queue[np.ndarray]"] = {}
         # { camera_id_or_crop_key: inference result dict }
         self._results: Dict[Any, dict] = {}
+        # { camera_id: zone_type str | None } for multi-model routing
+        self._camera_zones: Dict[Any, Optional[str]] = {}
+        # Per-camera metrics — all counter updates happen under self._lock.
+        self._metrics: Dict[Any, Dict[str, Any]] = {}
         self._lock = threading.Lock()
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._watchdog: Optional[threading.Thread] = None
         self.restart_count: int = 0  # public — exposed on /health
+
+    # ── Metrics helpers ───────────────────────────────────────────────────────
+
+    def _ensure_metrics(self, camera_id: Any) -> Dict[str, Any]:
+        """Create a fresh per-camera metrics dict if missing.  Caller holds lock."""
+        m = self._metrics.get(camera_id)
+        if m is None:
+            m = {
+                "frames_submitted": 0,
+                "frames_dropped_at_put": 0,
+                "frames_processed": 0,
+                "last_inference_latency_ms": 0.0,
+                "inference_fps": 0.0,
+                "_process_times": [],  # rolling end-times for fps calc
+            }
+            self._metrics[camera_id] = m
+        return m
+
+    @staticmethod
+    def _rolling_fps(process_times: list, now: float) -> float:
+        """Drop stale entries and return rolling FPS over window."""
+        cutoff = now - _FPS_WINDOW_SECONDS
+        i = 0
+        for i, t in enumerate(process_times):
+            if t > cutoff:
+                break
+        del process_times[:i]
+        if len(process_times) < 2:
+            return 0.0
+        span = process_times[-1] - process_times[0]
+        if span <= 0:
+            return 0.0
+        return (len(process_times) - 1) / span
 
     # ── Public ────────────────────────────────────────────────────────────────
 
@@ -132,9 +173,13 @@ class _InferencePool:
 
     def put_frame(self, camera_id: int, frame: np.ndarray, zone_type: Optional[str] = None) -> None:
         """
-        Submit a frame for inference.  Non-blocking — drops oldest frame if
-        the per-camera queue is full so we always process fresh frames.
-        
+        Submit a frame for inference.  Non-blocking — latest-frame-only.
+
+        The per-camera queue has maxsize=1.  If a pending frame already
+        occupies the slot it is **discarded and counted as a put-drop**
+        before the new frame is enqueued.  This guarantees the worker
+        never pulls a frame older than one submission cycle.
+
         Args:
             camera_id: Camera ID
             frame: Frame to process
@@ -143,22 +188,24 @@ class _InferencePool:
         with self._lock:
             if camera_id not in self._queues:
                 self._queues[camera_id] = queue.Queue(maxsize=_MAX_QUEUE_DEPTH)
-            # Store zone_type for multi-model routing
-            if not hasattr(self, '_camera_zones'):
-                self._camera_zones = {}
             self._camera_zones[camera_id] = zone_type
             q = self._queues[camera_id]
-
-        # Drop oldest frame if queue is full (keep latency low)
-        if q.full():
-            try:
-                q.get_nowait()
-            except queue.Empty:
-                pass
+            metrics = self._ensure_metrics(camera_id)
+            metrics["frames_submitted"] += 1
+            # LATEST-FRAME-ONLY purge-if-full inside lock so drop counting
+            # cannot race with put_nowait below.
+            if q.full():
+                try:
+                    q.get_nowait()
+                    metrics["frames_dropped_at_put"] += 1
+                except queue.Empty:
+                    pass
         try:
             q.put_nowait(frame)
         except queue.Full:
-            pass  # race condition — ignore
+            with self._lock:
+                m2 = self._ensure_metrics(camera_id)
+                m2["frames_dropped_at_put"] += 1
 
     def get_result(self, camera_id: Any) -> Optional[dict]:
         """
@@ -168,6 +215,70 @@ class _InferencePool:
         with self._lock:
             return self._results.get(camera_id)
 
+    def get_metrics(self, camera_id: Any = None) -> Dict[str, Any]:
+        """
+        Return per-camera metrics dict, or aggregate across all cameras
+        when camera_id is None.
+
+        Fields: frames_submitted, frames_dropped_at_put, frames_processed,
+                last_inference_latency_ms, inference_fps.
+        """
+        with self._lock:
+            if camera_id is not None:
+                raw = self._metrics.get(camera_id)
+                if raw is None:
+                    return {
+                        "frames_submitted": 0,
+                        "frames_dropped_at_put": 0,
+                        "frames_processed": 0,
+                        "last_inference_latency_ms": 0.0,
+                        "inference_fps": 0.0,
+                    }
+                return {k: raw[k] for k in
+                        ("frames_submitted", "frames_dropped_at_put",
+                         "frames_processed", "last_inference_latency_ms",
+                         "inference_fps")}
+            agg: Dict[str, Any] = {
+                "frames_submitted": 0,
+                "frames_dropped_at_put": 0,
+                "frames_processed": 0,
+                "cameras": {},
+            }
+            min_lat: Optional[float] = None
+            max_lat: Optional[float] = None
+            sum_lat = 0.0
+            sum_lat_n = 0
+            fps_sum = 0.0
+            fps_n = 0
+            for cid, raw in self._metrics.items():
+                agg["frames_submitted"] += raw["frames_submitted"]
+                agg["frames_dropped_at_put"] += raw["frames_dropped_at_put"]
+                agg["frames_processed"] += raw["frames_processed"]
+                agg["cameras"][str(cid)] = {
+                    k: raw[k] for k in
+                    ("frames_submitted", "frames_dropped_at_put",
+                     "frames_processed", "last_inference_latency_ms",
+                     "inference_fps")
+                }
+                lat = raw["last_inference_latency_ms"]
+                if lat > 0:
+                    if min_lat is None or lat < min_lat:
+                        min_lat = lat
+                    if max_lat is None or lat > max_lat:
+                        max_lat = lat
+                    sum_lat += lat
+                    sum_lat_n += 1
+                if raw["inference_fps"] > 0:
+                    fps_sum += raw["inference_fps"]
+                    fps_n += 1
+            agg["avg_inference_latency_ms"] = (
+                sum_lat / sum_lat_n if sum_lat_n else 0.0
+            )
+            agg["min_inference_latency_ms"] = min_lat if min_lat is not None else 0.0
+            agg["max_inference_latency_ms"] = max_lat if max_lat is not None else 0.0
+            agg["avg_inference_fps"] = fps_sum / fps_n if fps_n else 0.0
+            return agg
+
     def clear_result(self, key: Any) -> None:
         """
         Remove a result and queue from the pool.
@@ -176,12 +287,16 @@ class _InferencePool:
         with self._lock:
             self._queues.pop(key, None)
             self._results.pop(key, None)
+            self._camera_zones.pop(key, None)
+            self._metrics.pop(key, None)
 
     def remove_camera(self, camera_id: Any) -> None:
         """Clean up state when a camera is stopped."""
         with self._lock:
             self._queues.pop(camera_id, None)
             self._results.pop(camera_id, None)
+            self._camera_zones.pop(camera_id, None)
+            self._metrics.pop(camera_id, None)
 
     # ── Internal: thread management ───────────────────────────────────────────
 
@@ -275,10 +390,6 @@ class _InferencePool:
                 return
 
         log.info("[InferencePool] Inference loop running")
-        
-        # Initialize camera zones dict if not exists
-        if not hasattr(self, '_camera_zones'):
-            self._camera_zones = {}
 
         while self._running:
             processed_any = False
@@ -301,34 +412,47 @@ class _InferencePool:
                     continue
 
                 processed_any = True
+                infer_start = time.perf_counter()
                 try:
                     from config import settings
 
                     infer_frame = _resize_for_inference(
                         frame, settings.YOLO_INFERENCE_WIDTH
                     )
-                    
-                    # Get zone_type for this camera (for multi-model routing)
-                    zone_type = self._camera_zones.get(camera_id)
-                    
-                    # Multi-model detection with zone awareness
+
+                    zone_type: Optional[str]
+                    with self._lock:
+                        zone_type = self._camera_zones.get(camera_id)
+
                     if hasattr(detector, 'detect'):
-                        # MultiModelDetector or single detector
                         if zone_type:
-                            detections = detector.detect(infer_frame, zone_type=zone_type, camera_id=camera_id)
+                            detections = detector.detect(
+                                infer_frame, zone_type=zone_type, camera_id=camera_id
+                            )
                         else:
                             detections = detector.detect(infer_frame)
                     else:
-                        # Fallback
                         detections = []
-                    
+
                     det_dicts = [d.to_dict() for d in detections]
                 except Exception as exc:
-                    log.debug(f"[InferencePool] Inference error cam={camera_id}: {exc}", exc_info=True)
+                    log.debug(
+                        f"[InferencePool] Inference error cam={camera_id}: {exc}",
+                        exc_info=True,
+                    )
                     det_dicts = []
+                latency_ms = (time.perf_counter() - infer_start) * 1000.0
+                now = time.time()
 
                 with self._lock:
                     self._results[camera_id] = {"detections": det_dicts}
+                    metrics = self._ensure_metrics(camera_id)
+                    metrics["frames_processed"] += 1
+                    metrics["last_inference_latency_ms"] = latency_ms
+                    metrics["_process_times"].append(now)
+                    metrics["inference_fps"] = self._rolling_fps(
+                        metrics["_process_times"], now
+                    )
 
             if not processed_any:
                 time.sleep(_IDLE_SLEEP)

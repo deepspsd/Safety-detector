@@ -34,23 +34,31 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     const token = localStorage.getItem('token')
-    if (token) fetchMe()
-    else setLoading(false)
+    if (token) {
+      fetchMe()
+      // Re-register FCM on every page reload so token is always fresh in DB
+      _setupFCM(token)
+    } else {
+      setLoading(false)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchMe])
 
   const _setupFCM = async (accessToken) => {
     try {
       const { initFCM, listenForegroundMessages } = await import('../firebase')
-      // Use explicit backend URL if set; otherwise derive from current origin.
-      // When accessed via ngrok (HTTPS tunnel), origin will be the ngrok URL
-      // which doesn't serve the backend — so fall back to LAN IP:8000.
-      const lanIp = import.meta.env.VITE_LAN_IP || '127.0.0.1'
-      const isNgrok = window.location.hostname.includes('ngrok')
-      const backendUrl = import.meta.env.VITE_API_BASE_URL
-        || (isNgrok ? `http://${lanIp}:8000` : window.location.origin.replace(':5173', ':8000'))
+      // Always use /api prefix so requests go through Vite proxy (localhost:8000).
+      // This works on desktop AND on phone via ngrok — ngrok tunnels port 5173
+      // which includes the Vite proxy, so /api always reaches the backend correctly.
+      // Never use a hard-coded LAN IP here: it breaks when phone is on mobile data.
+      const backendUrl = import.meta.env.VITE_API_BASE_URL || ''
+      console.log('[FCM] Registering token, backendUrl=', backendUrl || '(vite proxy /api)')
       const fcmToken = await initFCM(accessToken, backendUrl)
       if (fcmToken) {
+        console.log('[FCM] Token saved to backend ✅, setting up foreground listener')
         listenForegroundMessages()
+      } else {
+        console.warn('[FCM] initFCM returned null — check console for details')
       }
     } catch (err) {
       console.warn('[FCM] Setup failed:', err)
@@ -81,12 +89,19 @@ export function AuthProvider({ children }) {
 
   const updateUser = (data) => setUser(prev => ({ ...prev, ...data }))
 
+  const triggerFCMSetup = async () => {
+    const token = localStorage.getItem('token')
+    if (!token) return null
+    return await _setupFCM(token)
+  }
+
   return (
     <AuthContext.Provider value={{
       user, loading, login, signup, logout,
       updateUser, fetchMe,
       customPpeItems, setCustomPpeItems,
       noPhoneZone, setNoPhoneZone,
+      setupFCM: triggerFCMSetup,
     }}>
       {children}
     </AuthContext.Provider>

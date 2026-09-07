@@ -181,3 +181,21 @@ def list_fcm_tokens(
         for t in tokens
     ]
 
+
+@router.post("/me/fcm-test")
+def test_fcm_notification(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Send an immediate test push notification to all registered devices."""
+    from services.fcm_service import send_fcm_alert
+    success = send_fcm_alert(
+        message="🔔 Test Alert from OccuSafe! Push notifications are working on this device.",
+        severity="high",
+        detected_issue="Test Notification",
+        camera_name="Test Chamber",
+        floor="Ground",
+        db=db,
+    )
+    return {"success": success, "user_id": current_user.id}
+

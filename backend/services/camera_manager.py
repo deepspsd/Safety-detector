@@ -43,11 +43,61 @@ import datetime
 import logging
 import threading
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
 log = logging.getLogger("camera_manager")
+
+# ── Shared face-overlay helper (used by streaming annotation thread) ─────────
+def _overlay_faces_stream(frame: np.ndarray, face_result: dict) -> np.ndarray:
+    """
+    Draw face recognition boxes on top of a PPE-annotated frame.
+    Mirrors the logic in routers.cctv._overlay_faces but does NOT require
+    importing that symbol (would create a circular import).
+    """
+    import cv2 as _cv2
+
+    annotated = frame.copy()
+    h, w = annotated.shape[:2]
+
+    for face in face_result.get("faces", []):
+        x1, y1, x2, y2 = face["bbox"]
+        is_unknown = face.get("is_unknown", True)
+        color = (50, 50, 255) if is_unknown else (50, 220, 50)
+        thick = 2
+        _cv2.rectangle(annotated, (x1, y1), (x2, y2), color, thick)
+        name = face["label"]
+        conf_pct = f"{face['confidence']:.0%}"
+        label = f"{'X UNKNOWN' if is_unknown else 'OK ' + name}  {conf_pct}"
+        font = _cv2.FONT_HERSHEY_SIMPLEX
+        scale = 0.55
+        (lw, lh), _ = _cv2.getTextSize(label, font, scale, 2)
+        _cv2.rectangle(
+            annotated, (x1, y1 - lh - 10), (x1 + lw + 8, y1), (0, 0, 0), -1
+        )
+        _cv2.putText(
+            annotated, label, (x1 + 4, y1 - 4), font, scale, color, 2, _cv2.LINE_AA
+        )
+
+    if face_result.get("unknown_detected"):
+        _cv2.rectangle(annotated, (0, 46), (w, 84), (0, 0, 180), -1)
+        overlay = annotated.copy()
+        _cv2.rectangle(overlay, (0, 46), (w, 84), (30, 0, 160), -1)
+        _cv2.addWeighted(overlay, 0.6, annotated, 0.4, 0, annotated)
+        _cv2.putText(
+            annotated,
+            "  FACE ALERT: UNKNOWN PERSON DETECTED",
+            (8, 72),
+            _cv2.FONT_HERSHEY_SIMPLEX,
+            0.60,
+            (255, 220, 220),
+            2,
+            _cv2.LINE_AA,
+        )
+
+    return annotated
+
 
 # ── Module-level registry ────────────────────────────────────────────────────
 _registry: Dict[int, "_ManagedCamera"] = {}
@@ -60,7 +110,16 @@ _lock = threading.Lock()
 
 class _ManagedCamera:
     """
-    Owns one CameraReader + one heartbeat thread for a single camera row.
+    Owns one CameraReader + 3 dedicated threads for a single camera row.
+
+    Threads (all daemons, all independent — one slow stage cannot block the others):
+      1. reader._thread        → continuous RTSP drain (latest frame buffer)
+      2. _stream_thread        → YOLO + face + cash annotation at max ~15 fps,
+                                  stores ONE shared latest annotated result
+                                  that ALL WebSocket subscribers read (no more
+                                  N-per-camera YOLO inferences — SINGLE shared one)
+      3. _hb_thread            → DB heartbeat every 10 s
+      4. _det_thread           → rule-engine / idle / shift / etc at 5 fps
 
     Lifecycle:
         mc = _ManagedCamera(camera_id, name, rtsp_url)
@@ -73,6 +132,11 @@ class _ManagedCamera:
     _HB_INTERVAL = 10
     # After this many seconds with no fresh frame, declare offline
     _OFFLINE_TIMEOUT = 30
+    # Min interval between shared streaming annotations (ms)  →  cap the shared
+    # annotation loop at ~15 fps.  Going higher than the screen refresh rate
+    # (60 fps is physically wasted for display; 10–15 fps is perfectly adequate
+    # for a surveillance monitor and keeps CPU / GPU load sane).
+    _STREAM_MIN_INTERVAL_S = 0.066  # ~15 fps  (≈66 ms)
 
     def __init__(self, camera_id: int, name: str, url: str, floor: str = "ground"):
         self.camera_id = camera_id
@@ -90,6 +154,18 @@ class _ManagedCamera:
         self._hb_running = False
         self._det_thread: Optional[threading.Thread] = None
         self._det_running = False
+        # ── Shared streaming annotation buffer ─────────────────────────────────
+        self._stream_thread: Optional[threading.Thread] = None
+        self._stream_running = False
+        self._stream_lock = threading.Lock()
+        self._stream_result: Optional[dict] = None    # ONE latest annotated payload
+        self._stream_result_ts: float = 0.0           # epoch when result was produced
+        self._stream_fps: float = 0.0                 # rolling annotation FPS
+        self._stream_frame_count: int = 0
+        self._stream_dropped: int = 0                 # frames we SKIPPED annotating
+                                                      # because the previous one
+                                                      # was still running / we
+                                                      # already had a fresh result
         self._last_frame_ts: float = 0.0  # epoch; 0 = no frame yet
         self._last_face_rec_ts: float = 0.0  # rate-limit face recognition to 1 call/2s
 
@@ -104,6 +180,16 @@ class _ManagedCamera:
             daemon=True,
         )
         self._hb_thread.start()
+
+        # Shared streaming annotation thread: ONE YOLO inference per camera,
+        # all WebSocket subscribers read the cached result below.
+        self._stream_running = True
+        self._stream_thread = threading.Thread(
+            target=self._stream_annotation_loop,
+            name=f"cam-stream-{self.camera_id}",
+            daemon=True,
+        )
+        self._stream_thread.start()
 
         self._det_running = True
         self._det_thread = threading.Thread(
@@ -120,6 +206,7 @@ class _ManagedCamera:
     def stop(self):
         self._hb_running = False
         self._det_running = False
+        self._stream_running = False
         self.reader.stop()
 
         # Clean up tracker & idle state
@@ -144,6 +231,15 @@ class _ManagedCamera:
         except Exception as e:
             log.error(f"[CamMgr] enterprise runtime reset error: {e}")
 
+        # Clean up streaming annotation state
+        try:
+            from services.inference_pool import inference_pool
+            inference_pool.remove_camera(self.camera_id)
+        except Exception:
+            pass
+        with self._stream_lock:
+            self._stream_result = None
+
         log.info(f"[CamMgr] Stopped camera {self.camera_id}")
 
     def latest_frame(self) -> Optional[np.ndarray]:
@@ -152,14 +248,343 @@ class _ManagedCamera:
             self._last_frame_ts = time.time()
         return frame
 
+    def latest_frame_with_ts(self) -> Tuple[Optional[np.ndarray], float]:
+        """Return (latest_frame_copy, capture_epoch) atomically from reader."""
+        if hasattr(self.reader, "latest_frame_with_ts"):
+            return self.reader.latest_frame_with_ts()
+        frame = self.reader.latest_frame()
+        return (frame.copy() if frame is not None else None, time.time())
+
+    def frame_age_ms(self) -> float:
+        if hasattr(self.reader, "frame_age_seconds"):
+            return max(0.0, self.reader.frame_age_seconds() * 1000.0)
+        return 0.0
+
     def fps(self) -> float:
         return self.reader.fps()
 
     def last_error(self) -> Optional[str]:
         return self.reader.last_error()
 
+    # ── Shared streaming result public accessors ────────────────────────────
+
+    def latest_stream_result(self) -> Optional[dict]:
+        """
+        Return the MOST RECENT annotated WebSocket payload produced by the
+        shared streaming annotation thread.  Returns None if no result is
+        available yet.
+
+        Callers (WebSocket endpoint / diagnostics / HTTP snapshot) should use
+        this instead of running their own YOLO inference — it guarantees one
+        inference per camera no matter how many browser tabs are open.
+        """
+        with self._stream_lock:
+            if self._stream_result is None:
+                return None
+            # Return a shallow copy so callers can safely mutate numeric /
+            # scalar fields without clobbering each other's payloads.
+            return dict(self._stream_result)
+
+    def stream_result_age_ms(self) -> float:
+        with self._stream_lock:
+            if self._stream_result_ts == 0.0:
+                return float("inf")
+            return max(0.0, (time.time() - self._stream_result_ts) * 1000.0)
+
+    def stream_fps(self) -> float:
+        return round(self._stream_fps, 1)
+
     def metrics(self) -> dict:
-        return self.reader.metrics()
+        base = self.reader.metrics()
+        base.update({
+            "stream_fps": self.stream_fps(),
+            "stream_frame_count": self._stream_frame_count,
+            "stream_dropped": self._stream_dropped,
+            "stream_result_age_ms": round(self.stream_result_age_ms(), 1),
+        })
+        return base
+
+    # ── Shared streaming annotation loop ─────────────────────────────────────
+    #     ONE thread per camera.  Runs the full YOLO + Face + Cash + uniform
+    #     pipeline at up to ~15 fps and stores ONLY the latest result.  All
+    #     WebSocket subscribers read the shared cached payload instead of
+    #     running inference per connection.  This eliminates the previous
+    #     "N browser tabs = N concurrent YOLO inferences" explosion that was
+    #     the #2 cause of runaway latency after the OpenCV buffer issue.
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _stream_annotation_loop(self):
+        """
+        Continuously annotate the latest frame.  Non-blocking on the consumer
+        side: if the previous annotation is still being consumed by downstream
+        WebSocket connections, we simply overwrite it with a newer one — old
+        frames are never queued.
+        """
+        from database import SessionLocal
+        from services import face_service, yolo_service
+
+        last_sent_ts: float = 0.0
+        last_frame_capture_ts: float = 0.0
+        t_fps = time.time()
+        fps_frames = 0
+        local_frame_idx = 0
+
+        # Reusable DB session for streaming annotation.  Since we commit only
+        # for cash events / alerts / attendance (and those deduplicate
+        # internally) a single long-lived session is fine here and saves
+        # opening one per frame.
+        db = None
+        try:
+            db = SessionLocal()
+        except Exception:
+            db = None
+
+        while self._stream_running:
+            cycle_start = time.time()
+
+            # ── Get LATEST raw frame + its capture epoch  ──────────────
+            frame, capture_ts = None, 0.0
+            try:
+                if hasattr(self.reader, "latest_frame_with_ts"):
+                    frame, capture_ts = self.reader.latest_frame_with_ts()
+                else:
+                    frame = self.reader.latest_frame()
+                    capture_ts = time.time()
+            except Exception:
+                frame = None
+
+            if frame is None or capture_ts <= 0.0:
+                time.sleep(0.01)
+                continue
+
+            # ── Don't re-annotate if we already processed THIS frame ──
+            #    (latest_frame_with_ts gives us the capture epoch; if we
+            #    already stored an annotation from the same or newer
+            #    capture, skip this cycle and count as stream_dropped).
+            if capture_ts <= last_frame_capture_ts:
+                self._stream_dropped += 1
+                # Small sleep to avoid 100 % CPU when the camera reader
+                # hasn't produced a newer frame yet.
+                time.sleep(0.005)
+                continue
+
+            # ── Rate-limit: cap at ~15 fps to conserve CPU ───────────
+            since_last = cycle_start - last_sent_ts
+            if since_last < self._STREAM_MIN_INTERVAL_S and last_sent_ts > 0:
+                self._stream_dropped += 1
+                time.sleep(self._STREAM_MIN_INTERVAL_S - since_last)
+                continue
+
+            # ── Run the combined inference pipeline ───────────────────
+            #    This is equivalent to what the WebSocket endpoint used to
+            #    do PER CONNECTION inline.  We run it ONCE here and cache.
+            try:
+                local_frame_idx += 1
+
+                # Load camera zone_type / cash polygons from DB (cached per camera)
+                cam_zone = getattr(self, "_cached_zone", "default")
+                if cam_zone == "default" and db is not None:
+                    try:
+                        from database import Camera as CameraModel
+                        cam_obj = (
+                            db.query(CameraModel)
+                            .filter(CameraModel.id == self.camera_id)
+                            .first()
+                        )
+                        if cam_obj and cam_obj.zone_type:
+                            cam_zone = cam_obj.zone_type
+                            self._cached_zone = cam_zone
+                    except Exception:
+                        pass
+
+                # ── PPE / YOLO inference ───────────────────────────────
+                #    Use default role "Bakery Worker" for the shared stream
+                #    because: (a) it's the most commonly used role in the
+                #    factory, (b) it includes bangles / head-cap checks,
+                #    (c) individual WebSocket consumers can override the
+                #    alert logic in their browser if needed.  Per-browser
+                #    filter toggles are applied on the client side.
+                ppe_result = yolo_service.process_frame_numpy(
+                    frame,
+                    role="Bakery Worker",
+                    detection_filters=None,
+                    no_phone_zone=True,
+                    frame_index=local_frame_idx,
+                    zone_type=cam_zone,
+                )
+
+                # ── Face recognition ───────────────────────────────────
+                #    Rate-limited 1× per 2 s inside face_service already;
+                #    passing user_id=1 = system/shared encodings.
+                face_result: Optional[dict] = None
+                try:
+                    if db is not None:
+                        face_result = face_service.process_face_numpy(
+                            frame_bgr=frame, user_id=1, db=db
+                        )
+                except Exception:
+                    face_result = None
+
+                # ── Cash monitoring ────────────────────────────────────
+                _cash_alert_msg = None
+                _payee_detected = False
+                _payee_snapshot_b64 = None
+                _payee_id = None
+                try:
+                    from services import cash_monitor as _cm
+                    if db is not None:
+                        _persons = ppe_result.get("persons", [])
+                        _c_res = _cm.check_cash_zone(
+                            db=db,
+                            camera_id=self.camera_id,
+                            detections=ppe_result.get("detections", []),
+                            persons=_persons,
+                            cashbox_polygon=None,
+                            floor=self.floor,
+                            frame=frame,
+                            vendor_polygon=None,
+                        )
+                        if _c_res.get("theft_alert"):
+                            _cash_alert_msg = _c_res["theft_alert"]
+                        _payee_detected = _c_res.get("payee_detected", False)
+                        _payee_snapshot_b64 = _c_res.get("payee_snapshot_b64")
+                        _payee_id = _c_res.get("payee_id")
+                except Exception:
+                    pass
+
+                # ── Build the shared WebSocket payload ─────────────────
+                #     IMPORTANT: keep field names identical to what the
+                #     existing cctv WebSocket sends so the frontend
+                #     contract is 100 % unchanged.
+                ann_b64 = ppe_result.get("annotated_frame")
+
+                # Overlay face recognition boxes on top of PPE annotation
+                # if both are present (same logic as in cctv._overlay_faces).
+                if ann_b64 and face_result and face_result.get("faces"):
+                    try:
+                        import base64
+                        import cv2 as _cv2
+                        raw = ann_b64.split(",")[1] if "," in ann_b64 else ann_b64
+                        arr = np.frombuffer(base64.b64decode(raw), np.uint8)
+                        ann_frame = _cv2.imdecode(arr, _cv2.IMREAD_COLOR)
+                        if ann_frame is not None:
+                            ann_frame = _overlay_faces_stream(
+                                ann_frame, face_result
+                            )
+                            _, buf = _cv2.imencode(
+                                ".jpg", ann_frame, [_cv2.IMWRITE_JPEG_QUALITY, 90]
+                            )
+                            ann_b64 = (
+                                "data:image/jpeg;base64,"
+                                + base64.b64encode(buf).decode()
+                            )
+                    except Exception:
+                        pass  # keep PPE-only annotation on error
+
+                is_compliant = ppe_result.get("is_compliant", True)
+                alert_message = ppe_result.get("alert_message")
+                severity = ppe_result.get("severity")
+                face_unknown = bool(face_result and face_result.get("unknown_detected"))
+                if face_unknown:
+                    is_compliant = False
+
+                shared_payload = {
+                    "annotated_frame": ann_b64,
+                    "detections": ppe_result.get("detections", []),
+                    "is_compliant": is_compliant,
+                    "missing_items": ppe_result.get("missing_items", []),
+                    "violations_count": ppe_result.get("violations_count", 0),
+                    "persons_count": ppe_result.get("persons_count", 0),
+                    "alert_message": alert_message if not is_compliant else None,
+                    "severity": severity if not is_compliant else None,
+                    "frame_count": local_frame_idx,
+                    "persons": ppe_result.get("persons", []),
+                    "model_mode": ppe_result.get("model_mode", "cctv"),
+                    "phone_status": ppe_result.get("phone_status", "safe"),
+                    "phone_detected": ppe_result.get("phone_detected", False),
+                    "face_result": (
+                        {
+                            "faces": face_result.get("faces", []),
+                            "unknown_detected": face_unknown,
+                            "face_count": len(face_result.get("faces", [])),
+                            "recognized_employees": face_result.get(
+                                "recognized_employees", {}
+                            ),
+                        }
+                        if face_result
+                        else None
+                    ),
+                    "cam_fps": self.reader.fps(),
+                    "capture_frame_age_ms": round(
+                        max(0.0, (time.time() - capture_ts) * 1000.0), 1
+                    ),
+                    "stream_fps": round(self._stream_fps, 1),
+                    "stream_dropped_total": self._stream_dropped,
+                    "source": "cctv",
+                    "cash_detected": bool(ppe_result.get("cash_detected", False))
+                    or (_cash_alert_msg is not None),
+                    "cash_alert": _cash_alert_msg,
+                    "payee_detected": _payee_detected,
+                    "payee_snapshot_b64": _payee_snapshot_b64,
+                    "payee_id": _payee_id,
+                    "uniform_detected": any(
+                        p.get("has_uniform")
+                        for p in ppe_result.get("persons", [])
+                    ),
+                    "uniform_violation": any(
+                        not p.get("has_uniform", True)
+                        for p in ppe_result.get("persons", [])
+                    ),
+                    "zone_type": cam_zone,
+                    "camera_id": self.camera_id,
+                    "camera_name": self.name,
+                }
+
+                # ── Atomically publish the new LATEST result ───────────
+                now_publish = time.time()
+                with self._stream_lock:
+                    self._stream_result = shared_payload
+                    self._stream_result_ts = now_publish
+                    self._stream_frame_count = local_frame_idx
+                last_sent_ts = now_publish
+                last_frame_capture_ts = capture_ts
+
+                fps_frames += 1
+                elapsed = now_publish - t_fps
+                if elapsed >= 2.0:
+                    self._stream_fps = fps_frames / elapsed
+                    fps_frames = 0
+                    t_fps = now_publish
+
+                # Attendance auto clock-in on face recognition match
+                if face_result:
+                    recognized = face_result.get("recognized_employees", {})
+                    if recognized:
+                        try:
+                            from services.attendance_service import \
+                                handle_face_match as _attn_hook
+                            for _emp_id, _conf in recognized.items():
+                                _attn_hook(
+                                    camera_id=self.camera_id,
+                                    employee_id=_emp_id,
+                                    confidence=_conf,
+                                )
+                        except Exception:
+                            pass
+
+            except Exception as exc:
+                log.debug(
+                    "[CamMgr] stream annotation error (cam=%s): %s",
+                    self.camera_id,
+                    exc,
+                )
+                time.sleep(0.05)
+
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
 
     # ── Heartbeat ─────────────────────────────────────────────────────────────
 
@@ -1068,6 +1493,23 @@ def get_latest_frame(camera_id: int) -> Optional[np.ndarray]:
     return mc.latest_frame() if mc else None
 
 
+def get_latest_frame_with_ts(camera_id: int) -> Tuple[Optional[np.ndarray], float]:
+    """
+    Return (latest_frame_copy, capture_epoch) atomically.
+    capture_epoch is 0.0 when no frame is available yet.
+    """
+    with _lock:
+        mc = _registry.get(camera_id)
+    return mc.latest_frame_with_ts() if mc else (None, 0.0)
+
+
+def get_reader_frame_age_ms(camera_id: int) -> float:
+    """Milliseconds since the latest available frame was captured."""
+    with _lock:
+        mc = _registry.get(camera_id)
+    return mc.frame_age_ms() if mc else float("inf")
+
+
 def get_reader_fps(camera_id: int) -> float:
     with _lock:
         mc = _registry.get(camera_id)
@@ -1092,6 +1534,34 @@ def get_metrics(camera_id: int) -> dict:
             "last_error": "Camera is not streaming",
         }
     return mc.metrics()
+
+
+def get_latest_stream_result(camera_id: int) -> Optional[dict]:
+    """
+    Return the LATEST pre-annotated WebSocket payload for a managed camera,
+    produced by the shared per-camera streaming annotation thread.
+
+    Consumers (the cctv /ws/detect-cctv endpoint, diagnostic pages, etc.)
+    MUST use this instead of running their own YOLO inference — it ensures
+    exactly ONE inference runs per camera, no matter how many browser tabs
+    are open.  Returns None if the camera is not running or if it hasn't
+    produced an annotation yet.
+    """
+    with _lock:
+        mc = _registry.get(camera_id)
+    return mc.latest_stream_result() if mc else None
+
+
+def get_stream_result_age_ms(camera_id: int) -> float:
+    with _lock:
+        mc = _registry.get(camera_id)
+    return mc.stream_result_age_ms() if mc else float("inf")
+
+
+def get_stream_fps(camera_id: int) -> float:
+    with _lock:
+        mc = _registry.get(camera_id)
+    return mc.stream_fps() if mc else 0.0
 
 
 def is_running(camera_id: int) -> bool:

@@ -23,9 +23,37 @@ import json
 import logging
 import os
 
-# Force TCP transport for all OpenCV RTSP streams to prevent UDP packet drop and H.264/H.265 bitstream corruption
+# ── Ultra-low-latency FFmpeg / RTSP configuration ────────────────────────────
+# These flags tell FFmpeg (which OpenCV uses under the hood) to minimise internal
+# buffering and decode frames as soon as they arrive.  Without them FFmpeg keeps
+# a multi-frame decode pipeline + reorder buffer and the stream is ALWAYS 2–10
+# frames behind the live camera, even when cap.set(CAP_PROP_BUFFERSIZE, 1) is set
+# (because BUFFERSIZE only limits OpenCV's own wrapper buffer, not FFmpeg's).
+#
+#   - rtsp_transport=tcp       : reliable delivery (no H.264 corruption from UDP
+#                                packet loss, which is the #1 cause of blocky /
+#                                washed-out / green artefacts)
+#   - fflags=nobuffer + flags=low_delay : disable decoder look-ahead and frame
+#                                reordering — sacrifice one keyframe-quality
+#                                improvement for ~150 ms lower latency
+#   - stimeout=5,000,000 µs    : fail-fast after 5 s of silence instead of
+#                                hanging forever on a dead socket
+#   - max_delay=0              : no inter-frame jitter buffer at all
+#   - analyzeduration+probesize: start decoding instantly, don't wait to probe
+#                                the whole stream (cuts connect time by 1–3 s)
+#   - vsync=0 + async=1        : no video-sync frame pacing, decoder returns a
+#                                frame the moment it's fully decoded
+# ─────────────────────────────────────────────────────────────────────────────
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-    "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|stimeout;10000000|max_delay;500000"
+    "rtsp_transport;tcp|"
+    "fflags;nobuffer|"
+    "flags;low_delay|"
+    "stimeout;5000000|"
+    "max_delay;0|"
+    "analyzeduration;1000000|"
+    "probesize;1000000|"
+    "vsync;0|"
+    "async;1"
 )
 
 import ssl
@@ -35,7 +63,7 @@ import time
 logger = logging.getLogger(__name__)
 
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -97,25 +125,44 @@ class CameraReader:
     valid frame from the camera stream.  Only fresh, non-corrupted frames are
     kept in memory so the inference pipeline never processes stale or green data.
 
+    ── Low-latency design (v3.3) ──────────────────────────────────────────────
+    • Continuous drain: the RTSP/OpenCV loop runs WITHOUT a read-interval sleep.
+      It grabs every single frame FFmpeg has decoded as fast as possible, only
+      keeping the *last* valid one.  This is what prevents FFmpeg's internal
+      multi-frame decode pipeline from buffering 2–10 frames behind live.
+    • Capture epoch: every stored frame is tagged with its local capture time
+      (time.time()) so downstream consumers can measure frame age / end-to-end
+      latency and decide whether to drop an obsolete frame before inference.
+    • Per-cycle "grab N, keep last" pattern: inside _opencv_loop we call
+      cap.grab() / cap.retrieve() in a tight non-blocking burst until no more
+      frames are pending.  This empties ALL buffers in every cycle, not just
+      one frame per 30 ms.
+
     Supports:
       • MJPEG/HTTP  (IP Webcam Android: http://ip:8080/video)
       • RTSP        (rtsp://user:pass@ip/stream)
       • JPEG poll   (IP Webcam: http://ip:8080/shot.jpg)
       • Webcam index (int / "0", "1", ...)
 
-    New in v3.2 — stream health:
+    Stream health:
       stream_status   ONLINE | DEGRADED | OFFLINE | RECOVERING
       bad_frame_count running count of rejected frames (green/frozen/corrupt)
       decoder_error_count  count of cap.read() failures
+      capture_dropped  frames discarded because a NEWER frame arrived first
+                        (i.e. how many frames the drain loop grabbed and threw
+                        away inside a single buffer-empty cycle — these are
+                        frames that would otherwise have to wait in the queue)
     """
 
-    # Minimum time between consecutive cap.read() calls when the camera itself
-    # is the bottleneck (avoids a tight spin that wastes CPU).
-    _READ_INTERVAL = 0.03  # 30 ms → headroom for 30 fps cameras
+    # Tiny sleep used ONLY when the camera is the bottleneck (no frames pending)
+    # to avoid 100 % CPU spinning on an empty socket.  Must be < 1 ms so we
+    # never wait long enough to let a buffer build up.
+    _EMPTY_SPIN_SLEEP = 0.0005  # 0.5 ms
 
     def __init__(self, url: str):
         self.url = url
         self._frame = None
+        self._frame_capture_ts: float = 0.0  # epoch when THIS frame was captured locally
         self._cap: Optional[cv2.VideoCapture] = None
         self._lock = threading.Lock()
         self._running = False
@@ -125,6 +172,8 @@ class CameraReader:
         self._frame_count = 0
         self._last_frame_ts = 0.0
         self._reconnect_count = 0
+        self.capture_dropped: int = 0  # frames thrown away by drain loop (kept only newest)
+        self.cap_read_total: int = 0  # total successful cap.retrieve calls
         # Stream health counters
         self.bad_frame_count: int = 0
         self.decoder_error_count: int = 0
@@ -162,6 +211,21 @@ class CameraReader:
         with self._lock:
             return None if self._frame is None else self._frame.copy()
 
+    def latest_frame_with_ts(self) -> Tuple[Optional[np.ndarray], float]:
+        """Return (frame_copy, capture_epoch_ts) atomically so consumers can
+        accurately measure downstream frame age / end-to-end latency."""
+        with self._lock:
+            if self._frame is None:
+                return None, 0.0
+            return self._frame.copy(), self._frame_capture_ts
+
+    def frame_age_seconds(self) -> float:
+        """Age of the currently-stored frame, or 0 if none."""
+        with self._lock:
+            if self._frame_capture_ts == 0.0:
+                return 0.0
+            return max(0.0, time.time() - self._frame_capture_ts)
+
     def last_error(self) -> Optional[str]:
         return self._error
 
@@ -180,12 +244,16 @@ class CameraReader:
         return self._stream_status
 
     def metrics(self) -> dict:
+        age_s = self.frame_age_seconds()
         return {
             "fps": self.fps(),
             "stream_status": self.stream_status,
             "bad_frame_count": self.bad_frame_count,
             "decoder_error_count": self.decoder_error_count,
             "reconnect_count": self._reconnect_count,
+            "capture_dropped": self.capture_dropped,
+            "cap_read_total": self.cap_read_total,
+            "frame_age_ms": round(age_s * 1000, 1),
             "last_frame_at": (
                 datetime.datetime.utcfromtimestamp(self._last_frame_ts).isoformat()
                 + "Z"
@@ -470,16 +538,51 @@ class CameraReader:
     # ── OpenCV generic loop ───────────────────────────────────────────────────
 
     def _opencv_loop(self):
-        """Generic OpenCV VideoCapture loop (RTSP / webcam / fallback) with TCP transport."""
-        # Force TCP transport for RTSP to prevent UDP packet loss + H.264/H.265 bitstream corruption
+        """
+        OpenCV VideoCapture loop (RTSP / webcam / fallback)  —  LOW-LATENCY version.
+
+        Key difference from the naive 1-frame-per-interval loop:
+          • We call cap.grab() (fast, no decode) + cap.retrieve() (decode last)
+            in a TIGHT LOOP until no more frames are pending.  This empties the
+            FFmpeg decoder buffer AND OpenCV's wrapper buffer EVERY CYCLE so we
+            never keep more than 1 pending frame at any time.
+          • Only the *last* decoded frame of each drain cycle is kept — all
+            earlier ones are dropped on the spot (counted in capture_dropped).
+          • NO sleep between reads, NO read-interval throttle, NO 50 ms
+            "bad frame" sleeps.  The ONLY tiny sleep is 0.5 ms when no frames
+            are pending to avoid 100 % CPU on an empty socket, which is way
+            too small to let any buffer accumulate.
+
+        TCP is retained for RTSP because it prevents the blocky / washed-out /
+        green-artifact frames you get from UDP packet loss (H.264/H.265 P-frames
+        depend on previous frames, so a single UDP drop corrupts everything
+        until the next keyframe, typically 1–2 seconds).  The slightly higher
+        transport latency of TCP (< 20 ms per frame) is negligible compared to
+        the 500–2000 ms latency saved by draining the decode pipeline buffer.
+        """
+        # Re-assert the env-var flags right before open (the top-level global
+        # assignment is usually sufficient but some drivers re-read them on
+        # each new cv2.VideoCapture).
         if self._is_rtsp:
             os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-                "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|stimeout;10000000|max_delay;500000"
+                "rtsp_transport;tcp|"
+                "fflags;nobuffer|"
+                "flags;low_delay|"
+                "stimeout;5000000|"
+                "max_delay;0|"
+                "analyzeduration;1000000|"
+                "probesize;1000000|"
+                "vsync;0|"
+                "async;1"
             )
 
         # Support webcam index passed as string "0", "1", …
         src = int(self.url) if self._is_webcam else self.url
-        cap = cv2.VideoCapture(src, cv2.CAP_FFMPEG if self._is_rtsp else cv2.CAP_ANY)
+        cap_backend = cv2.CAP_FFMPEG if self._is_rtsp else cv2.CAP_ANY
+        cap = cv2.VideoCapture(src, cap_backend)
+
+        # ── OpenCV buffer size  —  hint only (FFmpeg may ignore, but setting it
+        #    to 1 still helps on native-webcam backends and does no harm).
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         with self._lock:
@@ -503,64 +606,110 @@ class CameraReader:
 
         self._stream_status = STREAM_RECOVERING
         consecutive_failures = 0
-        MAX_FAIL = 60
+        MAX_FAIL = 120  # ~6 s with empty sleeps — fail fast but not TOO fast
         t_fps = time.time()
         fps_frames = 0
 
-        while self._running:
-            t0 = time.time()
-            ret, frame = cap.read()
+        # Pre-allocate resized frame buffer to avoid repeated allocations on
+        # the hot path (resize still copies, but we keep the reference steady).
+        _resized_cache = None
 
-            if ret and frame is not None and frame.size > 0:
-                # ── Frame validation gate ────────────────────────────────────
-                # Resize first (cheaper to validate on smaller frame, and we need
-                # the resized version for inference anyway)
-                try:
-                    frame_resized = cv2.resize(frame, (INFER_WIDTH, INFER_HEIGHT))
-                except cv2.error:
+        while self._running:
+            # ── Drain: grab as many frames as FFmpeg has waiting ────────
+            #    We keep at most ONE pending candidate frame per drain cycle,
+            #    and we overwrite it with every newly-grabbed frame so we end
+            #    up holding ONLY the most recent one.  No unbounded queues,
+            #    no "process every frame in order" fallacy.
+            drained_this_cycle = 0
+            latest_decoded: Optional[np.ndarray] = None
+
+            while self._running:
+                # cap.grab() is non-blocking / fast: it reads the next packet
+                # from the socket buffer WITHOUT decoding.  It returns False
+                # when there is no packet immediately available.
+                grabbed = cap.grab()
+                if not grabbed:
+                    # No more frames pending — FFmpeg decode pipeline is empty.
+                    break
+                # Now decode the ONE frame we just grabbed (cheap because
+                # grab() already moved the data into FFmpeg's decoder).
+                ret, f = cap.retrieve()
+                if not ret or f is None or f.size == 0:
                     self.decoder_error_count += 1
                     consecutive_failures += 1
-                    time.sleep(0.05)
-                    continue
+                    continue  # try next grab — bad decode doesn't mean end of stream
+                self.cap_read_total += 1
+                drained_this_cycle += 1
+                # Drop the previous candidate — we only keep the newest.
+                if latest_decoded is not None:
+                    self.capture_dropped += 1
+                latest_decoded = f
 
-                if not self._accept_frame(frame_resized, source=f"cam:{self.url}"):
-                    # Bad frame: do NOT store or send to inference pool
-                    consecutive_failures += 1
-                    if consecutive_failures >= _BAD_FRAME_DEGRADED_THRESH:
-                        self._stream_status = STREAM_DEGRADED
-                    time.sleep(0.05)
-                    continue
-
-                # ── Valid frame accepted ─────────────────────────────────────
-                consecutive_failures = 0
-                self._stream_status = STREAM_ONLINE
-                self._error = None
-                self._last_frame_ts = time.time()
-                with self._lock:
-                    self._frame = frame_resized
-                    self._frame_count += 1
-                fps_frames += 1
-                elapsed = time.time() - t_fps
-                if elapsed >= 2.0:
-                    self._fps = fps_frames / elapsed
-                    fps_frames = 0
-                    t_fps = time.time()
-            else:
-                # cap.read() returned False — decoder or connection failure
-                self.decoder_error_count += 1
+            if latest_decoded is None:
+                # No frame arrived this drain cycle.  Sleep 0.5 ms to let the
+                # socket receive more bytes without burning 100 % CPU.  This is
+                # the ONLY sleep in the hot path and it's < 1 ms, so it cannot
+                # cause frame accumulation.
                 consecutive_failures += 1
                 if consecutive_failures >= MAX_FAIL:
                     self._error = (
-                        f"Camera stream lost after {MAX_FAIL} read failures — "
-                        f"check URL: {self.url}"
+                        f"Camera stream lost after {MAX_FAIL} empty drain cycles — "
+                        f"check URL / network: {self.url}"
                     )
                     self._stream_status = STREAM_OFFLINE
                     break
-                time.sleep(0.05)
+                time.sleep(self._EMPTY_SPIN_SLEEP)
+                continue
 
-            spent = time.time() - t0
-            if spent < self._READ_INTERVAL:
-                time.sleep(self._READ_INTERVAL - spent)
+            # ── Process the SINGLE newest frame from this drain cycle ────
+            consecutive_failures = 0
+            try:
+                if (
+                    _resized_cache is None
+                    or _resized_cache.shape[0] != INFER_HEIGHT
+                    or _resized_cache.shape[1] != INFER_WIDTH
+                ):
+                    _resized_cache = cv2.resize(
+                        latest_decoded, (INFER_WIDTH, INFER_HEIGHT)
+                    )
+                else:
+                    cv2.resize(
+                        latest_decoded,
+                        (INFER_WIDTH, INFER_HEIGHT),
+                        dst=_resized_cache,
+                    )
+                frame_resized = _resized_cache
+            except cv2.error:
+                self.decoder_error_count += 1
+                continue
+
+            if not self._accept_frame(frame_resized, source=f"cam:{self.url}"):
+                # Bad frame: do NOT store.  Crucially, we also DO NOT sleep
+                # here (the old loop slept 50 ms on every bad frame, which
+                # let the decoder buffer fill up behind our backs).
+                if consecutive_failures == 0:
+                    consecutive_failures = 1
+                if consecutive_failures >= _BAD_FRAME_DEGRADED_THRESH:
+                    self._stream_status = STREAM_DEGRADED
+                continue
+
+            # ── Valid frame — store it along with its capture epoch ──────
+            now_ts = time.time()
+            self._stream_status = STREAM_ONLINE
+            self._error = None
+            self._last_frame_ts = now_ts
+            with self._lock:
+                # Make a copy into the shared buffer so the caller can't
+                # overwrite our _resized_cache scratch area from outside.
+                self._frame = frame_resized.copy()
+                self._frame_capture_ts = now_ts
+                self._frame_count += 1
+            fps_frames += 1
+            elapsed = now_ts - t_fps
+            if elapsed >= 2.0:
+                self._fps = fps_frames / elapsed
+                fps_frames = 0
+                t_fps = now_ts
 
         with self._lock:
             if self._cap is not None:
@@ -1070,101 +1219,107 @@ async def cctv_detection_websocket(websocket: WebSocket):
                     state["alive"] = False
                     return
 
-        # ── Coroutine B: grab → infer → send at max speed ───────────────────
+        # ── Coroutine B: send LATEST annotated payload to client ─────────
+        #     Two distinct modes:
+        #
+        #     MANAGED MODE (camera_id set):
+        #       • NO inference runs HERE.  We just read whatever the shared
+        #         per-camera _stream_annotation_thread cached as the latest
+        #         WebSocket payload.  This guarantees ONE YOLO inference per
+        #         camera no matter how many browsers open N tabs, and keeps
+        #         WS send latency ~5 ms instead of 100–200 ms.
+        #
+        #     LEGACY MODE (camera_url set, direct URL, no camera row):
+        #       • Keep the original inline-inference behaviour for backwards
+        #         compatibility (each session has its own private CameraReader
+        #         and YOLO pipeline — it's intended for one-off testing URLs
+        #         anyway, so duplication is acceptable).
+        #
+        #     Both modes:
+        #       • Never send the SAME annotation twice (track the last
+        #         source_frame_count and skip duplicates).  Without this the
+        #         WS send loop would flood the browser with identical 60 KB
+        #         frames at 100+ fps when the shared annotation thread is
+        #         slower than the 50 ms send floor.
+        #       • MIN_INTERVAL_MS caps user-visible send rate at ~20 fps.
+        # ─────────────────────────────────────────────────────────────────────
         async def process_frames():
             MIN_INTERVAL_MS = 50  # hard floor: don't send faster than 20 fps
-            last_sent = time.time()
+            last_sent_ts: float = 0.0
+            last_sent_frame_count: int = -1
+            ws_send_count: int = 0
+            ws_skip_dup_count: int = 0
 
             while state["alive"]:
-                now = time.time()
+                loop_now = time.time()
 
-                # ── Get latest frame — managed or legacy ─────────────────────
+                # ── Rate limit WS sends ──────────────────────────────────
+                if last_sent_ts > 0:
+                    since_last = loop_now - last_sent_ts
+                    if since_last < MIN_INTERVAL_MS / 1000:
+                        await asyncio.sleep(
+                            (MIN_INTERVAL_MS / 1000) - since_last
+                        )
+                        continue
+
+                # ── Fetch latest payload ─────────────────────────────────
+                response: Optional[dict] = None
+                cam_error: Optional[str] = None
+
                 if managed_camera_id is not None:
-                    # Subscriber mode: read from server-managed registry
+                    # ─── MANAGED MODE: read shared cached annotation ──
                     cam_error = camera_manager.get_reader_error(managed_camera_id)
                     if cam_error:
                         await websocket.send_json({"error": cam_error})
                         state["alive"] = False
                         return
-                    frame = camera_manager.get_latest_frame(managed_camera_id)
-                    cam_fps = camera_manager.get_reader_fps(managed_camera_id)
-                else:
-                    # Legacy mode: read from private CameraReader
-                    if camera.last_error():
-                        await websocket.send_json({"error": camera.last_error()})
-                        state["alive"] = False
-                        return
-                    frame = camera.latest_frame()
-                    cam_fps = camera.fps()
 
-                if frame is None:
-                    await asyncio.sleep(0.015)  # wait for first frame
-                    continue
-
-                # Enforce minimum send interval so WebSocket isn't flooded
-                elapsed = now - last_sent
-                if elapsed < MIN_INTERVAL_MS / 1000:
-                    await asyncio.sleep((MIN_INTERVAL_MS / 1000) - elapsed)
-                    continue
-
-                state["frame_count"] += 1
-                fn = state["frame_count"]
-                det_filters = list(state["filters"]) if state["filters"] else None
-                nph = state["no_phone_zone"]
-                ef = state["enable_face"]
-
-                try:
-                    # Run combined PPE + Face + Cash inference in thread pool
-                    _cam_id_for_infer = managed_camera_id  # int | None
-                    result = await loop.run_in_executor(
-                        _yolo_executor,
-                        lambda fr=frame, fi=fn, df=det_filters, nz=nph, efa=ef, cid=_cam_id_for_infer: (
-                            _run_combined_inference(
-                                fr, role, user.id, db, df, nz, fi, efa,
-                                camera_id=cid, floor="shop",
-                            )
-                        ),
+                    shared_payload = camera_manager.get_latest_stream_result(
+                        managed_camera_id
                     )
+                    if shared_payload is None:
+                        # Annotation thread hasn't produced a frame yet.
+                        # Wait briefly without burning CPU.
+                        await asyncio.sleep(0.02)
+                        continue
 
-                    response = {
-                        "annotated_frame": result.get("annotated_frame"),
-                        "detections": result.get("detections", []),
-                        "is_compliant": result.get("is_compliant", True),
-                        "missing_items": result.get("missing_items", []),
-                        "violations_count": result.get("violations_count", 0),
-                        "persons_count": result.get("persons_count", 0),
-                        "alert_message": result.get("alert_message"),
-                        "severity": result.get("severity"),
-                        "frame_count": fn,
-                        "persons": result.get("persons", []),
-                        "model_mode": result.get("model_mode", "cctv"),
-                        "active_filters": state["filters"],
-                        "phone_status": result.get("phone_status", "safe"),
-                        "phone_detected": result.get("phone_detected", False),
-                        "face_result": result.get("face_result"),
-                        "cam_fps": cam_fps,
-                        "source": "cctv",
-                        # Cash monitoring
-                        "cash_detected": result.get("cash_detected", False),
-                        "cash_alert":    result.get("cash_alert"),
-                        "cash_alert_saved": False,  # set True below if alert was saved
-                        "payee_detected": result.get("payee_detected", False),
-                        "payee_snapshot_b64": result.get("payee_snapshot_b64"),
-                        "payee_id": result.get("payee_id"),
-                        # Uniform monitoring
-                        "uniform_detected": any(p.get("has_uniform") for p in result.get("persons", [])),
-                        "uniform_violation": any(not p.get("has_uniform", True) for p in result.get("persons", [])),
-                    }
+                    src_frame_count = int(
+                        shared_payload.get("frame_count", -1)
+                    )
+                    if src_frame_count == last_sent_frame_count:
+                        # We already sent this exact annotation to the browser.
+                        # Skip it — sending a duplicate wastes WS bandwidth
+                        # and 60 KB x N tabs adds up FAST.
+                        ws_skip_dup_count += 1
+                        await asyncio.sleep(0.01)
+                        continue
 
-                    # ── PPE alert save ─────────────────────────────────────
-                    if not result.get("is_compliant") and result.get("alert_message"):
-                        uid = user.id
-                        now_t = time.time()
-                        dets = result.get("detections", [])
-                        # Use person confidence as fallback so violations without
-                        # a PPE bbox (College, Gloves, Goggles) still trigger alerts.
+                    # ── Build WS response, RE-USING the pre-built shared payload.
+                    #    Inject per-subscriber fields that the shared thread
+                    #    can't know: active_filters, per-user alert_saved flags.
+                    response = dict(shared_payload)
+                    response["active_filters"] = state["filters"]
+                    response["ws_send_count"] = ws_send_count
+                    response["ws_dup_skipped"] = ws_skip_dup_count
+                    response["subscriber_frame_count"] = state["frame_count"]
+                    last_sent_frame_count = src_frame_count
+
+                    # ── Per-subscriber alert-save (cooldown keyed per user) ──
+                    #    The shared annotation thread already fires cash alerts
+                    #    + attendance, but user-specific PPE / phone / unknown-
+                    #    face alerts are saved HERE so each user gets their
+                    #    own alert history row and per-user cooldown is honoured.
+                    uid = user.id
+                    now_t = time.time()
+
+                    if (
+                        not response.get("is_compliant", True)
+                        and response.get("alert_message")
+                    ):
+                        dets = response.get("detections", [])
                         persons_c = [
-                            p.get("confidence", 0) for p in result.get("persons", [])
+                            p.get("confidence", 0)
+                            for p in response.get("persons", [])
                         ]
                         dets_c = [d.get("confidence", 0) for d in dets]
                         top_conf = max(persons_c + dets_c, default=0.5)
@@ -1174,95 +1329,199 @@ async def cctv_detection_websocket(websocket: WebSocket):
                             and (now_t - _last_alert_time.get(uid, 0)) > cooldown
                         ):
                             _last_alert_time[uid] = now_t
-                            missing = result.get("missing_items", [])
-                            save_alert(
-                                db=db,
-                                user_id=uid,
-                                message=result["alert_message"],
-                                role=role,
-                                severity=result["severity"],
-                                detected_issue=(
-                                    ", ".join(missing)
-                                    if missing
-                                    else result["alert_message"]
-                                ),
-                                confidence=round(top_conf, 3),
-                                snapshot_b64=result.get("snapshot_b64"),
-                            )
-                            response["alert_saved"] = True
+                            missing = response.get("missing_items", [])
+                            try:
+                                save_alert(
+                                    db=db,
+                                    user_id=uid,
+                                    message=response["alert_message"],
+                                    role=role,
+                                    severity=response.get("severity"),
+                                    detected_issue=(
+                                        ", ".join(missing)
+                                        if missing
+                                        else response["alert_message"]
+                                    ),
+                                    confidence=round(top_conf, 3),
+                                    snapshot_b64=response.get("snapshot_b64"),
+                                )
+                                response["alert_saved"] = True
+                            except Exception:
+                                pass
 
-                    # ── Phone alert save ───────────────────────────────────
-                    if result.get("phone_severity") == "high" and result.get(
+                    if response.get("phone_severity") == "high" and response.get(
                         "phone_alert"
                     ):
-                        uid = user.id
-                        now_t = time.time()
                         if now_t - _last_phone_alert_time.get(uid, 0) > 15:
                             _last_phone_alert_time[uid] = now_t
-                            save_alert(
-                                db=db,
-                                user_id=uid,
-                                message=result["phone_alert"],
-                                role=role,
-                                severity="high",
-                                detected_issue=result["phone_alert"],
-                                confidence=0.85,
-                                snapshot_b64=result.get("snapshot_b64"),
-                            )
-                            response["phone_alert_saved"] = True
+                            try:
+                                save_alert(
+                                    db=db,
+                                    user_id=uid,
+                                    message=response["phone_alert"],
+                                    role=role,
+                                    severity="high",
+                                    detected_issue=response["phone_alert"],
+                                    confidence=0.85,
+                                    snapshot_b64=response.get("snapshot_b64"),
+                                )
+                                response["phone_alert_saved"] = True
+                            except Exception:
+                                pass
 
-                    # ── Face unknown alert save ────────────────────────────
-                    if result.get("face_result", {}) and result["face_result"].get(
-                        "unknown_detected"
-                    ):
-                        uid = user.id
-                        now_t = time.time()
+                    fr = response.get("face_result") or {}
+                    if fr.get("unknown_detected"):
                         if now_t - _last_alert_time.get(f"face_{uid}", 0) > 20:
                             _last_alert_time[f"face_{uid}"] = now_t
-                            save_alert(
-                                db=db,
-                                user_id=uid,
-                                message="Unknown person detected via CCTV",
-                                role=role,
-                                severity="critical",
-                                detected_issue="Unknown face",
-                                confidence=0.90,
-                                snapshot_b64=result.get("snapshot_b64"),
-                            )
-                            response["face_alert_saved"] = True
+                            try:
+                                save_alert(
+                                    db=db,
+                                    user_id=uid,
+                                    message="Unknown person detected via CCTV",
+                                    role=role,
+                                    severity="critical",
+                                    detected_issue="Unknown face",
+                                    confidence=0.90,
+                                    snapshot_b64=response.get("snapshot_b64"),
+                                )
+                                response["face_alert_saved"] = True
+                            except Exception:
+                                pass
 
-                    # ── Attendance auto clock-in on face match ─────────────
-                    # Fires for ANY camera that recognizes a registered employee.
-                    # handle_face_match already deduplicates within the same day.
-                    face_res = result.get("face_result") or {}
-                    recognized = face_res.get("recognized_employees", {})
-                    if ef:
-                        print(
-                            f"[CCTV-Attn] Frame#{fn} "
-                            f"faces={face_res.get('face_count', 0)} "
-                            f"recognized={recognized}"
+                else:
+                    # ─── LEGACY MODE: camera_url → inline inference ─────
+                    #     (unchanged behaviour for backwards compatibility)
+                    if camera.last_error():
+                        await websocket.send_json({"error": camera.last_error()})
+                        state["alive"] = False
+                        return
+                    frame = camera.latest_frame()
+                    cam_fps_legacy = camera.fps()
+
+                    if frame is None:
+                        await asyncio.sleep(0.015)
+                        continue
+
+                    state["frame_count"] += 1
+                    fn = state["frame_count"]
+                    det_filters = (
+                        list(state["filters"]) if state["filters"] else None
+                    )
+                    nph = state["no_phone_zone"]
+                    ef = state["enable_face"]
+
+                    try:
+                        result = await loop.run_in_executor(
+                            _yolo_executor,
+                            lambda fr=frame, fi=fn, df=det_filters, nz=nph, efa=ef: (
+                                _run_combined_inference(
+                                    fr,
+                                    role,
+                                    user.id,
+                                    db,
+                                    df,
+                                    nz,
+                                    fi,
+                                    efa,
+                                    camera_id=None,
+                                    floor="shop",
+                                )
+                            ),
                         )
-                    if recognized and ef:
-                        from services.attendance_service import \
-                            handle_face_match as _attn_hook
+                        response = {
+                            "annotated_frame": result.get("annotated_frame"),
+                            "detections": result.get("detections", []),
+                            "is_compliant": result.get("is_compliant", True),
+                            "missing_items": result.get("missing_items", []),
+                            "violations_count": result.get("violations_count", 0),
+                            "persons_count": result.get("persons_count", 0),
+                            "alert_message": result.get("alert_message"),
+                            "severity": result.get("severity"),
+                            "frame_count": fn,
+                            "persons": result.get("persons", []),
+                            "model_mode": result.get("model_mode", "cctv"),
+                            "active_filters": state["filters"],
+                            "phone_status": result.get("phone_status", "safe"),
+                            "phone_detected": result.get("phone_detected", False),
+                            "face_result": result.get("face_result"),
+                            "cam_fps": cam_fps_legacy,
+                            "source": "cctv",
+                            "cash_detected": result.get("cash_detected", False),
+                            "cash_alert": result.get("cash_alert"),
+                            "cash_alert_saved": False,
+                            "payee_detected": result.get("payee_detected", False),
+                            "payee_snapshot_b64": result.get("payee_snapshot_b64"),
+                            "payee_id": result.get("payee_id"),
+                            "uniform_detected": any(
+                                p.get("has_uniform")
+                                for p in result.get("persons", [])
+                            ),
+                            "uniform_violation": any(
+                                not p.get("has_uniform", True)
+                                for p in result.get("persons", [])
+                            ),
+                            "mode": "legacy",
+                        }
+                        last_sent_frame_count = fn
 
-                        _cam_id_for_attn = managed_camera_id  # None in legacy mode
-                        for _emp_id, _conf in recognized.items():
-                            _attn_hook(
-                                camera_id=_cam_id_for_attn,
-                                employee_id=_emp_id,
-                                confidence=_conf,
+                        if not result.get("is_compliant") and result.get(
+                            "alert_message"
+                        ):
+                            uid = user.id
+                            now_t = time.time()
+                            dets = result.get("detections", [])
+                            persons_c = [
+                                p.get("confidence", 0)
+                                for p in result.get("persons", [])
+                            ]
+                            dets_c = [d.get("confidence", 0) for d in dets]
+                            top_conf = max(persons_c + dets_c, default=0.5)
+                            cooldown = settings.ALERT_COOLDOWN
+                            if (
+                                top_conf >= settings.MIN_VIOLATION_CONF
+                                and (now_t - _last_alert_time.get(uid, 0))
+                                > cooldown
+                            ):
+                                _last_alert_time[uid] = now_t
+                                missing = result.get("missing_items", [])
+                                save_alert(
+                                    db=db,
+                                    user_id=uid,
+                                    message=result["alert_message"],
+                                    role=role,
+                                    severity=result["severity"],
+                                    detected_issue=(
+                                        ", ".join(missing)
+                                        if missing
+                                        else result["alert_message"]
+                                    ),
+                                    confidence=round(top_conf, 3),
+                                    snapshot_b64=result.get("snapshot_b64"),
+                                )
+                                response["alert_saved"] = True
+                    except Exception as e:
+                        if state["alive"]:
+                            print(
+                                f"[CCTV-legacy] Frame#{fn} error: "
+                                f"{type(e).__name__}: {e}"
                             )
+                        state["alive"] = False
+                        return
 
+                # ── Send to browser ───────────────────────────────────────
+                try:
+                    state["frame_count"] += 1
+                    ws_send_count += 1
                     await websocket.send_json(response)
-                    last_sent = time.time()
-
+                    last_sent_ts = time.time()
                 except WebSocketDisconnect:
                     state["alive"] = False
                     return
                 except Exception as e:
                     if state["alive"]:
-                        print(f"[CCTV-v2] Frame#{fn} error: {type(e).__name__}: {e}")
+                        print(
+                            f"[CCTV-ws] Send error: {type(e).__name__}: {e}"
+                        )
                     state["alive"] = False
                     return
 

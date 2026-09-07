@@ -42,43 +42,57 @@ if (isConfigured) {
  */
 export async function initFCM(authToken, backendBase) {
   if (!isConfigured) {
-    console.debug('[FCM] Firebase config not set — push disabled')
+    console.warn('[FCM] Firebase config not set — push disabled')
     return null
+  }
+
+  if (typeof window === 'undefined' || !('Notification' in window) || !('serviceWorker' in navigator)) {
+    console.warn('[FCM] Notifications or ServiceWorker not supported in this browser')
+    return null
+  }
+
+  if (!window.isSecureContext) {
+    console.warn('[FCM] Browser is NOT in a secure context. Push notifications require HTTPS or localhost. If on mobile, use ngrok HTTPS URL.')
   }
 
   try {
     // Request permission
     const perm = await Notification.requestPermission()
     if (perm !== 'granted') {
-      console.warn('[FCM] Notification permission denied')
+      console.warn('[FCM] Notification permission not granted:', perm)
       return null
     }
 
-    // Register the FCM service worker
-    const swReg = await navigator.serviceWorker.register('/firebase-messaging-sw.js')
+    // Register the FCM service worker (root scope)
+    const swReg = await navigator.serviceWorker.register('/firebase-messaging-sw.js', {
+      scope: '/'
+    })
+    console.log('[FCM] Service worker registered with scope:', swReg.scope)
 
-    // Wait for SW to become active (may start as 'installing')
+    // Wait for SW to be ready
     await navigator.serviceWorker.ready
 
-    // Send Firebase config to SW (it can't use import.meta.env or bundler)
-    const sendConfig = (sw) => {
-      if (sw) sw.postMessage({ type: 'FIREBASE_CONFIG', config: firebaseConfig })
-    }
-    sendConfig(swReg.installing || swReg.waiting || swReg.active)
-
     // Get device token
+    const vapidKey = import.meta.env.VITE_FIREBASE_VAPID_KEY
+    console.log('[FCM] Requesting FCM device token with VAPID key...')
     const token = await getToken(messaging, {
-      vapidKey: import.meta.env.VITE_FIREBASE_VAPID_KEY,
+      vapidKey,
       serviceWorkerRegistration: swReg,
     })
 
     if (!token) {
-      console.warn('[FCM] getToken returned null — check VAPID key')
+      console.warn('[FCM] getToken returned null — check VAPID key and notification permission')
       return null
     }
 
+    console.log('[FCM] Received device token:', token.slice(0, 20) + '...')
+
     // Register token with backend
-    await fetch(`${backendBase}/users/me/fcm-token`, {
+    const tokenUrl = backendBase
+      ? `${backendBase}/users/me/fcm-token`
+      : '/api/users/me/fcm-token'
+    console.log('[FCM] POSTing token to:', tokenUrl)
+    const resp = await fetch(tokenUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -89,11 +103,16 @@ export async function initFCM(authToken, backendBase) {
         device_name: `${navigator.userAgent.slice(0, 80)}`,
       }),
     })
+    if (!resp.ok) {
+      console.warn('[FCM] Token registration failed, status:', resp.status, await resp.text())
+      return null
+    }
 
-    console.log('[FCM] Token registered ✅')
+    const regResult = await resp.json()
+    console.log('[FCM] Token registered in backend ✅', regResult)
     return token
   } catch (err) {
-    console.warn('[FCM] initFCM error:', err)
+    console.error('[FCM] initFCM error:', err)
     return null
   }
 }
