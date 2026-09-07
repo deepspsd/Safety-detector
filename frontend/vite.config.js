@@ -10,6 +10,7 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     host: true,          // expose on network so phones can connect
+    allowedHosts: true,  // allow ngrok / localtunnel domains
     hmr: {
       clientPort: 5173,
     },

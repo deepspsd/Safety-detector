@@ -162,12 +162,12 @@ def auto_clock_out_open_sessions(db) -> dict:
     msg = f"Auto clock-out complete: {closed} open session(s) closed."
     log.info(f"[Attendance] {msg}")
 
-    # Fire Telegram notification to owner
+    # Push notification to owner via FCM
     if closed:
         try:
-            from services.notification_service import send_telegram_alert
+            from services.notification_service import send_push_alert
 
-            send_telegram_alert(
+            send_push_alert(
                 message=(
                     f"🕖 Nightly auto clock-out ran at "
                     f"{datetime.datetime.now(_IST).strftime('%H:%M IST')}. "
@@ -177,7 +177,7 @@ def auto_clock_out_open_sessions(db) -> dict:
                 detected_issue="Auto clock-out",
             )
         except Exception as exc:
-            log.warning(f"[Attendance] auto clock-out Telegram notify failed: {exc}")
+            log.warning(f"[Attendance] auto clock-out push notify failed: {exc}")
 
     return {"closed": closed, "message": msg}
 
@@ -316,11 +316,15 @@ def handle_face_match(
 ) -> None:
     """
     Auto-clock-in when face-recognition positively identifies an employee.
-    The face service RECOGNITION_TOLERANCE is 0.42 (which means minimum confidence is 0.58).
-    We use 0.58 here to perfectly match the face service's match threshold.
+    Gate: confidence >= 0.40 (i.e. distance <= 0.60), which matches the
+    RECOGNITION_TOLERANCE=0.52 setting in config.py.
+    handle_face_match deduplicates within the same calendar day via clock_in().
     """
-    if confidence < 0.58:
+    if confidence < 0.40:
         return
+    log.info(
+        f"[Attendance] Face match → employee={employee_id} conf={confidence:.2%} cam={camera_id}"
+    )
 
     from database import SessionLocal
 

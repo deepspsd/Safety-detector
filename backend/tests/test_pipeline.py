@@ -1,11 +1,13 @@
 """
 Unit tests for the Person Cropper, Tracker, Zone Engine, Classifier Adapter, and Rule State Machines.
 """
-from __future__ import annotations
-
+import os
+import sys
 from datetime import datetime
 
 import numpy as np
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from services.person_cropper import CropMode, crop_person
 from services.classifier_adapter import (

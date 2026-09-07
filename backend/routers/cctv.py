@@ -20,10 +20,20 @@ import asyncio
 import base64
 import datetime
 import json
+import logging
 import os
+
+# Force TCP transport for all OpenCV RTSP streams to prevent UDP packet drop and H.264/H.265 bitstream corruption
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+    "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|stimeout;10000000|max_delay;500000"
+)
+
 import ssl
 import threading
 import time
+
+logger = logging.getLogger(__name__)
+
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional
 
@@ -106,6 +116,7 @@ class CameraReader:
     def __init__(self, url: str):
         self.url = url
         self._frame = None
+        self._cap: Optional[cv2.VideoCapture] = None
         self._lock = threading.Lock()
         self._running = False
         self._thread = None
@@ -139,6 +150,13 @@ class CameraReader:
 
     def stop(self):
         self._running = False
+        with self._lock:
+            if self._cap is not None:
+                try:
+                    self._cap.release()
+                except Exception:
+                    pass
+                self._cap = None
 
     def latest_frame(self) -> Optional[np.ndarray]:
         with self._lock:
@@ -254,17 +272,17 @@ class CameraReader:
         if self._is_corrupted_frame(frame):
             self.bad_frame_count += 1
             self._consecutive_bad += 1
-            log.debug("[CamReader] %s corrupted frame #%d", source, self.bad_frame_count)
+            logger.debug("[CamReader] %s corrupted frame #%d", source, self.bad_frame_count)
             return False
         if self._is_green_frame(frame):
             self.bad_frame_count += 1
             self._consecutive_bad += 1
-            log.debug("[CamReader] %s green frame #%d (decoder artifact)", source, self.bad_frame_count)
+            logger.debug("[CamReader] %s green frame #%d (decoder artifact)", source, self.bad_frame_count)
             return False
         if self._is_frozen_frame(frame):
             self.bad_frame_count += 1
             self._consecutive_bad += 1
-            log.debug("[CamReader] %s frozen frame #%d", source, self.bad_frame_count)
+            logger.debug("[CamReader] %s frozen frame #%d", source, self.bad_frame_count)
             return False
         self._consecutive_bad = 0
         return True
@@ -453,27 +471,34 @@ class CameraReader:
 
     def _opencv_loop(self):
         """Generic OpenCV VideoCapture loop (RTSP / webcam / fallback) with TCP transport."""
-        # Force TCP transport for RTSP to prevent UDP packet loss + H.264 green frames
+        # Force TCP transport for RTSP to prevent UDP packet loss + H.264/H.265 bitstream corruption
         if self._is_rtsp:
             os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-                "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay"
+                "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|stimeout;10000000|max_delay;500000"
             )
 
         # Support webcam index passed as string "0", "1", …
         src = int(self.url) if self._is_webcam else self.url
         cap = cv2.VideoCapture(src, cv2.CAP_FFMPEG if self._is_rtsp else cv2.CAP_ANY)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        if not self._is_webcam:
-            cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 8000)
-            cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)
+
+        with self._lock:
+            self._cap = cap
 
         if not cap.isOpened():
             self._error = (
                 f"OpenCV could not open stream: {self.url}\n"
-                f"For RTSP: check credentials and port.\n"
-                f"For webcam: ensure device index is correct."
+                f"For RTSP: check credentials, port 554, and network reachability.\n"
+                f"For high-res streams: try subtype=1 (substream) for lower bandwidth."
             )
             self._stream_status = STREAM_OFFLINE
+            with self._lock:
+                if self._cap is not None:
+                    try:
+                        self._cap.release()
+                    except Exception:
+                        pass
+                    self._cap = None
             return
 
         self._stream_status = STREAM_RECOVERING
@@ -537,7 +562,13 @@ class CameraReader:
             if spent < self._READ_INTERVAL:
                 time.sleep(self._READ_INTERVAL - spent)
 
-        cap.release()
+        with self._lock:
+            if self._cap is not None:
+                try:
+                    self._cap.release()
+                except Exception:
+                    pass
+                self._cap = None
         self._stream_status = STREAM_OFFLINE
 
     def _poll_jpeg_loop(self):
@@ -593,18 +624,68 @@ def _run_combined_inference(
     Run PPE detection and optional face recognition simultaneously.
     Also runs cash_monitor.check_cash_zone() for cameras with cash zone.
     Returns a merged result dict with a single annotated_frame.
+    
+    NOTE: This function runs in a thread-pool executor — all DB access MUST use
+    its own SessionLocal (the async context's session is NOT thread-safe).
+    """
+    from database import SessionLocal
+    _thr_db = SessionLocal()  # thread-local session
+    try:
+        return _run_combined_inference_inner(
+            frame, role, user_id, _thr_db, det_filters, no_phone_zone,
+            frame_idx, enable_face, camera_id, floor,
+        )
+    finally:
+        try:
+            _thr_db.close()
+        except Exception:
+            pass
+
+
+def _run_combined_inference_inner(
+    frame: np.ndarray,
+    role: str,
+    user_id: int,
+    db: Session,
+    det_filters: Optional[List[str]],
+    no_phone_zone: bool,
+    frame_idx: int,
+    enable_face: bool,
+    camera_id: Optional[int] = None,
+    floor: str = "shop",
+) -> Dict:
+    """
+    Inner implementation — always receives a fresh thread-local DB session.
     """
     ppe_result = {}
     face_result = {}
 
     # --- PPE / YOLO detection (now with zone-aware multi-model) --------------
     _cam_zone = "default"
-    if camera_id is not None and db is not None:
+    _cashbox_polygon = None
+    _vendor_polygon = None
+    if camera_id is not None:
         try:
+            import json
             from database import Camera as CameraModel
             cam_obj = db.query(CameraModel).filter(CameraModel.id == camera_id).first()
-            if cam_obj and cam_obj.zone_type:
-                _cam_zone = cam_obj.zone_type
+            if cam_obj:
+                if cam_obj.zone_type:
+                    _cam_zone = cam_obj.zone_type
+                if hasattr(cam_obj, "zones"):
+                    for z in cam_obj.zones:
+                        zn = (z.zone_name or "").lower()
+                        zt = (z.zone_type or "").lower()
+                        if "cash" in zn or "cash" in zt:
+                            try:
+                                _cashbox_polygon = json.loads(z.polygon_json)
+                            except Exception:
+                                pass
+                        if "vendor" in zn or "payee" in zn or "counter" in zn or "vendor" in zt:
+                            try:
+                                _vendor_polygon = json.loads(z.polygon_json)
+                            except Exception:
+                                pass
         except Exception:
             pass
 
@@ -633,44 +714,32 @@ def _run_combined_inference(
     # Uses class 14 (Cash) detections from the PPE result; fires a DB alert
     # when cash enters an employee body zone then disappears (pocket theft).
     _cash_alert_msg: Optional[str] = None
+    _payee_detected: bool = False
+    _payee_snapshot_b64: Optional[str] = None
+    _payee_id: Optional[str] = None
+
     if camera_id is not None and db is not None:
         try:
             from services import cash_monitor as _cm
 
-            _all_dets = ppe_result.get("cash_detections", [])
             _persons  = ppe_result.get("persons", [])
 
-            # Capture the last theft alert text so we can relay it via WS.
-            # We peek at the tracker BEFORE calling update so we can detect
-            # any NEW alert fired during this update.
-            _tracker = _cm.get_tracker(camera_id)
-            _prev_suspicious = {
-                tid for tid, t in list(_tracker._tracks.items())
-                if t.state.value == "suspicious"
-            }
-
-            _cm.check_cash_zone(
+            _c_res = _cm.check_cash_zone(
                 db=db,
                 camera_id=camera_id,
                 detections=ppe_result.get("detections", []),
                 persons=_persons,
-                cashbox_polygon=None,   # no polygon in pure WS/webcam mode
+                cashbox_polygon=_cashbox_polygon,
                 floor=floor,
                 frame=frame,
+                vendor_polygon=_vendor_polygon,
             )
 
-            # Check if a new SUSPICIOUS event was just confirmed this frame.
-            _new_suspicious = {
-                tid for tid, t in list(_tracker._tracks.items())
-                if t.state.value == "suspicious"
-            } - _prev_suspicious
-
-            if _new_suspicious:
-                _cash_alert_msg = (
-                    "💰 CASH THEFT ALERT — Cash moved toward employee body zone "
-                    "and disappeared without reaching the cashbox. "
-                    "Please review CCTV footage immediately."
-                )
+            if _c_res.get("theft_alert"):
+                _cash_alert_msg = _c_res["theft_alert"]
+            _payee_detected = _c_res.get("payee_detected", False)
+            _payee_snapshot_b64 = _c_res.get("payee_snapshot_b64")
+            _payee_id = _c_res.get("payee_id")
         except Exception as _cm_exc:
             import logging as _log_mod
             _log_mod.getLogger("cctv").debug(
@@ -730,8 +799,11 @@ def _run_combined_inference(
         else None
     )
     # Cash monitoring fields — relayed to the browser via the WS response.
-    merged["cash_detected"] = ppe_result.get("cash_detected", False)
+    merged["cash_detected"] = ppe_result.get("cash_detected", False) or (_cash_alert_msg is not None)
     merged["cash_alert"]    = _cash_alert_msg
+    merged["payee_detected"] = _payee_detected
+    merged["payee_snapshot_b64"] = _payee_snapshot_b64
+    merged["payee_id"] = _payee_id
     merged["source"] = "cctv"
     return merged
 
@@ -924,8 +996,8 @@ async def cctv_detection_websocket(websocket: WebSocket):
             camera = CameraReader(camera_url)
             camera.start()
 
-            # Ramp-up: wait up to 8 s for first frame
-            for _ in range(80):
+            # Ramp-up: wait up to 15 s for first frame (accommodates H.265 GOP keyframe intervals)
+            for _ in range(150):
                 if not state["alive"]:
                     return
                 if camera.latest_frame() is not None:
@@ -933,6 +1005,25 @@ async def cctv_detection_websocket(websocket: WebSocket):
                 if camera.last_error():
                     break
                 await asyncio.sleep(0.1)
+
+            # Auto-fallback: if subtype=0 didn't yield frames, try subtype=1 (substream)
+            if camera.latest_frame() is None and "subtype=0" in camera_url:
+                alt_url = camera_url.replace("subtype=0", "subtype=1")
+                print(f"[CCTV] Subtype 0 timed out, auto-falling back to substream: {alt_url}")
+                camera.stop()
+                await asyncio.sleep(0.3)
+                camera = CameraReader(alt_url)
+                camera.start()
+                for _ in range(100):
+                    if not state["alive"]:
+                        return
+                    if camera.latest_frame() is not None:
+                        display_url = alt_url
+                        print(f"[CCTV] Successfully connected via substream fallback: {alt_url}")
+                        break
+                    if camera.last_error():
+                        break
+                    await asyncio.sleep(0.1)
 
             if camera.last_error():
                 await websocket.send_json({"error": camera.last_error()})
@@ -944,10 +1035,9 @@ async def cctv_detection_websocket(websocket: WebSocket):
                     {
                         "error": (
                             f"No frames received from {camera_url}\n\n"
-                            f"Quick fix: open  {camera_url}  in your PC browser.\n"
-                            f"• If the video loads → reconnect in OccuSafe\n"
-                            f"• If it doesn't load → phone and PC are on different networks\n"
-                            f"• Make sure IP Webcam app shows 'Server started'"
+                            f"Suggestions:\n"
+                            f"• Try substream (subtype=1) for faster, stable streaming.\n"
+                            f"• Verify that camera IP and port 554 are reachable from this machine."
                         )
                     }
                 )
@@ -1058,6 +1148,9 @@ async def cctv_detection_websocket(websocket: WebSocket):
                         "cash_detected": result.get("cash_detected", False),
                         "cash_alert":    result.get("cash_alert"),
                         "cash_alert_saved": False,  # set True below if alert was saved
+                        "payee_detected": result.get("payee_detected", False),
+                        "payee_snapshot_b64": result.get("payee_snapshot_b64"),
+                        "payee_id": result.get("payee_id"),
                         # Uniform monitoring
                         "uniform_detected": any(p.get("has_uniform") for p in result.get("persons", [])),
                         "uniform_violation": any(not p.get("has_uniform", True) for p in result.get("persons", [])),
@@ -1143,6 +1236,12 @@ async def cctv_detection_websocket(websocket: WebSocket):
                     # handle_face_match already deduplicates within the same day.
                     face_res = result.get("face_result") or {}
                     recognized = face_res.get("recognized_employees", {})
+                    if ef:
+                        print(
+                            f"[CCTV-Attn] Frame#{fn} "
+                            f"faces={face_res.get('face_count', 0)} "
+                            f"recognized={recognized}"
+                        )
                     if recognized and ef:
                         from services.attendance_service import \
                             handle_face_match as _attn_hook

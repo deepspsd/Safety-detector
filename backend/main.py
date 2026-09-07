@@ -1,6 +1,11 @@
 import logging
 import os
 
+# Force TCP transport for all OpenCV RTSP streams to prevent UDP packet drop and H.264/H.265 bitstream corruption
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+    "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|stimeout;10000000|max_delay;500000"
+)
+
 from config import settings
 from database import create_tables, ensure_enterprise_schema
 from fastapi import FastAPI

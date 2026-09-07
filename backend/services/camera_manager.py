@@ -523,18 +523,19 @@ class _ManagedCamera:
                             f"[CamMgr] lift_monitor error (cam={self.camera_id}): {lm_exc}"
                         )
 
-                # ── Cash + stock monitor (STRICT CASHBOX ZONE GATE) ───────────
-                # REQ-SHOP-A: only run when a cashbox polygon is ACTUALLY drawn
-                # for this camera. Floor-type alone is insufficient — many shop
-                # cameras have no cashbox in view.
+                # ── Cash + stock monitor (CASHBOX & VENDOR PAYEE) ───────────
                 _cashbox_polygon = (
                     (zones or {}).get("cashbox")
                     or (zones or {}).get("cash_counter")
-                    or (zones or {}).get("payment_desk")
-                    or (zones or {}).get("vendor_desk")
-                    or (zones or {}).get("shop_counter")
+                    or (zones or {}).get("cash_drawer")
                 )
-                if _cashbox_polygon is not None:
+                _vendor_polygon = (
+                    (zones or {}).get("vendor_desk")
+                    or (zones or {}).get("payment_desk")
+                    or (zones or {}).get("shop_counter")
+                    or (zones or {}).get("vendor")
+                )
+                if _cashbox_polygon is not None or _vendor_polygon is not None or self.floor == "shop":
                     try:
                         from services import cash_monitor
 
@@ -546,6 +547,7 @@ class _ManagedCamera:
                             cashbox_polygon=_cashbox_polygon,
                             floor=self.floor,
                             frame=frame,
+                            vendor_polygon=_vendor_polygon,
                         )
                         cash_monitor.check_stock_zone(
                             db=db,

@@ -291,11 +291,13 @@ class MultiModelDetector:
         """Run inference on YOLO model."""
         model = model_info.model
         
+        target_classes = list(model_info.classes.keys()) if model_info.classes else None
         results = model(
             frame,
             verbose=False,
             conf=model_info.conf_threshold,
             iou=settings.NMS_IOU,
+            classes=target_classes,
         )
 
         detections = []
@@ -303,8 +305,10 @@ class MultiModelDetector:
             for box in result.boxes:
                 class_id = int(box.cls[0])
                 
-                # Get class name from model_info.classes or model.names
-                if model_info.classes and class_id in model_info.classes:
+                # If model specifies allowed classes, discard any unlisted class (e.g. tennis racket, non-fall)
+                if model_info.classes:
+                    if class_id not in model_info.classes:
+                        continue
                     label = model_info.classes[class_id]
                 else:
                     label = model.names[class_id] if class_id < len(model.names) else f"class_{class_id}"

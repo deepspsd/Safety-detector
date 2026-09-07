@@ -2,6 +2,28 @@ import os
 
 from pydantic_settings import BaseSettings
 
+_BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_BACKEND_DIR)
+
+
+def _resolve_model_path(env_var: str, default_rel: str) -> str:
+    """Resolve model path from environment variable or project root/backend directory."""
+    val = os.getenv(env_var)
+    if val:
+        if os.path.isabs(val) and os.path.exists(val):
+            return val
+        p_root = os.path.join(_PROJECT_ROOT, val)
+        if os.path.exists(p_root):
+            return p_root
+        p_backend = os.path.join(_BACKEND_DIR, val)
+        if os.path.exists(p_backend):
+            return p_backend
+        return val
+    p_def_root = os.path.normpath(os.path.join(_PROJECT_ROOT, default_rel))
+    if os.path.exists(p_def_root):
+        return p_def_root
+    return os.path.normpath(os.path.join(_BACKEND_DIR, default_rel))
+
 
 class Settings(BaseSettings):
     SECRET_KEY: str = "safety-monitor-super-secret-key-2024-change-in-prod"
@@ -23,19 +45,23 @@ class Settings(BaseSettings):
     ALERT_COOLDOWN: int = 3
     FRAME_SKIP: int = 3  # process every Nth frame in video uploads
 
+    # ── Face Recognition Tuning ──────────────────────────────────────────────
+    FACE_RECOGNITION_TOLERANCE: float = 0.52  # 0.52 = balanced (0.60 = dlib loose, 0.42 = overly strict)
+    FACE_MIN_PIXELS: int = 30  # minimum face bounding box height in pixels
+
     # ── Multi-Model Registry ────────────────────────────────────────────────
     # Controls which AI models are loaded and used for which zones.
     # Set enabled=False to disable a model without removing its config.
     MODEL_REGISTRY: dict = {
         "yolov8x_coco": {
-            "path": "yolov8x.pt",
+            "path": _resolve_model_path("YOLO_MODEL_PATH", os.getenv("YOLO_MODEL", "yolov8x.pt")),
             "type": "yolo",
             "enabled": True,
             "priority": 0,  # PRIMARY - person detection, vehicles, objects
             "conf_threshold": 0.50,
             "target_fps": 10,
             "zones": ["*"],  # All zones
-            "description": "YOLOv8x COCO - General object detection (person, vehicle, etc.)",
+            "description": "YOLOv8x COCO - General object detection (person, vehicle, phone, etc.)",
             "classes": {
                 0: "person", 2: "car", 3: "motorcycle", 5: "bus", 7: "truck",
                 24: "backpack", 26: "handbag", 28: "suitcase", 
@@ -43,13 +69,13 @@ class Settings(BaseSettings):
             }
         },
         "hairnet_glove_detection": {
-            "path": "../portable_models_package/hairnet_glove_detection/best.pt",
+            "path": _resolve_model_path("HAIRNET_MODEL_PATH", "portable_models_package/hairnet_glove_detection/best.pt"),
             "type": "yolo",
             "enabled": True,
             "priority": 1,
-            "conf_threshold": 0.60,
+            "conf_threshold": 0.50,
             "target_fps": 5,
-            "zones": ["dough_mixing", "oven", "packing", "biscuit_cutting", "entrance", "dough_table", "gas_section"],
+            "zones": ["*", "dough_mixing", "oven", "packing", "biscuit_cutting", "entrance", "dough_table", "gas_section", "shop", "shop_counter", "store", "default"],
             "description": "Food safety - hairnet, gloves, hand detection",
             "classes": {
                 0: "Back_Palm", 1: "Front_Palm", 2: "Hair", 
@@ -57,100 +83,71 @@ class Settings(BaseSettings):
             }
         },
         "fall_detection": {
-            "path": "../portable_models_package/fall_detection/best.pt",
+            "path": _resolve_model_path("FALL_MODEL_PATH", "portable_models_package/fall_detection/best.pt"),
             "type": "yolo",
             "enabled": True,
             "priority": 1,
-            "conf_threshold": 0.60,
-            "target_fps": 10,
-            "zones": ["dough_mixing", "oven", "packing", "biscuit_cutting", "entrance", "lift", "gas_section", "dough_table"],
-            "description": "Worker safety - fall detection",
-            "classes": {0: "non-fall", 1: "fall"}
-        },
-        "helmet_detection": {
-            "path": "helmet_model.pt",
-            "type": "yolo",
-            "enabled": False,  # Optional - enable if hardhat required
-            "priority": 2,
             "conf_threshold": 0.50,
-            "target_fps": 5,
-            "zones": ["entrance", "lift"],
-            "description": "Helmet/hardhat detection",
+            "target_fps": 10,
+            "zones": ["*"],
+            "description": "Worker safety - fall detection",
+            "classes": {1: "fall"}
         },
         "cash_detection": {
-            "path": "../portable_models_package/cash_detection/yolo11m_finetuned.pt",
+            "path": _resolve_model_path("CASH_MODEL_PATH", "portable_models_package/cash_detection/yolo11m_finetuned.pt"),
             "type": "yolo",
             "enabled": True,
             "priority": 2,
-            "conf_threshold": 0.60,
+            "conf_threshold": 0.50,
             "target_fps": 3,
-            "zones": ["shop_counter", "cashbox"],
-            "description": "Cash monitoring - banknote detection (EUR/BGN, works generically)",
+            "zones": ["shop_counter", "shop", "cashbox", "cash", "default"],
+            "description": "Cash monitoring - banknote detection (EUR/BGN/currency)",
             "classes": {
                 0: "5 BGN", 1: "10 BGN", 2: "20 BGN", 3: "50 BGN", 4: "100 BGN",
                 5: "5 EUR", 6: "10 EUR", 7: "20 EUR", 8: "50 EUR", 9: "100 EUR"
             }
         },
         "hand_landmarks": {
-            "path": "../portable_models_package/hand_landmarks/hand_landmarker.task",
+            "path": _resolve_model_path("HAND_LANDMARKS_PATH", "portable_models_package/hand_landmarks/hand_landmarker.task"),
             "type": "mediapipe",
-            "enabled": False,  # Phase 2+, expensive compute
+            "enabled": False,  # Phase 2+, expensive compute - enable when MediaPipe hand tracking needed
             "priority": 3,
+            "conf_threshold": 0.50,
             "target_fps": 2,
-            "zones": ["packing", "shop_counter"],
-            "description": "Hand tracking - idle detection, cash-in-pocket",
-        },
-        "person_action_recognition": {
-            "path": "../portable_models_package/person_action",
-            "type": "openvino",
-            "enabled": False,  # Phase 4, R&D
-            "priority": 3,
-            "target_fps": 1,
-            "zones": ["*"],
-            "description": "Action recognition - behavioral analysis",
-        },
-        "machine_visual_anomaly": {
-            "path": "../portable_models_package/machine_visual_anomaly/model_metal_nut_64.pt",
-            "type": "pytorch",
-            "enabled": True,
-            "priority": 2,
-            "conf_threshold": 0.60,
-            "target_fps": 3,
-            "zones": ["dough_mixing", "biscuit_cutting", "cutting_machine"],
-            "description": "Visual Anomaly Detection for Machinery / Metal Parts (MVTec)",
+            "zones": ["packing", "shop_counter", "shop"],
+            "description": "MediaPipe Hand Tracking - Packing movement, idle hands & pocket tracking",
         },
         "machine_sensor_anomaly": {
-            "path": "../portable_models_package/machine_sensor_anomaly/rf_forecast_model.joblib",
-            "scaler_path": "../portable_models_package/machine_sensor_anomaly/scaler.joblib",
+            "path": _resolve_model_path("MACHINE_ANOMALY_MODEL_PATH", "portable_models_package/machine_sensor_anomaly/rf_forecast_model.joblib"),
+            "scaler_path": _resolve_model_path("MACHINE_ANOMALY_SCALER_PATH", "portable_models_package/machine_sensor_anomaly/scaler.joblib"),
             "type": "sklearn",
             "enabled": True,
             "priority": 2,
             "conf_threshold": 0.50,
             "target_fps": 2,
             "zones": ["dough_mixing", "biscuit_cutting", "cutting_machine"],
-            "description": "IoT Sensor Anomaly Detection - Predictive Maintenance (needs real sensor data)",
+            "description": "IoT Sensor Anomaly Detection - Predictive Maintenance",
         },
-        # OLD MODEL - DEPRECATED
-        "ppe_factory_v0_cash": {
-            "path": "ppe_factory_v0_cash.pt",
-            "type": "yolo",
-            "enabled": False,  # DISABLED - replaced by yolov8x_coco + specialized models
-            "priority": 99,
-            "conf_threshold": 0.60,
-            "target_fps": 10,
-            "zones": ["*"],
-            "description": "[DEPRECATED] Old PPE model - disabled",
-        },
-        # Temporal action recognition - throwing / aggressive motion detection
         "object_throwing": {
-            "path": "../portable_models_package/object_throwing/TRN_somethingv2_RGB_BNInception_TRNmultiscale_segment8_best.pth.tar",
+            "path": _resolve_model_path("OBJECT_THROWING_PATH", "portable_models_package/object_throwing/TRN_somethingv2_RGB_BNInception_TRNmultiscale_segment8_best.pth.tar"),
             "type": "pytorch_trn",  # custom dispatch in multi_model_detector
-            "enabled": True,
+            "enabled": False,  # state_dict only checkpoint - disabled to prevent startup latency
             "priority": 2,
             "conf_threshold": 0.60,
             "target_fps": 2,
-            "zones": ["entrance", "shop_counter", "cashbox", "lift"],
-            "description": "TRN temporal action recognition - throwing / aggressive motion detection",
+            "zones": ["entrance", "shop_counter", "shop", "cashbox", "lift"],
+            "description": "TRN temporal action recognition - throwing / window goods theft",
+        },
+        "person_action_recognition": {
+            "path": _resolve_model_path("PERSON_ACTION_MODEL_PATH", "portable_models_package/person_action"),
+            "type": "openvino",
+            "enabled": False,  # OpenVINO person action model - disabled by default to save CPU
+            "precision": "FP16",
+            "priority": 3,
+            "conf_threshold": 0.50,
+            "target_fps": 2,
+            "zones": ["entrance", "shop_counter", "shop", "packing", "lift"],
+            "description": "OpenVINO Person Detection + Action Recognition",
         },
     }
 
@@ -158,18 +155,25 @@ class Settings(BaseSettings):
     # Defines which models should run for each zone type.
     # This is a convenience map; the actual routing uses MODEL_REGISTRY zones field.
     ZONE_MODEL_MAP: dict = {
-        "entrance":         ["yolov8x_coco", "hairnet_glove_detection", "fall_detection", "object_throwing"],
-        "dough_mixing":     ["yolov8x_coco", "hairnet_glove_detection", "fall_detection", "machine_visual_anomaly", "machine_sensor_anomaly"],
+        "entrance":         ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
+        "dough_mixing":     ["yolov8x_coco", "hairnet_glove_detection", "fall_detection", "machine_sensor_anomaly"],
         "dough_table":      ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
         "oven":             ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
-        "biscuit_cutting":  ["yolov8x_coco", "hairnet_glove_detection", "fall_detection", "machine_visual_anomaly", "machine_sensor_anomaly"],
-        "cutting_machine":  ["yolov8x_coco", "hairnet_glove_detection", "fall_detection", "machine_visual_anomaly", "machine_sensor_anomaly"],
-        "packing":          ["yolov8x_coco", "hairnet_glove_detection"],
-        "shop_counter":     ["yolov8x_coco", "cash_detection", "object_throwing"],
-        "lift":             ["yolov8x_coco", "fall_detection", "object_throwing"],
+        "biscuit_cutting":  ["yolov8x_coco", "hairnet_glove_detection", "fall_detection", "machine_sensor_anomaly"],
+        "cutting_machine":  ["yolov8x_coco", "hairnet_glove_detection", "fall_detection", "machine_sensor_anomaly"],
+        "packing":          ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
+        "shop":             ["yolov8x_coco", "hairnet_glove_detection", "fall_detection", "cash_detection"],
+        "shop_counter":     ["yolov8x_coco", "hairnet_glove_detection", "fall_detection", "cash_detection"],
+        "cashbox":          ["yolov8x_coco", "cash_detection"],
+        "lift":             ["yolov8x_coco", "fall_detection"],
         "gas_section":      ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
-        "cashbox":          ["yolov8x_coco", "cash_detection", "object_throwing"],
-        "default":          ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
+        "passage":          ["yolov8x_coco", "fall_detection"],
+        "store":            ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
+        "raw_material":     ["yolov8x_coco", "fall_detection"],
+        "ground":           ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
+        "first_floor":      ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
+        "second_floor":     ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
+        "default":          ["yolov8x_coco", "hairnet_glove_detection", "fall_detection", "cash_detection"],
     }
 
     # ── Model Performance Tuning ────────────────────────────────────────────
@@ -178,10 +182,11 @@ class Settings(BaseSettings):
         "yolov8x_coco": 10,             # Primary: 10 FPS
         "hairnet_glove_detection": 5,   # Secondary: 5 FPS
         "fall_detection": 10,           # Safety-critical: 10 FPS
-        "helmet_detection": 5,          # Optional: 5 FPS
         "cash_detection": 3,            # Shop only: 3 FPS
-        "hand_landmarks": 2,            # Expensive: 2 FPS
-        "person_action_recognition": 1, # Very expensive: 1 FPS
+        "machine_sensor_anomaly": 2,    # Machine IoT: 2 FPS
+        "hand_landmarks": 2,            # Optional MediaPipe: 2 FPS
+        "object_throwing": 2,           # Optional TRN: 2 FPS
+        "person_action_recognition": 2, # Optional OpenVINO: 2 FPS
     }
 
     # Detection fusion - merge overlapping detections from multiple models
@@ -190,25 +195,71 @@ class Settings(BaseSettings):
 
     # Class mapping for detection fusion (map different class names to canonical violation types)
     VIOLATION_CLASS_MAPPING: dict = {
-        # Hair/head violations
+        # Hair / headcap violations & compliant
         "Hair": "no_hair_cover",
         "NO-Hairnet": "no_hair_cover",
+        "no_hairnet": "no_hair_cover",
         "NO-Bakery-Head-Cap": "no_hair_cover",
-        # Glove violations  
+        "Hair_Cover": "hair_cover_ok",
+        "Bakery-Head-Cap": "hair_cover_ok",
+        "hair_cover_ok": "hair_cover_ok",
+
+        # Hand / glove violations & compliant
         "Back_Palm": "no_gloves",
         "Front_Palm": "no_gloves",
         "NO-Gloves": "no_gloves",
-        # Compliant (keep for reverse mapping)
-        "Hair_Cover": "hair_cover_ok",
+        "no_gloves": "no_gloves",
         "Hand_Gloves": "gloves_ok",
-        # Fall detection
-        "fall": "worker_fall",
-        # Mask violations
+        "Gloves": "gloves_ok",
+        "gloves_ok": "gloves_ok",
+
+        # Bangles (strict food safety violation)
+        "Bangles": "bangles",
+        "bangles": "bangles",
+
+        # Uniform violations & compliant
+        "NO-Uniform": "no_uniform",
+        "NON_UNIFORM": "no_uniform",
+        "Uniform": "uniform_ok",
+        "UNIFORM": "uniform_ok",
+
+        # Mask violations & compliant
         "NO-Mask": "no_mask",
-        # Hardhat violations
+        "Mask": "mask_ok",
+
+        # Worker fall detection
+        "fall": "worker_fall",
+        "Worker Fall": "worker_fall",
+        "worker_fall": "worker_fall",
+
+        # Machinery anomaly detection
+        "Machine Anomaly": "machine_anomaly",
+        "Machine_Sensor_Anomaly": "machine_anomaly",
+        "anomaly": "machine_anomaly",
+
+        # Currency / Cash monitoring
+        "Cash": "cash",
+        "cash": "cash",
+        "5 BGN": "cash", "10 BGN": "cash", "20 BGN": "cash", "50 BGN": "cash", "100 BGN": "cash",
+        "5 EUR": "cash", "10 EUR": "cash", "20 EUR": "cash", "50 EUR": "cash", "100 EUR": "cash",
+
+        # Action / Throwing / Motion
+        "Object Throwing": "object_throwing",
+        "object_throwing": "object_throwing",
+        "Object_Throwing": "object_throwing",
+
+        # Hand landmarks
+        "Hand-0": "hand",
+        "Hand-1": "hand",
+
+        # Construction PPE (legacy compatibility)
         "NO-Hardhat": "no_hardhat",
-        # Safety vest violations
+        "Hardhat": "hardhat_ok",
         "NO-Safety Vest": "no_safety_vest",
+        "Safety Vest": "safety_vest_ok",
+        "NO-Goggles": "no_goggles",
+        "NO-Safety Shoes": "no_safety_shoes",
+        "NO-ID Card": "no_id_card",
     }
 
     # ── Bakery Head-Cap compliance ───────────────────────────────────────────
@@ -230,11 +281,14 @@ class Settings(BaseSettings):
     }
     IDLE_MOVEMENT_THRESHOLD_PX: int = 8
 
-    # ── Push notifications ──────────────────────────────────────────────────
-    TELEGRAM_BOT_TOKEN: str = ""  # set in .env — never commit
-    TELEGRAM_CHAT_ID: str = ""
-    NTFY_TOPIC: str = ""          # primary channel — e.g. "bakery-alerts-xyz"
-    NTFY_SERVER: str = "https://ntfy.sh"
+    # ── Push notifications (FCM HTTP v1) ──────────────────────────────────
+    # Firebase project ID (e.g. occusafe-4f0c8)
+    FCM_PROJECT_ID: str = "occusafe-4f0c8"
+    # Path to the downloaded service account JSON key file
+    # Firebase Console → Project Settings → Service Accounts → Generate new private key
+    FCM_SERVICE_ACCOUNT_PATH: str = "firebase_service_account.json"
+    # Seconds between repeated push notifications for the same (camera, issue_type).
+    FCM_NOTIFICATION_COOLDOWN_SEC: int = 120
 
     # ── Security ────────────────────────────────────────────────────────────
     APP_ENV: str = "development"

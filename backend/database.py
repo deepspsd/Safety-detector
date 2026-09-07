@@ -77,6 +77,9 @@ class User(Base):
     face_encodings = relationship(
         "FaceEncoding", back_populates="user", cascade="all, delete-orphan"
     )
+    fcm_tokens = relationship(
+        "FcmToken", back_populates="user", cascade="all, delete-orphan"
+    )
 
 
 class Alert(Base):
@@ -171,6 +174,27 @@ class FaceEncoding(Base):
     user = relationship("User", back_populates="face_encodings")
     # Back-reference: employees that use this encoding for face-match
     employees = relationship("Employee", back_populates="face_encoding")
+
+
+class FcmToken(Base):
+    """
+    FCM device token registered by a browser / mobile app.
+    Each user can have multiple tokens (phone + tablet + desktop).
+    Tokens are upserted on each login so stale ones are auto-refreshed.
+    """
+
+    __tablename__ = "fcm_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    # FCM registration token (unique per browser/device)
+    token = Column(String(512), unique=True, nullable=False, index=True)
+    # Optional human-readable label (e.g. "Chrome on iPhone", "Edge on laptop")
+    device_name = Column(String(200), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", back_populates="fcm_tokens")
 
 
 # ──────────────────────────────────────────────────────────────────────────────

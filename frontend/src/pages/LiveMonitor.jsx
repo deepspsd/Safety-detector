@@ -23,96 +23,97 @@ function getWsBaseURL() {
 }
 
 const WS_BASE_URL = getWsBaseURL()
-const WS_URL      = `${WS_BASE_URL}/ws/detect`
+const WS_URL = `${WS_BASE_URL}/ws/detect`
 const CCTV_WS_URL = `${WS_BASE_URL}/ws/detect-cctv`
 const FRAME_INTERVAL = 80 // ms -> ~12.5 fps
 
 // Role rule descriptions for the info panel
 const ROLE_PPE_RULES = {
-  'Bakery Worker':       ['Head Cap required', 'Uniform required', 'Face Mask required', 'Gloves required', 'No Bangles (food safety)'],
-  'Factory Worker':      ['Head Cap required', 'Uniform required', 'No Bangles (food safety)'],
-  'Doctor':              ['Mask required', 'Gloves required'],
-  'Traffic Police':      ['Helmet required'],
+  'Bakery Worker': ['Head Cap required', 'Uniform required', 'Face Mask required', 'Gloves required', 'No Bangles (food safety)'],
+  'Factory Worker': ['Head Cap required', 'Uniform required', 'No Bangles (food safety)'],
+  'Doctor': ['Mask required', 'Gloves required'],
+  'Traffic Police': ['Helmet required'],
   'Construction Worker': ['Hardhat required', 'Safety Vest required', 'Mask required', 'Gloves required', 'Goggles required', 'Safety Shoes required'],
-  'College':             ['ID Card required', 'Uniform required'],
-  'Home':                ['Face recognition - unknown persons trigger alert'],
+  'College': ['ID Card required', 'Uniform required'],
+  'Home': ['Face recognition - unknown persons trigger alert'],
 }
 
 // All filterable PPE classes (used for manual toggle UI)
 const PPE_FILTERS = [
-  { id: 'NO-Bakery-Head-Cap', label: 'Head Cap',      icon: '🧢' },
-  { id: 'NO-Uniform',         label: 'Uniform',       icon: '👕' },
-  { id: 'Bangles',            label: 'Bangles (ban)', icon: '🚨' },
-  { id: 'Cash',               label: 'Cash',          icon: '💵' },
-  { id: 'Cylinder',           label: 'Cylinder',      icon: '🛢️' },
-  { id: 'NO-Hardhat',         label: 'Hardhat',       icon: '👷' },
-  { id: 'NO-Safety Vest',     label: 'Safety Vest',   icon: '🦺' },
-  { id: 'NO-Mask',            label: 'Mask',          icon: '😷' },
-  { id: 'NO-Gloves',          label: 'Gloves',        icon: '🧤' },
-  { id: 'NO-Goggles',         label: 'Goggles',       icon: '🥽' },
-  { id: 'NO-Safety Shoes',    label: 'Safety Shoes',  icon: '👟' },
-  { id: 'NO-ID Card',         label: 'ID Card',       icon: '🪪' },
+  { id: 'NO-Bakery-Head-Cap', label: 'Head Cap', icon: '🧢' },
+  { id: 'NO-Uniform', label: 'Uniform', icon: '👕' },
+  { id: 'Bangles', label: 'Bangles (ban)', icon: '🚨' },
+  { id: 'Cash', label: 'Cash', icon: '💵' },
+  { id: 'Cylinder', label: 'Cylinder', icon: '🛢️' },
+  { id: 'NO-Hardhat', label: 'Hardhat', icon: '👷' },
+  { id: 'NO-Safety Vest', label: 'Safety Vest', icon: '🦺' },
+  { id: 'NO-Mask', label: 'Mask', icon: '😷' },
+  { id: 'NO-Gloves', label: 'Gloves', icon: '🧤' },
+  { id: 'NO-Goggles', label: 'Goggles', icon: '🥽' },
+  { id: 'NO-Safety Shoes', label: 'Safety Shoes', icon: '👟' },
+  { id: 'NO-ID Card', label: 'ID Card', icon: '🪪' },
 ]
 
 // Role → default filter set sent at WebSocket handshake.
 // MUST match the violation class names the backend model actually emits.
 const ROLE_FILTERS = {
-  'Bakery Worker':       ['NO-Bakery-Head-Cap', 'NO-Uniform', 'Bangles', 'NO-Mask'],
+  'Bakery Worker': ['NO-Bakery-Head-Cap', 'NO-Uniform', 'NO-Gloves', 'Bangles', 'NO-Mask'],
   'Construction Worker': ['NO-Hardhat', 'NO-Safety Vest', 'NO-Mask', 'NO-Gloves', 'NO-Goggles', 'NO-Safety Shoes'],
-  'Doctor':              ['NO-Mask', 'NO-Gloves'],
-  'Traffic Police':      ['NO-Hardhat'],
-  'College':             ['NO-ID Card', 'NO-Uniform'],
-  'Home':                [],
-  'None':                [],   // seeded from saved custom PPE items
-  'Factory Worker':      ['NO-Bakery-Head-Cap', 'NO-Uniform', 'Bangles'],
+  'Doctor': ['NO-Mask', 'NO-Gloves'],
+  'Traffic Police': ['NO-Hardhat'],
+  'College': ['NO-ID Card', 'NO-Uniform'],
+  'Home': [],
+  'None': [],   // seeded from saved custom PPE items
+  'Factory Worker': ['NO-Bakery-Head-Cap', 'NO-Uniform', 'Bangles'],
 }
 
 // Severity badge colours
 const SEV_CLASS = {
   critical: 'badge-critical',
-  high:     'badge-high',
-  medium:   'badge-medium',
-  low:      'badge-low',
+  high: 'badge-high',
+  medium: 'badge-medium',
+  low: 'badge-low',
 }
 
 export default function LiveMonitor() {
   const { user, customPpeItems, noPhoneZone: savedNoPhoneZone } = useAuth()
   const { addToast } = useToast()
 
-  const [mode,           setMode]           = useState('webcam')
-  const [rtspUrl,        setRtspUrl]        = useState('')
-  const [streaming,      setStreaming]      = useState(false)
-  const [connected,      setConnected]      = useState(false)
-  const [currentAlert,   setCurrentAlert]   = useState(null)
-  const [detectionInfo,  setDetectionInfo]  = useState(null)
-  const [frameCount,     setFrameCount]     = useState(0)
+  const [mode, setMode] = useState('webcam')
+  const [rtspUrl, setRtspUrl] = useState('')
+  const [streaming, setStreaming] = useState(false)
+  const [connected, setConnected] = useState(false)
+  const [currentAlert, setCurrentAlert] = useState(null)
+  const [detectionInfo, setDetectionInfo] = useState(null)
+  const [frameCount, setFrameCount] = useState(0)
   const [uploadProgress, setUploadProgress] = useState(0)
-  const [jobStatus,      setJobStatus]      = useState(null)
-  const [modelMode,      setModelMode]      = useState('')
+  const [jobStatus, setJobStatus] = useState(null)
+  const [modelMode, setModelMode] = useState('')
   // CCTV extras
-  const [camFps,         setCamFps]         = useState(0)
-  const [faceResult,     setFaceResult]     = useState(null)
-  const [enableFace,     setEnableFace]     = useState(true)  // face recognition toggle
+  const [camFps, setCamFps] = useState(0)
+  const [faceResult, setFaceResult] = useState(null)
+  const [enableFace, setEnableFace] = useState(true)  // face recognition toggle
   // Phone detection state — default ON so detection works immediately
-  const [noPhoneZone,    setNoPhoneZone]    = useState(savedNoPhoneZone !== undefined ? !!savedNoPhoneZone : true)
-  const [phoneStatus,    setPhoneStatus]    = useState('safe')
+  const [noPhoneZone, setNoPhoneZone] = useState(savedNoPhoneZone !== undefined ? !!savedNoPhoneZone : true)
+  const [phoneStatus, setPhoneStatus] = useState('safe')
   // Cash monitoring state
-  const [cashAlert,      setCashAlert]      = useState(null)  // theft alert message | null
+  const [cashAlert, setCashAlert] = useState(null)  // theft alert message | null
+  const [payeeData, setPayeeData] = useState(null)  // { snapshot, id, time }
   // Active zone state — resolved from camera DB or sent by server
-  const [activeZone,     setActiveZone]     = useState('default')
+  const [activeZone, setActiveZone] = useState('default')
   // IMPORTANT: Do NOT fall back to PPE_FILTERS.map(f=>f.id) for known roles —
   // that was sending 8 construction filters to Bakery Worker users.
   const getFiltersForRole = (role) => {
-    if (!role)                          return []           // wait for auth
+    if (!role) return []           // wait for auth
     if (role === 'None') {
-      if (customPpeItems?.length)       return customPpeItems
+      if (customPpeItems?.length) return customPpeItems
       return []                                            // custom — user sets them
     }
     return ROLE_FILTERS[role] ?? []    // unknown role → empty (no false positives)
   }
 
-  const [activeFilters,  setActiveFilters]  = useState(() => getFiltersForRole(user?.role))
-  const [showFilters,    setShowFilters]    = useState(false)
+  const [activeFilters, setActiveFilters] = useState(() => getFiltersForRole(user?.role))
+  const [showFilters, setShowFilters] = useState(false)
   // keep enableFace in a ref so WS callbacks always read latest value
   const enableFaceRef = useRef(enableFace)
   useEffect(() => { enableFaceRef.current = enableFace }, [enableFace])
@@ -124,14 +125,14 @@ export default function LiveMonitor() {
   // Phone status latch — hold alert state for 2.5s to prevent flickering
   const phoneStatusLatchRef = useRef({ status: 'safe', until: 0 })
 
-  const videoRef        = useRef(null)   // live webcam element (always plays)
-  const canvasRef       = useRef(null)   // display-only: shows annotated frames from WS
-  const captureRef      = useRef(null)   // hidden: captures raw frames to send to WS
-  const cctvImgRef      = useRef(null)   // <img> showing raw MJPEG CCTV stream
-  const wsRef           = useRef(null)
-  const streamRef       = useRef(null)
-  const intervalRef     = useRef(null)
-  const pollRef         = useRef(null)
+  const videoRef = useRef(null)   // live webcam element (always plays)
+  const canvasRef = useRef(null)   // display-only: shows annotated frames from WS
+  const captureRef = useRef(null)   // hidden: captures raw frames to send to WS
+  const cctvImgRef = useRef(null)   // <img> showing raw MJPEG CCTV stream
+  const wsRef = useRef(null)
+  const streamRef = useRef(null)
+  const intervalRef = useRef(null)
+  const pollRef = useRef(null)
   const hasAnnotatedRef = useRef(false)  // true once first annotated frame received
   // Ref always holds the LATEST activeFilters — avoids stale closure in ws callbacks
   const activeFiltersRef = useRef(activeFilters)
@@ -154,7 +155,7 @@ export default function LiveMonitor() {
     // Remove unused setFiltersReady
 
     console.log(`[ROLE FILTERS] ✅ role=${user.role} →`, correct)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.role])
 
   // —————————————————————————————————————————————————————————————————————————————
@@ -197,13 +198,13 @@ export default function LiveMonitor() {
       // Phone status with 5s hold — prevents rapid flickering
       // Timer resets on EVERY non-safe detection so alert stays while phone is visible.
       if (data.phone_status) {
-        const now      = Date.now()
-        const latch    = phoneStatusLatchRef.current
+        const now = Date.now()
+        const latch = phoneStatusLatchRef.current
         const incoming = data.phone_status
-        const HOLD_MS  = 5000
+        const HOLD_MS = 5000
         const priority = { zone_violation: 3, calling: 3, in_hand: 2, safe: 1 }
-        const inPri    = priority[incoming] || 1
-        const latPri   = priority[latch.status] || 1
+        const inPri = priority[incoming] || 1
+        const latPri = priority[latch.status] || 1
 
         if (incoming !== 'safe') {
           // Phone detected: always upgrade to higher/equal severity and RESET hold timer
@@ -246,15 +247,32 @@ export default function LiveMonitor() {
       }
 
       setDetectionInfo({
-        isCompliant:      data.is_compliant,
-        missing:          data.missing_items || [],
-        detections:       _dets,
-        persons:          data.persons       || [],
-        violationsCount:  data.violations_count ?? 0,
-        personsCount:     data.persons_count    ?? 0,
-        phoneDetected:    data.phone_detected   ?? false,
-        phoneStatus:      data.phone_status     || 'safe',
+        isCompliant: data.is_compliant,
+        missing: data.missing_items || [],
+        detections: _dets,
+        persons: data.persons || [],
+        violationsCount: data.violations_count ?? 0,
+        personsCount: data.persons_count ?? 0,
+        phoneDetected: data.phone_detected ?? false,
+        phoneStatus: data.phone_status || 'safe',
+        cashDetected: data.cash_detected ?? false,
       })
+
+      if (data.cash_alert) {
+        setCashAlert(data.cash_alert)
+        addToast('💰 Cash Theft Alert!', data.cash_alert, 'danger', 8000)
+      } else if (data.cash_detected === false && cashAlert) {
+        setCashAlert(null)
+      }
+
+      if (data.payee_snapshot_b64) {
+        setPayeeData({
+          snapshot: data.payee_snapshot_b64,
+          id: data.payee_id || 'Vendor/Payee',
+          time: new Date().toLocaleTimeString(),
+        })
+        addToast('📸 Payee Photo Logged', 'Vendor payee photo captured during cash exchange', 'info', 5000)
+      }
 
       // Draw annotated frame onto the DISPLAY canvas.
       // captureRef handles sending; canvasRef shows bounding boxes.
@@ -266,7 +284,7 @@ export default function LiveMonitor() {
           if (!cv) return
           // Resize canvas to match frame if needed
           if (img.width > 0 && cv.width !== img.width) {
-            cv.width  = img.width
+            cv.width = img.width
             cv.height = img.height
           }
           const ctx = cv.getContext('2d')
@@ -309,9 +327,9 @@ export default function LiveMonitor() {
       intervalRef.current = setInterval(() => {
         if (!videoRef.current || !captureRef.current || !wsRef.current) return
         if (wsRef.current.readyState !== WebSocket.OPEN) return
-        const vw = videoRef.current.videoWidth  || 640
+        const vw = videoRef.current.videoWidth || 640
         const vh = videoRef.current.videoHeight || 480
-        captureRef.current.width  = vw
+        captureRef.current.width = vw
         captureRef.current.height = vh
         const ctx = captureRef.current.getContext('2d')
         ctx.drawImage(videoRef.current, 0, 0, vw, vh)
@@ -338,8 +356,8 @@ export default function LiveMonitor() {
       return
     }
 
-    const isHttp  = url.startsWith('http://')  || url.startsWith('https://')
-    const isRtsp  = url.startsWith('rtsp://')  || url.startsWith('rtsps://')
+    const isHttp = url.startsWith('http://') || url.startsWith('https://')
+    const isRtsp = url.startsWith('rtsp://') || url.startsWith('rtsps://')
     if (!isHttp && !isRtsp) {
       addToast('Invalid URL', 'URL must start with http:// or rtsp://', 'danger')
       return
@@ -349,7 +367,7 @@ export default function LiveMonitor() {
     if (isHttp) {
       try {
         const parsed = new URL(url)
-        const host   = parsed.hostname
+        const host = parsed.hostname
         // If it looks like an IP (all digits and dots), validate each octet
         if (/^[\d.]+$/.test(host)) {
           const octets = host.split('.')
@@ -396,10 +414,10 @@ export default function LiveMonitor() {
     ws.onopen = () => {
       ws.send(JSON.stringify({
         token,
-        camera_url:    rtspUrl.trim(),
-        filters:       activeFiltersRef.current,
+        camera_url: rtspUrl.trim(),
+        filters: activeFiltersRef.current,
         no_phone_zone: noPhoneZoneRef.current,
-        enable_face:   enableFaceRef.current,
+        enable_face: enableFaceRef.current,
       }))
     }
 
@@ -419,7 +437,7 @@ export default function LiveMonitor() {
 
       setFrameCount(f => f + 1)
       if (data.model_mode) setModelMode(data.model_mode)
-      if (data.cam_fps  !== undefined) setCamFps(data.cam_fps)
+      if (data.cam_fps !== undefined) setCamFps(data.cam_fps)
       if (data.face_result) setFaceResult(data.face_result)
 
       // Phone status latch
@@ -462,15 +480,15 @@ export default function LiveMonitor() {
       }
 
       setDetectionInfo({
-        isCompliant:     data.is_compliant,
-        missing:         data.missing_items    || [],
-        detections:      _cctvDets,
-        persons:         data.persons          || [],
+        isCompliant: data.is_compliant,
+        missing: data.missing_items || [],
+        detections: _cctvDets,
+        persons: data.persons || [],
         violationsCount: data.violations_count ?? 0,
-        personsCount:    data.persons_count    ?? 0,
-        phoneDetected:   data.phone_detected   ?? false,
-        phoneStatus:     data.phone_status     || 'safe',
-        cashDetected:    data.cash_detected    ?? false,
+        personsCount: data.persons_count ?? 0,
+        phoneDetected: data.phone_detected ?? false,
+        phoneStatus: data.phone_status || 'safe',
+        cashDetected: data.cash_detected ?? false,
       })
 
       // Cash theft alert banner — show when server fires a theft event
@@ -480,6 +498,15 @@ export default function LiveMonitor() {
       } else if (!data.cash_alert && cashAlert) {
         // Clear only when the server explicitly sends no alert (not on empty frames)
         if (data.cash_detected === false) setCashAlert(null)
+      }
+
+      if (data.payee_snapshot_b64) {
+        setPayeeData({
+          snapshot: data.payee_snapshot_b64,
+          id: data.payee_id || 'Vendor/Payee',
+          time: new Date().toLocaleTimeString(),
+        })
+        addToast('📸 Payee Photo Logged', 'Vendor payee photo captured during cash exchange', 'info', 5000)
       }
 
       // Draw backend-annotated frame (PPE + face boxes already merged)
@@ -508,9 +535,9 @@ export default function LiveMonitor() {
     intervalRef.current = setInterval(() => {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({
-          filters:       activeFiltersRef.current,
+          filters: activeFiltersRef.current,
           no_phone_zone: noPhoneZoneRef.current,
-          enable_face:   enableFaceRef.current,
+          enable_face: enableFaceRef.current,
         }))
       }
     }, 2000)
@@ -547,7 +574,7 @@ export default function LiveMonitor() {
     setUploadProgress(0); setJobStatus(null)
     try {
       const res = await videoApi.upload(file, setUploadProgress)
-      const id  = res.data.job_id
+      const id = res.data.job_id
       // Remove unused setJobId
       setJobStatus({ status: 'processing', progress: 0 })
       addToast('Video uploaded', 'Violation scanning started…', 'info')
@@ -588,8 +615,10 @@ export default function LiveMonitor() {
           <p className="page-subtitle">
             Real-time violation detection · Role: <strong style={{ color: 'var(--accent-blue)' }}>{user?.role || 'Not set'}</strong>
             {modelMode && (
-              <span style={{ marginLeft: 10, fontSize: '0.72rem', color: 'var(--text-muted)',
-                background: 'rgba(255,255,255,0.06)', padding: '2px 8px', borderRadius: 99 }}>
+              <span style={{
+                marginLeft: 10, fontSize: '0.72rem', color: 'var(--text-muted)',
+                background: 'rgba(255,255,255,0.06)', padding: '2px 8px', borderRadius: 99
+              }}>
                 {modelMode === 'ppe.pt' ? '🎯 ppe.pt' : modelMode === 'simulation' ? '🔵 Simulation' : `⚙️ ${modelMode}`}
               </span>
             )}
@@ -614,22 +643,24 @@ export default function LiveMonitor() {
         marginBottom: 16, padding: '10px 14px', borderRadius: 10,
         background: 'var(--bg-secondary)', border: '1px solid var(--border)',
       }}>
-        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
-          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-            <span style={{ fontSize:'0.78rem', fontWeight:700, color:'var(--text-muted)', letterSpacing:'0.05em' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.05em' }}>
               DETECTION FILTERS
             </span>
-            <span style={{ fontSize:'0.72rem', color:'var(--text-muted)', background:'var(--bg-card)',
-              padding:'1px 7px', borderRadius:99, border:'1px solid var(--border)' }}>
+            <span style={{
+              fontSize: '0.72rem', color: 'var(--text-muted)', background: 'var(--bg-card)',
+              padding: '1px 7px', borderRadius: 99, border: '1px solid var(--border)'
+            }}>
               {activeFilters.length}/{PPE_FILTERS.length} active
             </span>
           </div>
-          <div style={{ display:'flex', gap:6 }}>
-            <button className="btn btn-ghost btn-sm" style={{ padding:'3px 10px', fontSize:'0.72rem' }}
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button className="btn btn-ghost btn-sm" style={{ padding: '3px 10px', fontSize: '0.72rem' }}
               onClick={() => setActiveFilters(PPE_FILTERS.map(f => f.id))}>All</button>
-            <button className="btn btn-ghost btn-sm" style={{ padding:'3px 10px', fontSize:'0.72rem' }}
+            <button className="btn btn-ghost btn-sm" style={{ padding: '3px 10px', fontSize: '0.72rem' }}
               onClick={() => setActiveFilters([])}>None</button>
-            <button className="btn btn-ghost btn-sm" style={{ padding:'3px 10px', fontSize:'0.72rem' }}
+            <button className="btn btn-ghost btn-sm" style={{ padding: '3px 10px', fontSize: '0.72rem' }}
               onClick={() => setShowFilters(s => !s)}>
               {showFilters ? '▲ Hide' : '▼ Edit'}
             </button>
@@ -638,7 +669,7 @@ export default function LiveMonitor() {
 
         {/* Expanded toggle grid */}
         {showFilters && (
-          <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginTop:12 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
             {PPE_FILTERS.map(f => {
               const on = activeFilters.includes(f.id)
               return (
@@ -647,19 +678,19 @@ export default function LiveMonitor() {
                     on ? prev.filter(x => x !== f.id) : [...prev, f.id]
                   )}
                   style={{
-                    display:'flex', alignItems:'center', gap:6,
-                    padding:'7px 14px', borderRadius:99, cursor:'pointer',
-                    fontSize:'0.82rem', fontWeight:600,
-                    border:`1px solid ${on ? 'rgba(249,115,22,0.5)' : 'var(--border)'}`,
+                    display: 'flex', alignItems: 'center', gap: 6,
+                    padding: '7px 14px', borderRadius: 99, cursor: 'pointer',
+                    fontSize: '0.82rem', fontWeight: 600,
+                    border: `1px solid ${on ? 'rgba(249,115,22,0.5)' : 'var(--border)'}`,
                     background: on ? 'rgba(249,115,22,0.12)' : 'var(--bg-card)',
                     color: on ? '#fb923c' : 'var(--text-muted)',
-                    transition:'all 0.15s',
+                    transition: 'all 0.15s',
                   }}>
-                  <span style={{ fontSize:'1rem' }}>{f.icon}</span>
+                  <span style={{ fontSize: '1rem' }}>{f.icon}</span>
                   {f.label}
                   {on
-                    ? <span style={{ width:7, height:7, borderRadius:'50%', background:'#fb923c', flexShrink:0 }} />
-                    : <span style={{ width:7, height:7, borderRadius:'50%', background:'var(--border)', flexShrink:0 }} />}
+                    ? <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#fb923c', flexShrink: 0 }} />
+                    : <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--border)', flexShrink: 0 }} />}
                 </button>
               )
             })}
@@ -668,7 +699,7 @@ export default function LiveMonitor() {
 
         {/* Collapsed chip strip */}
         {!showFilters && (
-          <div style={{ display:'flex', flexWrap:'wrap', gap:5, marginTop:8 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 8 }}>
             {PPE_FILTERS.map(f => {
               const on = activeFilters.includes(f.id)
               return (
@@ -678,11 +709,11 @@ export default function LiveMonitor() {
                   )}
                   title={on ? `Disable ${f.label} detection` : `Enable ${f.label} detection`}
                   style={{
-                    fontSize:'0.7rem', padding:'3px 9px', borderRadius:99, cursor:'pointer',
-                    border:`1px solid ${on ? 'rgba(249,115,22,0.35)' : 'var(--border)'}`,
+                    fontSize: '0.7rem', padding: '3px 9px', borderRadius: 99, cursor: 'pointer',
+                    border: `1px solid ${on ? 'rgba(249,115,22,0.35)' : 'var(--border)'}`,
                     background: on ? 'rgba(249,115,22,0.08)' : 'transparent',
                     color: on ? '#fb923c' : 'var(--text-muted)',
-                    transition:'all 0.12s',
+                    transition: 'all 0.12s',
                   }}>
                   {f.icon} {f.label}
                 </button>
@@ -692,44 +723,46 @@ export default function LiveMonitor() {
         )}
 
         {/* ————————————————————————————————————————————————————————————————————————————— */}
-        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
-          borderTop:'1px solid var(--border)', marginTop:10, paddingTop:10 }}>
-          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-            <span style={{ fontSize:'1rem' }}>📱</span>
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          borderTop: '1px solid var(--border)', marginTop: 10, paddingTop: 10
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: '1rem' }}>📱</span>
             <div>
-              <div style={{ fontSize:'0.82rem', fontWeight:700, color:'var(--text-primary)' }}>
+              <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-primary)' }}>
                 No Phone Zone
               </div>
-              <div style={{ fontSize:'0.7rem', color:'var(--text-muted)' }}>
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
                 Any phone detected triggers alert
               </div>
             </div>
           </div>
-          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             {/* Phone status badge — always visible */}
             <span style={{
-              fontSize:'0.72rem', fontWeight:600, padding:'3px 10px', borderRadius:99,
+              fontSize: '0.72rem', fontWeight: 600, padding: '3px 10px', borderRadius: 99,
               background: phoneStatus === 'safe'
                 ? 'rgba(16,185,129,0.12)'
                 : phoneStatus === 'in_hand'
-                ? 'rgba(234,179,8,0.12)'
-                : 'rgba(239,68,68,0.12)',
+                  ? 'rgba(234,179,8,0.12)'
+                  : 'rgba(239,68,68,0.12)',
               color: phoneStatus === 'safe'
                 ? '#10b981'
                 : phoneStatus === 'in_hand'
-                ? '#eab308'
-                : '#ef4444',
+                  ? '#eab308'
+                  : '#ef4444',
               border: `1px solid ${phoneStatus === 'safe'
                 ? 'rgba(16,185,129,0.3)'
                 : phoneStatus === 'in_hand'
-                ? 'rgba(234,179,8,0.3)'
-                : 'rgba(239,68,68,0.3)'}`,
+                  ? 'rgba(234,179,8,0.3)'
+                  : 'rgba(239,68,68,0.3)'}`,
               transition: 'all 0.3s',
             }}>
-              {phoneStatus === 'safe'        ? '🟢 No Phone'
-               : phoneStatus === 'in_hand'  ? '🟡 Phone in Hand'
-               : phoneStatus === 'calling'  ? '🔴 Calling Alert'
-               : '🔴 Zone Violation'}
+              {phoneStatus === 'safe' ? '🟢 No Phone'
+                : phoneStatus === 'in_hand' ? '🟡 Phone in Hand'
+                  : phoneStatus === 'calling' ? '🔴 Calling Alert'
+                    : '🔴 Zone Violation'}
             </span>
             {/* Toggle button */}
             <button
@@ -742,15 +775,15 @@ export default function LiveMonitor() {
                 } catch { /* best-effort save */ }
               }}
               style={{
-                width:44, height:24, borderRadius:12, cursor:'pointer',
-                border:'none', padding:0, transition:'background 0.2s',
+                width: 44, height: 24, borderRadius: 12, cursor: 'pointer',
+                border: 'none', padding: 0, transition: 'background 0.2s',
                 background: noPhoneZone ? '#ef4444' : 'rgba(255,255,255,0.12)',
-                position:'relative', flexShrink:0,
+                position: 'relative', flexShrink: 0,
               }}
             >
               <span style={{
-                position:'absolute', top:3, width:18, height:18, borderRadius:'50%',
-                background:'#fff', transition:'left 0.2s',
+                position: 'absolute', top: 3, width: 18, height: 18, borderRadius: '50%',
+                background: '#fff', transition: 'left 0.2s',
                 left: noPhoneZone ? 23 : 3,
               }} />
             </button>
@@ -762,7 +795,7 @@ export default function LiveMonitor() {
       <div className="tab-bar" style={{ marginBottom: 20, maxWidth: 460 }}>
         {[
           { id: 'webcam', label: 'Webcam' },
-          { id: 'rtsp',   label: 'CCTV / RTSP' },
+          { id: 'rtsp', label: 'CCTV / RTSP' },
           { id: 'upload', label: 'Upload Video' },
         ].map(m => (
           <button key={m.id}
@@ -791,6 +824,7 @@ export default function LiveMonitor() {
                   display: 'block',
                   position: 'absolute', top: 0, left: 0,
                   width: '100%', height: '100%', objectFit: 'cover',
+                  opacity: hasAnnotatedRef.current ? 0 : 1,
                 }}
                 onError={() => { /* img will keep retrying for MJPEG */ }}
               />
@@ -802,6 +836,7 @@ export default function LiveMonitor() {
                 display: (streaming && mode === 'webcam') ? 'block' : 'none',
                 position: 'absolute', top: 0, left: 0,
                 width: '100%', height: '100%', objectFit: 'cover',
+                opacity: hasAnnotatedRef.current ? 0 : 1,
               }}
             />
 
@@ -963,59 +998,59 @@ export default function LiveMonitor() {
                   </div>
                 )}
 
-              {/* Quick-fill preset buttons */}
-              {!streaming && (
-                <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
-                  <button
-                    type="button"
-                    className="btn btn-ghost"
-                    style={{ fontSize: '0.68rem', padding: '3px 8px', height: 'auto' }}
-                    onClick={() => setRtspUrl('http://10.62.212.243:8080/video')}
-                  >📱 IP Webcam (MJPEG)</button>
-                  <button
-                    type="button"
-                    className="btn btn-ghost"
-                    style={{ fontSize: '0.68rem', padding: '3px 8px', height: 'auto' }}
-                    onClick={() => setRtspUrl('rtsp://admin:password@192.168.1.1:554/stream')}
-                  >📷 RTSP Example</button>
-                </div>
-              )}
-
-              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 6 }}>
-                Supports: <code style={{ fontSize: '0.72rem' }}>http://IP:PORT/video</code> (MJPEG)
-                &nbsp;•&nbsp; <code style={{ fontSize: '0.72rem' }}>rtsp://user:pass@IP:554/stream</code>
-              </div>
-
-              {/* Face recognition toggle */}
-              <div style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                marginTop: 10, padding: '8px 12px', borderRadius: 8,
-                background: 'var(--bg-card)', border: '1px solid var(--border)',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontSize: '1rem' }}>🫥</span>
-                  <div>
-                    <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-primary)' }}>Face Recognition</div>
-                    <div style={{ fontSize: '0.70rem', color: 'var(--text-muted)' }}>Identify known/unknown persons in stream</div>
+                {/* Quick-fill preset buttons */}
+                {!streaming && (
+                  <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      style={{ fontSize: '0.68rem', padding: '3px 8px', height: 'auto' }}
+                      onClick={() => setRtspUrl('http://10.62.212.243:8080/video')}
+                    >📱 IP Webcam (MJPEG)</button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      style={{ fontSize: '0.68rem', padding: '3px 8px', height: 'auto' }}
+                      onClick={() => setRtspUrl('rtsp://admin:password@192.168.1.1:554/stream')}
+                    >📷 RTSP Example</button>
                   </div>
+                )}
+
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 6 }}>
+                  Supports: <code style={{ fontSize: '0.72rem' }}>http://IP:PORT/video</code> (MJPEG)
+                  &nbsp;•&nbsp; <code style={{ fontSize: '0.72rem' }}>rtsp://user:pass@IP:554/stream</code>
                 </div>
-                <button
-                  onClick={() => setEnableFace(f => !f)}
-                  style={{
-                    width: 44, height: 24, borderRadius: 12, cursor: 'pointer',
-                    border: 'none', padding: 0, transition: 'background 0.2s',
-                    background: enableFace ? '#6366f1' : 'rgba(255,255,255,0.12)',
-                    position: 'relative', flexShrink: 0,
-                  }}
-                >
-                  <span style={{
-                    position: 'absolute', top: 3, width: 18, height: 18,
-                    borderRadius: '50%', background: '#fff', transition: 'left 0.2s',
-                    left: enableFace ? 23 : 3,
-                  }} />
-                </button>
+
+                {/* Face recognition toggle */}
+                <div style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  marginTop: 10, padding: '8px 12px', borderRadius: 8,
+                  background: 'var(--bg-card)', border: '1px solid var(--border)',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: '1rem' }}>🫥</span>
+                    <div>
+                      <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-primary)' }}>Face Recognition</div>
+                      <div style={{ fontSize: '0.70rem', color: 'var(--text-muted)' }}>Identify known/unknown persons in stream</div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setEnableFace(f => !f)}
+                    style={{
+                      width: 44, height: 24, borderRadius: 12, cursor: 'pointer',
+                      border: 'none', padding: 0, transition: 'background 0.2s',
+                      background: enableFace ? '#6366f1' : 'rgba(255,255,255,0.12)',
+                      position: 'relative', flexShrink: 0,
+                    }}
+                  >
+                    <span style={{
+                      position: 'absolute', top: 3, width: 18, height: 18,
+                      borderRadius: '50%', background: '#fff', transition: 'left 0.2s',
+                      left: enableFace ? 23 : 3,
+                    }} />
+                  </button>
+                </div>
               </div>
-            </div>
             )
           })()}
 
@@ -1093,10 +1128,50 @@ export default function LiveMonitor() {
                     </div>
                     <button
                       onClick={() => setCashAlert(null)}
-                      style={{ marginLeft: 'auto', background: 'none', border: 'none',
-                        cursor: 'pointer', color: '#eab308', fontSize: '1rem', flexShrink: 0 }}
+                      style={{
+                        marginLeft: 'auto', background: 'none', border: 'none',
+                        cursor: 'pointer', color: '#eab308', fontSize: '1rem', flexShrink: 0
+                      }}
                       title="Dismiss"
                     >✕</button>
+                  </div>
+                )}
+
+                {/* ── Vendor Payee Snapshot Card (REQ-SH-2) ────────────────── */}
+                {payeeData && (
+                  <div style={{
+                    display: 'flex', flexDirection: 'column', gap: 8,
+                    padding: '10px 14px', borderRadius: 10, marginBottom: 14,
+                    background: 'rgba(99,102,241,0.12)',
+                    border: '1px solid rgba(99,102,241,0.45)',
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#818cf8', fontWeight: 700, fontSize: '0.82rem' }}>
+                        <span>📸</span> VENDOR / PAYEE CAPTURE
+                      </div>
+                      <button
+                        onClick={() => setPayeeData(null)}
+                        style={{ background: 'none', border: 'none', color: '#818cf8', cursor: 'pointer', fontSize: '0.9rem' }}
+                        title="Dismiss"
+                      >✕</button>
+                    </div>
+                    <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                      <img
+                        src={`data:image/jpeg;base64,${payeeData.snapshot}`}
+                        alt="Payee Snapshot"
+                        style={{
+                          width: 80, height: 80, objectFit: 'cover', borderRadius: 8,
+                          border: '2px solid #6366f1', flexShrink: 0,
+                        }}
+                      />
+                      <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <div style={{ color: '#fff', fontWeight: 600 }}>ID: {payeeData.id}</div>
+                        <div>Time: {payeeData.time}</div>
+                        <div style={{ color: '#10b981', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <span>✓</span> Cash exchange recorded
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 )}
 
@@ -1141,31 +1216,31 @@ export default function LiveMonitor() {
                         .filter(d => d.label !== 'Person')
                         .map((d, idx) => {
                           const lbl = d.label?.toLowerCase() || ''
-                          const isCash    = lbl === 'cash'
-                          const isCyl     = lbl.includes('cylinder')
+                          const isCash = lbl === 'cash'
+                          const isCyl = lbl.includes('cylinder')
                           const isBangles = lbl.includes('bangles')
-                          const isFall    = lbl.includes('fall')
-                          const isAnom    = lbl.includes('anomaly')
+                          const isFall = lbl.includes('fall')
+                          const isAnom = lbl.includes('anomaly')
                           const isHairnet = lbl.includes('head-cap') || lbl.includes('hairnet')
-                          const isThrow   = lbl.includes('throwing')
+                          const isThrow = lbl.includes('throwing')
                           const icon = isCash ? '💵' : isCyl ? '🛢️' : isBangles ? '🚨'
                             : isFall ? '🚨' : isAnom ? '⚠️' : isHairnet ? '🧢'
-                            : isThrow ? '🤚' : '📦'
+                              : isThrow ? '🤚' : '📦'
                           const bg = isCash ? 'rgba(234,179,8,0.15)' : isCyl ? 'rgba(6,182,212,0.15)'
                             : isBangles || isFall ? 'rgba(239,68,68,0.15)'
-                            : isAnom ? 'rgba(245,158,11,0.15)'
-                            : isHairnet ? 'rgba(99,102,241,0.15)'
-                            : isThrow ? 'rgba(249,115,22,0.15)' : 'rgba(255,255,255,0.08)'
+                              : isAnom ? 'rgba(245,158,11,0.15)'
+                                : isHairnet ? 'rgba(99,102,241,0.15)'
+                                  : isThrow ? 'rgba(249,115,22,0.15)' : 'rgba(255,255,255,0.08)'
                           const clr = isCash ? '#eab308' : isCyl ? '#06b6d4'
                             : isBangles || isFall ? '#ef4444'
-                            : isAnom ? '#f59e0b'
-                            : isHairnet ? '#6366f1'
-                            : isThrow ? '#f97316' : 'var(--text-primary)'
+                              : isAnom ? '#f59e0b'
+                                : isHairnet ? '#6366f1'
+                                  : isThrow ? '#f97316' : 'var(--text-primary)'
                           const bdr = `1px solid ${isCash ? 'rgba(234,179,8,0.4)' : isCyl ? 'rgba(6,182,212,0.4)'
                             : isBangles || isFall ? 'rgba(239,68,68,0.4)'
-                            : isAnom ? 'rgba(245,158,11,0.4)'
-                            : isHairnet ? 'rgba(99,102,241,0.4)'
-                            : isThrow ? 'rgba(249,115,22,0.4)' : 'var(--border)'}`
+                              : isAnom ? 'rgba(245,158,11,0.4)'
+                                : isHairnet ? 'rgba(99,102,241,0.4)'
+                                  : isThrow ? 'rgba(249,115,22,0.4)' : 'var(--border)'}`
                           return (
                             <span
                               key={idx}
@@ -1327,19 +1402,19 @@ export default function LiveMonitor() {
                 <span style={{
                   width: 8, height: 8, borderRadius: '50%',
                   background: modelMode === 'ppe.pt' ? 'var(--accent-green)' :
-                               modelMode === 'simulation' ? '#f59e0b' :
-                               modelMode?.startsWith('helmet:') ? '#818cf8' : 'var(--accent-blue)',
+                    modelMode === 'simulation' ? '#f59e0b' :
+                      modelMode?.startsWith('helmet:') ? '#818cf8' : 'var(--accent-blue)',
                   display: 'inline-block', flexShrink: 0
                 }} />
                 {modelMode === 'ppe.pt'
                   ? 'ppe.pt â€” Custom PPE model (10 classes)'
                   : modelMode === 'simulation'
-                  ? 'Simulation mode - Place ppe.pt in backend/'
-                  : modelMode === 'helmet:keremberke'
-                  ? 'Dedicated Helmet Model (keremberke/yolov8m)'
-                  : modelMode === 'helmet:ppe.pt(strict)'
-                  ? 'Helmet via ppe.pt - strict logic (downloading...)'
-                  : `${modelMode} - COCO fallback`}
+                    ? 'Simulation mode - Place ppe.pt in backend/'
+                    : modelMode === 'helmet:keremberke'
+                      ? 'Dedicated Helmet Model (keremberke/yolov8m)'
+                      : modelMode === 'helmet:ppe.pt(strict)'
+                        ? 'Helmet via ppe.pt - strict logic (downloading...)'
+                        : `${modelMode} - COCO fallback`}
               </div>
               {modelMode === 'simulation' && (
                 <div style={{ fontSize: '0.72rem', color: 'var(--accent-orange)', marginTop: 6 }}>
@@ -1366,8 +1441,10 @@ function PersonCard({ person, index }) {
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: (isViolator || person.has_uniform !== undefined) ? 6 : 0 }}>
         <User size={14} color={isViolator ? 'var(--accent-red)' : 'var(--accent-green)'} />
-        <span style={{ fontSize: '0.82rem', fontWeight: 600,
-          color: isViolator ? 'var(--accent-red)' : 'var(--accent-green)' }}>
+        <span style={{
+          fontSize: '0.82rem', fontWeight: 600,
+          color: isViolator ? 'var(--accent-red)' : 'var(--accent-green)'
+        }}>
           Person {index + 1}
         </span>
         <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginLeft: 'auto' }}>
@@ -1430,36 +1507,36 @@ function RoleRules({ role }) {
 }
 
 function VideoJobPanel({ status }) {
-  const videoRef   = useRef(null)
+  const videoRef = useRef(null)
   const [currentTime, setCurrentTime] = useState(0)
-  const [duration,    setDuration]    = useState(0)
-  const [playing,     setPlaying]     = useState(false)
-  const [tooltip,     setTooltip]     = useState(null) // {x, vt}
+  const [duration, setDuration] = useState(0)
+  const [playing, setPlaying] = useState(false)
+  const [tooltip, setTooltip] = useState(null) // {x, vt}
   const [activeVtIdx, setActiveVtIdx] = useState(-1)
   const listRef = useRef(null)
 
   const SEV_COLORS = {
-    critical: { bg: 'rgba(220,38,38,0.15)',  color: '#f87171', border: 'rgba(220,38,38,0.3)',  dot: '#ef4444' },
-    high:     { bg: 'rgba(234,88,12,0.12)',  color: '#fb923c', border: 'rgba(234,88,12,0.3)',  dot: '#f97316' },
-    medium:   { bg: 'rgba(234,179,8,0.12)',  color: '#fbbf24', border: 'rgba(234,179,8,0.3)',  dot: '#eab308' },
-    low:      { bg: 'rgba(16,185,129,0.10)', color: '#34d399', border: 'rgba(16,185,129,0.3)', dot: '#10b981' },
+    critical: { bg: 'rgba(220,38,38,0.15)', color: '#f87171', border: 'rgba(220,38,38,0.3)', dot: '#ef4444' },
+    high: { bg: 'rgba(234,88,12,0.12)', color: '#fb923c', border: 'rgba(234,88,12,0.3)', dot: '#f97316' },
+    medium: { bg: 'rgba(234,179,8,0.12)', color: '#fbbf24', border: 'rgba(234,179,8,0.3)', dot: '#eab308' },
+    low: { bg: 'rgba(16,185,129,0.10)', color: '#34d399', border: 'rgba(16,185,129,0.3)', dot: '#10b981' },
   }
 
-  const isComplete   = status.status === 'complete'
+  const isComplete = status.status === 'complete'
   const isProcessing = status.status === 'processing'
-  const isError      = status.status === 'error'
-  const ppeSummary   = status.ppe_summary || {}
+  const isError = status.status === 'error'
+  const ppeSummary = status.ppe_summary || {}
   const ppeSummaryEntries = Object.entries(ppeSummary)
-  const maxViolCount = ppeSummaryEntries.length ? Math.max(...ppeSummaryEntries.map(([,v]) => v)) : 1
-  const vts          = useMemo(() => status.violation_timestamps || [], [status.violation_timestamps])
-  const videoDur     = status.video_duration_sec   || duration || 1
-  const videoUrl     = status.annotated_video_url  // e.g. /uploads/annotated_{id}.mp4
+  const maxViolCount = ppeSummaryEntries.length ? Math.max(...ppeSummaryEntries.map(([, v]) => v)) : 1
+  const vts = useMemo(() => status.violation_timestamps || [], [status.violation_timestamps])
+  const videoDur = status.video_duration_sec || duration || 1
+  const videoUrl = status.annotated_video_url  // e.g. /uploads/annotated_{id}.mp4
 
   // Sync currentTime while video plays
   useEffect(() => {
     const vid = videoRef.current
     if (!vid) return
-    const onTime  = () => {
+    const onTime = () => {
       const ct = vid.currentTime
       setCurrentTime(ct)
       // Find active violation
@@ -1469,8 +1546,8 @@ function VideoJobPanel({ status }) {
       })
       setActiveVtIdx(idx)
     }
-    const onLoad  = () => setDuration(vid.duration || videoDur)
-    const onPlay  = () => setPlaying(true)
+    const onLoad = () => setDuration(vid.duration || videoDur)
+    const onPlay = () => setPlaying(true)
     const onPause = () => setPlaying(false)
     vid.addEventListener('timeupdate', onTime)
     vid.addEventListener('loadedmetadata', onLoad)
@@ -1521,14 +1598,14 @@ function VideoJobPanel({ status }) {
       <div className="card card-p" style={{ padding: 16, marginBottom: 12 }}>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 12 }}>
           {isProcessing && <span className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} />}
-          {isComplete   && <CheckCircle size={16} color="var(--accent-green)" />}
-          {isError      && <AlertTriangle size={16} color="var(--accent-red)" />}
+          {isComplete && <CheckCircle size={16} color="var(--accent-green)" />}
+          {isError && <AlertTriangle size={16} color="var(--accent-red)" />}
           <strong style={{ fontSize: '0.88rem' }}>
             {isProcessing
               ? `Scanning for violations... ${status.progress}%`
               : isComplete
-              ? `Analysis complete - ${status.total_alerts} alert${status.total_alerts !== 1 ? 's' : ''} · ${status.total_violations ?? 0} violations · ${videoDur}s`
-              : 'Processing error'}
+                ? `Analysis complete - ${status.total_alerts} alert${status.total_alerts !== 1 ? 's' : ''} · ${status.total_violations ?? 0} violations · ${videoDur}s`
+                : 'Processing error'}
 
           </strong>
         </div>
@@ -1543,10 +1620,10 @@ function VideoJobPanel({ status }) {
         {isComplete && (
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 4 }}>
             {[
-              { label: 'Frames scanned',   val: status.frames_processed ?? 0 },
-              { label: 'Alerts found',     val: status.total_alerts ?? 0 },
+              { label: 'Frames scanned', val: status.frames_processed ?? 0 },
+              { label: 'Alerts found', val: status.total_alerts ?? 0 },
               { label: 'Total violations', val: status.total_violations ?? 0 },
-              { label: 'Duration',         val: `${videoDur}s` },
+              { label: 'Duration', val: `${videoDur}s` },
             ].map(({ label, val }) => (
               <div key={label} style={{
                 flex: 1, minWidth: 80, textAlign: 'center',
@@ -1600,7 +1677,7 @@ function VideoJobPanel({ status }) {
                 padding: '4px 12px', fontSize: '0.78rem', fontWeight: 700,
                 boxShadow: '0 2px 12px rgba(220,38,38,0.5)',
               }}>
-                 {vts[activeVtIdx].items?.join(', ') || 'Violation'}
+                {vts[activeVtIdx].items?.join(', ') || 'Violation'}
               </div>
             )}
           </div>
@@ -1629,7 +1706,7 @@ function VideoJobPanel({ status }) {
                 {/* Red violation marker segments */}
                 {vts.map((vt, i) => {
                   const left = (vt.ts / videoDur) * 100
-                  const sev  = SEV_COLORS[vt.severity] || SEV_COLORS.medium
+                  const sev = SEV_COLORS[vt.severity] || SEV_COLORS.medium
                   return (
                     <div
                       key={i}
@@ -1671,7 +1748,7 @@ function VideoJobPanel({ status }) {
                   minWidth: 120, pointerEvents: 'none',
                   boxShadow: '0 4px 20px rgba(0,0,0,0.6)',
                 }}>
-                  <div style={{ fontSize: '0.72rem', fontWeight: 700, color: (SEV_COLORS[tooltip.vt.severity]||SEV_COLORS.medium).color, marginBottom: 2 }}>
+                  <div style={{ fontSize: '0.72rem', fontWeight: 700, color: (SEV_COLORS[tooltip.vt.severity] || SEV_COLORS.medium).color, marginBottom: 2 }}>
                     @ {tooltip.vt.ts}s
                   </div>
                   {tooltip.vt.items?.map((item, j) => (
@@ -1718,9 +1795,9 @@ function VideoJobPanel({ status }) {
             <div style={{ display: 'flex', gap: 14, marginTop: 8, marginBottom: 4, flexWrap: 'wrap' }}>
               {[
                 { label: 'Critical', dot: '#ef4444' },
-                { label: 'High',     dot: '#f97316' },
-                { label: 'Medium',   dot: '#eab308' },
-                { label: 'Safe',     color: 'var(--accent-cyan)', isLine: true },
+                { label: 'High', dot: '#f97316' },
+                { label: 'Medium', dot: '#eab308' },
+                { label: 'Safe', color: 'var(--accent-cyan)', isLine: true },
               ].map(({ label, dot, isLine }) => (
                 <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                   {isLine
@@ -1740,8 +1817,10 @@ function VideoJobPanel({ status }) {
       {/* -- PPE Miss Summary ------------------------- */}
       {isComplete && ppeSummaryEntries.length > 0 && (
         <div className="card card-p" style={{ padding: 16, marginBottom: 12 }}>
-          <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)',
-            letterSpacing: '0.05em', marginBottom: 10 }}>MOST-MISSED PPE ITEMS</div>
+          <div style={{
+            fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)',
+            letterSpacing: '0.05em', marginBottom: 10
+          }}>MOST-MISSED PPE ITEMS</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
             {ppeSummaryEntries.map(([item, count]) => (
               <div key={item} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1763,12 +1842,16 @@ function VideoJobPanel({ status }) {
       {/* -- Violation Timeline List ------------------- */}
       {vts.length > 0 && (
         <div className="card card-p" style={{ padding: 16 }}>
-          <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)',
-            letterSpacing: '0.05em', marginBottom: 8 }}>VIOLATION TIMELINE</div>
-          <div ref={listRef} style={{ display: 'flex', flexDirection: 'column', gap: 6,
-            maxHeight: 340, overflowY: 'auto', paddingRight: 4 }}>
+          <div style={{
+            fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)',
+            letterSpacing: '0.05em', marginBottom: 8
+          }}>VIOLATION TIMELINE</div>
+          <div ref={listRef} style={{
+            display: 'flex', flexDirection: 'column', gap: 6,
+            maxHeight: 340, overflowY: 'auto', paddingRight: 4
+          }}>
             {vts.map((vt, i) => {
-              const sev    = SEV_COLORS[vt.severity] || SEV_COLORS.medium
+              const sev = SEV_COLORS[vt.severity] || SEV_COLORS.medium
               const active = activeVtIdx === i
               return (
                 <div
@@ -1785,22 +1868,28 @@ function VideoJobPanel({ status }) {
                 >
                   {vt.thumbnail_b64 && (
                     <img src={vt.thumbnail_b64} alt="violation frame"
-                      style={{ width: 52, height: 36, objectFit: 'cover',
-                        borderRadius: 4, flexShrink: 0, border: `1px solid ${sev.border}` }} />
+                      style={{
+                        width: 52, height: 36, objectFit: 'cover',
+                        borderRadius: 4, flexShrink: 0, border: `1px solid ${sev.border}`
+                      }} />
                   )}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
                       <span style={{ fontSize: '0.8rem', fontWeight: 700, color: sev.color }}>@{vt.ts}s</span>
                       {vt.violations > 0 && (
-                        <span style={{ fontSize: '0.68rem', fontWeight: 700, color: sev.color,
+                        <span style={{
+                          fontSize: '0.68rem', fontWeight: 700, color: sev.color,
                           padding: '1px 7px', borderRadius: 99, border: `1px solid ${sev.border}`,
-                          background: sev.bg, flexShrink: 0 }}>
+                          background: sev.bg, flexShrink: 0
+                        }}>
                           {vt.violations}/{vt.persons} person{vt.persons !== 1 ? 's' : ''}
                         </span>
                       )}
                       {active && (
-                        <span style={{ fontSize: '0.65rem', background: sev.dot, color: '#fff',
-                          padding: '1px 6px', borderRadius: 99, fontWeight: 700, flexShrink: 0 }}>
+                        <span style={{
+                          fontSize: '0.65rem', background: sev.dot, color: '#fff',
+                          padding: '1px 6px', borderRadius: 99, fontWeight: 700, flexShrink: 0
+                        }}>
                           NOW
                         </span>
                       )}
@@ -1829,8 +1918,10 @@ function VideoJobPanel({ status }) {
       )}
 
       {isError && (
-        <div className="card card-p" style={{ fontSize: '0.82rem', color: 'var(--accent-red)',
-          padding: '12px 16px', background: 'rgba(220,38,38,0.1)', border: '1px solid rgba(220,38,38,0.3)' }}>
+        <div className="card card-p" style={{
+          fontSize: '0.82rem', color: 'var(--accent-red)',
+          padding: '12px 16px', background: 'rgba(220,38,38,0.1)', border: '1px solid rgba(220,38,38,0.3)'
+        }}>
           Processing error â€” try uploading the video again
         </div>
       )}

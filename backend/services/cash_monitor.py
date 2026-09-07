@@ -94,9 +94,10 @@ _CASH_MIN_CONF: float = 0.65
 # ─────────────────────────────────────────────────────────────────────────────
 
 class CashState(Enum):
-    PENDING    = "pending"
-    DEPOSITED  = "deposited"
-    SUSPICIOUS = "suspicious"
+    PENDING        = "pending"
+    DEPOSITED      = "deposited"
+    SUSPICIOUS     = "suspicious"
+    PAYEE_HANDOVER = "payee_handover"
 
 
 @dataclass
@@ -117,6 +118,31 @@ class CashTrack:
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _crop_person(frame: Optional[np.ndarray], bbox: List) -> Optional[str]:
+    """Crop head and upper torso of person for vendor payee photo capture."""
+    if frame is None or not bbox or len(bbox) < 4:
+        return None
+    try:
+        import base64
+        import cv2
+        h, w = frame.shape[:2]
+        x1, y1, x2, y2 = [int(v) for v in bbox[:4]]
+        # Focus on head + upper torso (upper 65% of person bbox)
+        crop_h = max(40, int((y2 - y1) * 0.65))
+        cy2 = min(h, y1 + crop_h)
+        cx1 = max(0, x1 - 15)
+        cx2 = min(w, x2 + 15)
+        cy1 = max(0, y1 - 15)
+        crop = frame[cy1:cy2, cx1:cx2]
+        if crop.size == 0:
+            return None
+        _, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        return "data:image/jpeg;base64," + base64.b64encode(buf).decode()
+    except Exception as e:
+        log.debug(f"[CashTracker] _crop_person error: {e}")
+        return None
+
 
 def _centroid(bbox: List) -> Tuple[float, float]:
     x1, y1, x2, y2 = bbox[:4]
@@ -249,6 +275,11 @@ class CashEventTracker:
         self.camera_id = camera_id
         self._tracks: Dict[str, CashTrack] = {}
         self._lock = threading.Lock()
+        self.last_theft_alert: Optional[str] = None
+        self.last_theft_time: float = 0.0
+        self.last_payee_snapshot: Optional[str] = None
+        self.last_payee_time: float = 0.0
+        self.last_payee_id: Optional[str] = None
 
     # ── public API ───────────────────────────────────────────────────────────
 
@@ -260,6 +291,7 @@ class CashEventTracker:
         cashbox_polygon: Optional[List],
         floor: str,
         frame: Optional[np.ndarray] = None,
+        vendor_polygon: Optional[List] = None,
     ) -> None:
         """
         Process one frame of detections.
@@ -272,6 +304,7 @@ class CashEventTracker:
         cashbox_polygon  : [[x,y],...] polygon in pixel coords, or None
         floor            : camera floor string — body-zone check only on 'shop'
         frame            : optional BGR ndarray for snapshot on alert
+        vendor_polygon   : [[x,y],...] vendor / customer zone polygon, or None
         """
         now = time.monotonic()
         is_cash_floor = floor in ("shop", "bakery")
@@ -356,10 +389,27 @@ class CashEventTracker:
                     if track.in_body_zone_since is not None:
                         track.in_body_zone_since = None
 
+            # ── Check Vendor Payee Handover (REQ-SH-2) ────────────────────
+            # Triggered when cash is active and a payee is present
+            if frame is not None and person_detections and cash_detections:
+                payee = self._identify_payee(person_detections, vendor_polygon, cashbox_polygon)
+                if payee is not None:
+                    payee_tid = str(payee.get("track_id", "payee"))
+                    if now - self.last_payee_time >= 30.0:  # 30s cooldown
+                        snap = _crop_person(frame, payee.get("bbox", []))
+                        if snap:
+                            self.last_payee_snapshot = snap
+                            self.last_payee_time = now
+                            self.last_payee_id = payee_tid
+                            self._fire_payee_alert(db, payee_tid, snap)
+                            for t in self._tracks.values():
+                                if t.state == CashState.PENDING:
+                                    t.state = CashState.PAYEE_HANDOVER
+
             # ── Check for disappeared cash that was in body zone ──────────
             if is_cash_floor:
                 for tid, track in list(self._tracks.items()):
-                    if track.state in (CashState.DEPOSITED, CashState.SUSPICIOUS):
+                    if track.state in (CashState.DEPOSITED, CashState.SUSPICIOUS, CashState.PAYEE_HANDOVER):
                         continue
                     if tid in active_ids:
                         track.disappeared_at = None
@@ -388,6 +438,86 @@ class CashEventTracker:
                 self._tracks.pop(tid, None)
 
     # ── private ──────────────────────────────────────────────────────────────
+
+    def _identify_payee(
+        self,
+        person_detections: List[Dict],
+        vendor_polygon: Optional[List],
+        cashbox_polygon: Optional[List],
+    ) -> Optional[Dict]:
+        """
+        Identify the payee / vendor person in the shop counter scene.
+        1. If vendor_polygon is configured, pick person whose center is in polygon.
+        2. If 2+ persons are present, the payee is the person who is NOT the cashier.
+        3. If 1 person is present in front of counter, that person is the payee.
+        """
+        if not person_detections:
+            return None
+
+        # 1. Direct zone check
+        if vendor_polygon and len(vendor_polygon) >= 3:
+            for p in person_detections:
+                cx, cy = _centroid(p.get("bbox", []))
+                if _point_in_polygon(cx, cy, vendor_polygon):
+                    return p
+
+        # 2. Distinguish Cashier vs Payee when multiple persons are present
+        if len(person_detections) >= 2:
+            # Check uniform
+            cashier_cand = None
+            for p in person_detections:
+                if p.get("has_uniform") or p.get("uniform_prediction") in ("UNIFORM", "Uniform"):
+                    cashier_cand = p
+                    break
+            if cashier_cand:
+                for p in person_detections:
+                    if p != cashier_cand:
+                        return p
+
+            # Proximity to cashbox: cashier is closest to cashbox, payee is the other
+            if cashbox_polygon and len(cashbox_polygon) >= 1:
+                cb_cx = float(np.mean([pt[0] for pt in cashbox_polygon]))
+                cb_cy = float(np.mean([pt[1] for pt in cashbox_polygon]))
+                sorted_by_dist = sorted(
+                    person_detections,
+                    key=lambda p: (
+                        (_centroid(p["bbox"])[0] - cb_cx) ** 2 +
+                        (_centroid(p["bbox"])[1] - cb_cy) ** 2
+                    )
+                )
+                return sorted_by_dist[1] if len(sorted_by_dist) > 1 else sorted_by_dist[0]
+
+            # Heuristic: person furthest from the camera/center
+            return max(person_detections, key=lambda p: _centroid(p["bbox"])[0])
+
+        # 3. Single person
+        return person_detections[0]
+
+    def _fire_payee_alert(
+        self,
+        db,
+        payee_id: str,
+        snapshot_b64: str,
+    ) -> None:
+        alert_key = f"vendor_payee_{self.camera_id}_{payee_id}"
+        if not _can_alert(alert_key):
+            return
+
+        utc_now = datetime.datetime.utcnow().strftime("%H:%M:%S")
+        msg = (
+            f"[VENDOR PAYMENT] Camera {self.camera_id} — "
+            f"Payee photo captured during cash handover "
+            f"(Payee #{payee_id} at {utc_now} UTC)."
+        )
+        log.info(msg)
+        _fire_alert(
+            db=db,
+            camera_id=self.camera_id,
+            message=msg,
+            severity="low",
+            issue="Vendor Payee Photo Captured",
+            snapshot_b64=snapshot_b64,
+        )
 
     def _fire_theft_alert(
         self,
@@ -421,6 +551,8 @@ class CashEventTracker:
             f"Please review CCTV footage immediately."
         )
         log.warning(msg)
+        self.last_theft_alert = msg
+        self.last_theft_time = time.monotonic()
         _fire_alert(
             db=db,
             camera_id=self.camera_id,
@@ -448,7 +580,7 @@ def get_tracker(camera_id: int) -> CashEventTracker:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Public entry points called from camera_manager.py
+# Public entry points called from camera_manager.py and cctv.py
 # ─────────────────────────────────────────────────────────────────────────────
 
 def check_cash_zone(
@@ -459,30 +591,20 @@ def check_cash_zone(
     cashbox_polygon: Optional[List] = None,
     floor: str = "shop",
     frame: Optional[np.ndarray] = None,
-) -> None:
+    vendor_polygon: Optional[List] = None,
+) -> Dict:
     """
     Main entry point — call every detection frame for cameras covering
     the shop counter / cashbox zone.
 
-    Parameters
-    ----------
-    db              : SQLAlchemy session
-    camera_id       : camera row ID
-    detections      : all YOLO detections this frame (any class)
-    persons         : tracked person dicts (must include track_id from ByteTrack)
-    cashbox_polygon : [[x,y], ...] cashbox zone polygon, or None
-    floor           : 'shop' enables pocket/body-zone theft detection
-    frame           : BGR ndarray for snapshot on alert (optional)
+    Returns dict containing status, theft_alert, and payee snapshot.
     """
-    # Extract Cash detections (class label 'Cash' or lowercase variants)
-    # Pre-filter by confidence here too so low-conf detections never reach the tracker
+    # Extract Cash detections
     cash_dets = [
         d for d in detections
         if _is_cash_label(str(d.get("label", "")))
         and float(d.get("confidence", 0.0)) >= _CASH_MIN_CONF
     ]
-
-    # Also accept the numeric class id=14 if label not set (with same conf gate)
     cash_dets += [
         d for d in detections
         if d.get("class_id") == 14
@@ -498,7 +620,17 @@ def check_cash_zone(
         cashbox_polygon=cashbox_polygon,
         floor=floor,
         frame=frame,
+        vendor_polygon=vendor_polygon,
     )
+
+    now = time.monotonic()
+    return {
+        "cash_detected": bool(cash_dets),
+        "theft_alert": tracker.last_theft_alert if (now - tracker.last_theft_time < 6.0) else None,
+        "payee_detected": bool(tracker.last_payee_snapshot and (now - tracker.last_payee_time < 12.0)),
+        "payee_snapshot_b64": tracker.last_payee_snapshot if (now - tracker.last_payee_time < 12.0) else None,
+        "payee_id": tracker.last_payee_id,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -34,7 +34,7 @@ import base64
 import datetime
 import logging
 import re
-from typing import Optional
+from typing import Optional, Tuple, List, Dict, Any
 
 import cv2
 import numpy as np
@@ -42,16 +42,31 @@ import numpy as np
 log = logging.getLogger("ocr_service")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Tesseract availability guard
+# Multi-Tier OCR Engines: RapidOCR (Primary) → PaddleOCR (Fallback 1) → Tesseract (Fallback 2)
 # ──────────────────────────────────────────────────────────────────────────────
+_RAPID_OCR_INSTANCE = None
+_PADDLE_OCR_INSTANCE = None
+
+try:
+    from rapidocr_onnxruntime import RapidOCR
+    _RAPID_OCR_OK = True
+    log.info("✅ RapidOCR (PaddleOCR ONNX engine) available — PRIMARY")
+except ImportError:
+    _RAPID_OCR_OK = False
+    log.info("ℹ️  rapidocr_onnxruntime not installed.")
+
+try:
+    from paddleocr import PaddleOCR
+    _PADDLE_OCR_OK = True
+    log.info("✅ PaddleOCR engine available — FALLBACK")
+except ImportError:
+    _PADDLE_OCR_OK = False
+
+# Tesseract availability guard (Legacy fallback)
 try:
     import os
-
     import pytesseract
 
-    # ── Windows: set tesseract_cmd to the default UB-Mannheim install path ──────
-    # winget / installer puts the binary here; PATH may not be refreshed yet
-    # in the current process without a restart.
     _WIN_DEFAULT = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
     _WIN_DEFAULT_X86 = r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"
     if os.name == "nt":
@@ -62,28 +77,18 @@ try:
             pytesseract.pytesseract.tesseract_cmd = _WIN_DEFAULT_X86
             log.info(f"✅ pytesseract: using Tesseract at {_WIN_DEFAULT_X86}")
         else:
-            # Try to find via PATH anyway
             import shutil
 
             tess = shutil.which("tesseract")
             if tess:
                 pytesseract.pytesseract.tesseract_cmd = tess
                 log.info(f"✅ pytesseract: found Tesseract in PATH at {tess}")
-            else:
-                log.warning(
-                    "⚠️  Tesseract binary not found at default Windows paths. "
-                    "Install via: winget install UB-Mannheim.TesseractOCR\n"
-                    "  Expected: C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
-                )
 
     _TESSERACT_OK = True
-    log.info("✅ pytesseract available — Tesseract OCR will be used")
-except ImportError:
+    log.info("✅ pytesseract available — Tesseract OCR available as fallback")
+except (ImportError, Exception):
     _TESSERACT_OK = False
-    log.warning(
-        "⚠️  pytesseract not installed. OCR will be unavailable. "
-        "Run: pip install pytesseract && install Tesseract system binary."
-    )
+    log.info("ℹ️  pytesseract not available.")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Approval patterns
@@ -288,6 +293,123 @@ def _encode_crop(crop: np.ndarray) -> Optional[str]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Multi-Tier Engine Runners
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _run_rapid_ocr(crop: np.ndarray) -> Optional[Tuple[str, float]]:
+    """
+    Run RapidOCR (PP-OCRv4 ONNX) — Primary Engine.
+    Ultra-lightweight (~150MB RAM), fast C++ ONNX inference (~80ms), handles
+    skewed, angled, and distorted camera invoice captures without random characters.
+    """
+    global _RAPID_OCR_INSTANCE
+    if not _RAPID_OCR_OK:
+        return None
+    try:
+        if _RAPID_OCR_INSTANCE is None:
+            from rapidocr_onnxruntime import RapidOCR
+
+            _RAPID_OCR_INSTANCE = RapidOCR()
+
+        results, _ = _RAPID_OCR_INSTANCE(crop)
+        if not results:
+            return ("", 0.0)
+
+        lines = []
+        confs = []
+        for item in results:
+            # item format: [box_coordinates, text, confidence]
+            if len(item) >= 3:
+                txt = str(item[1]).strip()
+                if txt:
+                    lines.append(txt)
+                    try:
+                        confs.append(float(item[2]))
+                    except (ValueError, TypeError):
+                        pass
+
+        full_text = " | ".join(lines) if lines else ""
+        avg_conf = sum(confs) / len(confs) if confs else 0.0
+        return (full_text, round(avg_conf, 3))
+    except Exception as e:
+        log.error(f"[OCR] RapidOCR error: {e}")
+        return None
+
+
+def _run_paddle_ocr(crop: np.ndarray) -> Optional[Tuple[str, float]]:
+    """
+    Run native PaddleOCR — Secondary Fallback Engine.
+    Runs if rapidocr fails or is unavailable.
+    """
+    global _PADDLE_OCR_INSTANCE
+    if not _PADDLE_OCR_OK:
+        return None
+    try:
+        if _PADDLE_OCR_INSTANCE is None:
+            from paddleocr import PaddleOCR
+
+            _PADDLE_OCR_INSTANCE = PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
+
+        results = _PADDLE_OCR_INSTANCE.ocr(crop, cls=True)
+        if not results or not results[0]:
+            return ("", 0.0)
+
+        lines = []
+        confs = []
+        for line in results[0]:
+            if len(line) >= 2 and isinstance(line[1], (list, tuple)):
+                txt = str(line[1][0]).strip()
+                if txt:
+                    lines.append(txt)
+                    try:
+                        confs.append(float(line[1][1]))
+                    except (ValueError, TypeError):
+                        pass
+
+        full_text = " | ".join(lines) if lines else ""
+        avg_conf = sum(confs) / len(confs) if confs else 0.0
+        return (full_text, round(avg_conf, 3))
+    except Exception as e:
+        log.error(f"[OCR] PaddleOCR error: {e}")
+        return None
+
+
+def _run_tesseract(crop: np.ndarray) -> Optional[Tuple[str, float]]:
+    """
+    Run Tesseract OCR — Tertiary Fallback Engine (Legacy).
+    Applies image preprocessing and attempts multiple PSM modes.
+    """
+    if not _TESSERACT_OK:
+        return None
+
+    _PSM_MODES = [
+        "--psm 6 --oem 3",
+        "--psm 11 --oem 3",
+        "--psm 3 --oem 3",
+    ]
+    try:
+        processed = _preprocess_for_ocr(crop)
+        best_text = ""
+        for psm_config in _PSM_MODES:
+            try:
+                candidate = pytesseract.image_to_string(
+                    processed, config=psm_config, lang="eng"
+                ).strip()
+                candidate = _clean_ocr_text(candidate)
+                if len(candidate) > len(best_text):
+                    best_text = candidate
+                    if len(best_text) > 60:
+                        break
+            except Exception:
+                continue
+        return (best_text, 0.70)
+    except Exception as exc:
+        log.error(f"[OCR] Tesseract error: {exc}")
+        return None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Public API
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -301,6 +423,12 @@ def scan_document_in_frame(
     Main entry point — called by yolo_service when 'Document-in-hand' (class 13)
     is detected inside the 'entrance' zone polygon.
 
+    Uses a tiered architecture:
+      1. RapidOCR (PP-OCRv4 ONNX) — Primary (low memory, high speed, high accuracy)
+      2. PaddleOCR               — Fallback 1
+      3. Tesseract               — Fallback 2 (Legacy)
+      4. Graceful Degrade        — If no OCR engine available
+
     Parameters
     ----------
     frame     : BGR numpy array (the full camera frame)
@@ -312,86 +440,91 @@ def scan_document_in_frame(
     dict with keys:
         approved       : bool — True if document text passes heuristic
         raw_text       : str  — always populated (for admin manual review)
+        goods_count    : int | None — parsed items quantity from invoice
+        confidence     : float — OCR recognition confidence
+        engine         : str — "rapidocr" | "paddleocr" | "tesseract" | "none"
         timestamp      : str  — ISO-8601 UTC
         direction      : str  — echoed back
         snapshot_b64   : str | None — base64 JPEG of the cropped document area
-        ocr_available  : bool — False if Tesseract not installed (degrades gracefully)
-
-    ⚠️  This function returns a compliance-check result only.
-        It does NOT interact with any physical door/gate hardware.
-        Any access-control decision must be made by a human operator
-        reviewing the generated alert in the dashboard.
+        ocr_available  : bool — False if no OCR engine installed
     """
     ts = datetime.datetime.utcnow().isoformat() + "Z"
 
-    # Step 1 — crop
+    # Step 1 — crop with boundary padding
     crop = _crop_with_padding(frame, bbox)
     snapshot_b64 = _encode_crop(crop)
 
-    # Step 2 — Tesseract unavailable → degrade gracefully
-    if not _TESSERACT_OK:
-        log.warning("OCR called but pytesseract not installed. Returning REVIEW alert.")
-        return {
-            "approved": False,
-            "raw_text": "[OCR_UNAVAILABLE — install pytesseract + Tesseract binary]",
-            "timestamp": ts,
-            "direction": direction,
-            "snapshot_b64": snapshot_b64,
-            "ocr_available": False,
-        }
-
-    # Step 3 — pre-process + run Tesseract
-    # Try multiple PSM modes; pick the one that extracts the most text.
-    # PSM 6  = single uniform block — best for printed invoices / receipts
-    # PSM 11 = sparse text — best for camera shots where doc is in a scene
-    # PSM 3  = full auto layout — fallback for complex layouts
-    # OEM 3  = LSTM (most accurate Tesseract engine)
-    _PSM_MODES = [
-        "--psm 6 --oem 3",
-        "--psm 11 --oem 3",
-        "--psm 3 --oem 3",
-    ]
+    active_engine = None
     raw_text = ""
-    try:
-        processed = _preprocess_for_ocr(crop)
-        best_text = ""
-        for psm_config in _PSM_MODES:
-            try:
-                candidate = pytesseract.image_to_string(
-                    processed, config=psm_config, lang="eng"
-                ).strip()
-                # Clean noise immediately after each attempt
-                candidate = _clean_ocr_text(candidate)
-                if len(candidate) > len(best_text):
-                    best_text = candidate
-                    if len(best_text) > 60:
-                        break  # good enough — stop trying other modes
-            except Exception:
-                continue
-        raw_text = best_text
-        log.info(
-            f"[OCR] direction={direction} | text_len={len(raw_text)} | "
-            f"preview={raw_text[:80]!r}"
-        )
-    except Exception as exc:
-        log.error(f"[OCR] Tesseract error: {exc}")
-        raw_text = f"[OCR_ERROR: {type(exc).__name__}]"
+    conf = 0.0
+
+    # Tier 1 — RapidOCR (PaddleOCR ONNX, Primary)
+    if _RAPID_OCR_OK:
+        rapid_res = _run_rapid_ocr(crop)
+        if rapid_res and rapid_res[0]:
+            raw_text, conf = rapid_res
+            active_engine = "rapidocr"
+            log.info(
+                f"[OCR:RapidOCR] direction={direction} | conf={conf:.2f} | "
+                f"text_len={len(raw_text)} | preview={raw_text[:80]!r}"
+            )
+
+    # Tier 2 — PaddleOCR (Fallback 1)
+    if not raw_text and _PADDLE_OCR_OK:
+        paddle_res = _run_paddle_ocr(crop)
+        if paddle_res and paddle_res[0]:
+            raw_text, conf = paddle_res
+            active_engine = "paddleocr"
+            log.info(
+                f"[OCR:PaddleOCR] direction={direction} | conf={conf:.2f} | "
+                f"text_len={len(raw_text)} | preview={raw_text[:80]!r}"
+            )
+
+    # Tier 3 — Tesseract (Fallback 2, Legacy)
+    if not raw_text and _TESSERACT_OK:
+        tess_res = _run_tesseract(crop)
+        if tess_res and tess_res[0]:
+            raw_text, conf = tess_res
+            active_engine = "tesseract"
+            log.info(
+                f"[OCR:Tesseract] direction={direction} | text_len={len(raw_text)} | "
+                f"preview={raw_text[:80]!r}"
+            )
+
+    # If no OCR engine produced text or available
+    if not active_engine:
+        if not _RAPID_OCR_OK and not _PADDLE_OCR_OK and not _TESSERACT_OK:
+            log.warning("OCR called but no OCR engine installed. Returning REVIEW alert.")
+            return {
+                "approved": False,
+                "raw_text": "[OCR_UNAVAILABLE — install rapidocr_onnxruntime]",
+                "goods_count": None,
+                "confidence": 0.0,
+                "engine": None,
+                "timestamp": ts,
+                "direction": direction,
+                "snapshot_b64": snapshot_b64,
+                "ocr_available": False,
+            }
+        active_engine = "none"
 
     # Step 4 — heuristic approval (always log raw_text regardless of outcome)
     approved = _text_looks_like_document(raw_text, direction)
 
     if not approved:
         log.warning(
-            f"[OCR] Document NOT approved | direction={direction} | "
+            f"[OCR] Document NOT approved | engine={active_engine} | direction={direction} | "
             f"raw_text={raw_text[:120]!r}"
         )
     else:
-        log.info(f"[OCR] Document approved | direction={direction}")
+        log.info(f"[OCR] Document approved | engine={active_engine} | direction={direction}")
 
     return {
         "approved": approved,
         "raw_text": raw_text,
         "goods_count": _extract_goods_count(raw_text),
+        "confidence": conf,
+        "engine": active_engine,
         "timestamp": ts,
         "direction": direction,
         "snapshot_b64": snapshot_b64,

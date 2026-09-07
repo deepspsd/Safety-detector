@@ -13,7 +13,7 @@ services:
       - APP_ENV=production
       - SECRET_KEY=${SECRET_KEY:-change-this-super-secret-key-for-production-deploy}
       - DATABASE_URL=sqlite:///./safety.db
-      - YOLO_MODEL=ppe_factory_v0_cash.pt
+      - YOLO_MODEL=yolov8x.pt
       - DETECTION_CONF=0.30
       - CLASSIFIER_INTERVAL_MS=1000
       - CLASSIFIER_SMOOTHING_WINDOW=5
@@ -25,7 +25,6 @@ services:
       - cctv_data:/app/backend/uploads
       - cctv_face_data:/app/backend/face_data
       - cctv_models:/app/backend/models
-      - ./config:/app/config:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s

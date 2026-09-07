@@ -33,19 +33,18 @@ except ImportError:
     _use_simulation = True
 
 
+from config import settings
+
 # ── Tuning constants ────────────────────────────────────────────────────────────
 
 # Max face distance to count as KNOWN (lower = stricter = fewer false matches)
-# 0.42 = tight (same person in different lighting/angle matches)
-# 0.50 = loose (siblings may match — too many false positives)
-RECOGNITION_TOLERANCE = 0.42
+# 0.52 = balanced for real-world lighting/angle variations (dlib default is 0.60; 0.42 was overly strict)
+RECOGNITION_TOLERANCE = getattr(settings, "FACE_RECOGNITION_TOLERANCE", 0.52)
 
 # Minimum face height in pixels to process — ignore tiny/blurry distant faces
-# At 960×720 inference res, a face needs to be at least 40px tall to be reliable
-MIN_FACE_PX = 40
+MIN_FACE_PX = getattr(settings, "FACE_MIN_PIXELS", 30)
 
 # Upsampling factor for face_locations — 1 = detect smaller/farther faces
-# (0 = only large faces, 1 = detects ~2× smaller faces, costs ~2× CPU)
 UPSAMPLE_TIMES = 1
 
 
@@ -94,14 +93,15 @@ def decode_image(b64_data: str) -> Optional[np.ndarray]:
 # ── DB helper ──────────────────────────────────────────────────────────────────
 
 
-def load_known_encodings(user_id: int, db) -> Tuple[List[np.ndarray], List[str]]:
+def load_known_encodings(user_id: Optional[int], db) -> Tuple[List[np.ndarray], List[str]]:
     """
-    Returns all stored encodings and their labels for this user.
-    Multiple rows with the same label = multi-shot registration (better accuracy).
+    Returns all stored encodings and their labels.
+    Enrolled faces are shared company-wide so all cameras and logged-in users
+    (Admin, Manager, Worker) recognize all employees.
     """
     from database import FaceEncoding
 
-    records = db.query(FaceEncoding).filter(FaceEncoding.user_id == user_id).all()
+    records = db.query(FaceEncoding).all()
     encs, labels = [], []
     for r in records:
         try:
@@ -177,11 +177,25 @@ def encode_face_from_image(b64_image: str) -> Optional[Dict]:
 # ── Live detection — numpy BGR (CCTV / webcam fast path) ──────────────────────
 
 
-def process_face_numpy(frame_bgr: np.ndarray, user_id: int, db) -> Dict:
-    """Detect + identify all faces in a BGR numpy frame."""
-    if _use_simulation:
-        return _simulate(frame_bgr, user_id, db)
-    return _run_detection(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB), user_id, db)
+def process_face_numpy(frame_bgr: np.ndarray, user_id: int, db=None) -> Dict:
+    """Detect + identify all faces in a BGR numpy frame.
+
+    Opens its own thread-local DB session so this function is safe to call
+    from a thread-pool executor (SQLAlchemy sessions are NOT thread-safe).
+    """
+    from database import SessionLocal
+    _own_db = None
+    try:
+        _own_db = SessionLocal()
+        if _use_simulation:
+            return _simulate(frame_bgr, user_id, _own_db)
+        return _run_detection(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB), user_id, _own_db)
+    finally:
+        if _own_db is not None:
+            try:
+                _own_db.close()
+            except Exception:
+                pass
 
 
 # ── Live detection — base64 (legacy upload path) ───────────────────────────────

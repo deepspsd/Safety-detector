@@ -263,6 +263,34 @@ async def detection_websocket(websocket: WebSocket):
                             except Exception:
                                 pass  # never let attendance failure break PPE flow
 
+                    # ── Cash & Payee monitoring (webcam / browser WS) ───────────
+                    _cash_alert = None
+                    _payee_det = False
+                    _payee_snap = None
+                    _payee_id = None
+                    _has_cash = result.get("cash_detected") or any(
+                        "cash" in str(d.get("label", "")).lower() for d in detections
+                    )
+                    if _has_cash:
+                        try:
+                            from services import cash_monitor as _cm
+                            raw_f = yolo_service.decode_frame(b64_frame)
+                            _c_res = _cm.check_cash_zone(
+                                db=db,
+                                camera_id=9999,  # virtual webcam ID
+                                detections=detections,
+                                persons=result.get("persons", []),
+                                floor="shop",
+                                frame=raw_f,
+                            )
+                            if _c_res.get("theft_alert"):
+                                _cash_alert = _c_res["theft_alert"]
+                            _payee_det = _c_res.get("payee_detected", False)
+                            _payee_snap = _c_res.get("payee_snapshot_b64")
+                            _payee_id = _c_res.get("payee_id")
+                        except Exception:
+                            pass
+
                     # ── Build response ──────────────────────────────
                     response = {
                         "annotated_frame": result.get("annotated_frame"),
@@ -285,6 +313,12 @@ async def detection_websocket(websocket: WebSocket):
                         # Uniform detection fields
                         "uniform_detected": any(p.get("has_uniform") for p in result.get("persons", [])),
                         "uniform_violation": any(not p.get("has_uniform", True) for p in result.get("persons", [])),
+                        # Cash & Payee monitoring fields
+                        "cash_detected": _has_cash,
+                        "cash_alert": _cash_alert,
+                        "payee_detected": _payee_det,
+                        "payee_snapshot_b64": _payee_snap,
+                        "payee_id": _payee_id,
                     }
 
                     # ── Save PPE alert (cooldown + confidence gate) ─────

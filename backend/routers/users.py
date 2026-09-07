@@ -122,3 +122,62 @@ def update_config(
         "custom_ppe_items": _parse_custom_ppe(config),
         "no_phone_zone": bool(config.no_phone_zone),
     }
+
+
+# ── FCM push token endpoints ──────────────────────────────────────────────────
+
+
+class FcmTokenRequest(BaseModel):
+    token: str
+    device_name: Optional[str] = None
+
+
+@router.post("/me/fcm-token")
+def register_fcm_token(
+    data: FcmTokenRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Register (or refresh) an FCM device token for the current user."""
+    from services.fcm_service import register_token as _reg
+
+    result = _reg(
+        user_id=current_user.id,
+        token=data.token,
+        device_name=data.device_name,
+        db=db,
+    )
+    return result
+
+
+@router.delete("/me/fcm-token")
+def unregister_fcm_token(
+    data: FcmTokenRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Remove an FCM device token (logout / device swap)."""
+    from services.fcm_service import delete_token as _del
+
+    removed = _del(token=data.token, user_id=current_user.id, db=db)
+    return {"removed": removed}
+
+
+@router.get("/me/fcm-tokens")
+def list_fcm_tokens(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List all registered FCM tokens for the current user."""
+    from database import FcmToken
+
+    tokens = db.query(FcmToken).filter(FcmToken.user_id == current_user.id).all()
+    return [
+        {
+            "id": t.id,
+            "device_name": t.device_name,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+        }
+        for t in tokens
+    ]
+

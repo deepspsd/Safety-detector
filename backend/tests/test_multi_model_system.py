@@ -16,6 +16,8 @@ from pathlib import Path
 
 # Add backend to path
 sys.path.insert(0, str(Path(__file__).parent))
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 def test_model_loading():
     """Test that models load successfully."""
@@ -47,10 +49,10 @@ def test_zone_routing():
     from services.model_registry import get_models_for_zone
     
     test_zones = {
-        "entrance": ["ppe_factory_v0_cash", "hairnet_glove_detection"],
-        "dough_mixing": ["ppe_factory_v0_cash", "hairnet_glove_detection", "fall_detection"],
-        "shop_counter": ["ppe_factory_v0_cash"],
-        "unknown": ["ppe_factory_v0_cash"],
+        "entrance": ["yolov8x_coco", "hairnet_glove_detection"],
+        "dough_mixing": ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
+        "shop_counter": ["yolov8x_coco", "cash_detection"],
+        "unknown": ["yolov8x_coco"],
     }
     
     all_passed = True
@@ -59,7 +61,7 @@ def test_zone_routing():
         model_keys = [m.key for m in models]
         
         # Check if expected models are present (may have more due to enabled models)
-        matches = all(exp in model_keys for exp in expected_models if exp in ["ppe_factory_v0_cash", "hairnet_glove_detection", "fall_detection"])
+        matches = all(exp in model_keys for exp in expected_models if exp in ["yolov8x_coco", "hairnet_glove_detection", "fall_detection", "cash_detection"])
         
         if matches:
             print(f"  ✅ Zone '{zone}': {len(models)} models - {model_keys}")
@@ -111,7 +113,7 @@ def test_detection_fusion():
         label="NO-Bakery-Head-Cap",
         confidence=0.8,
         bbox=[100, 100, 200, 200],
-        model_key="ppe_factory_v0_cash",
+        model_key="yolov8x_coco",
         class_id=11
     )
     
@@ -127,7 +129,7 @@ def test_detection_fusion():
         label="Person",
         confidence=0.95,
         bbox=[300, 300, 400, 400],  # Not overlapping
-        model_key="ppe_factory_v0_cash",
+        model_key="yolov8x_coco",
         class_id=5
     )
     

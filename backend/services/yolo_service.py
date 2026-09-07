@@ -113,7 +113,6 @@ VIOLATION_LABEL_MAP = {
 
 # Classes that are purely simulated (not detected by ppe.pt natively)
 SIM_ONLY_VIOLATIONS = {
-    "NO-Gloves",
     "NO-Goggles",
     "NO-Safety Shoes",
     "NO-ID Card",
@@ -187,15 +186,17 @@ ROLE_RULES: Dict[str, Dict] = {
     # Bangles is ALWAYS a violation in food production regardless of other PPE.
     "Bakery Worker": {
         "required_violations": [
-            "NO-Bakery-Head-Cap",  # cap absent / incorrectly worn
-            "Bangles",  # jewellery — always flagged in food production
-            "NO-Mask",  # hygiene mask required
+            "NO-Bakery-Head-Cap",  # cap absent / loose hair
+            "NO-Gloves",           # bare hands in food prep
+            "Bangles",             # jewellery — always flagged in food production
+            "NO-Mask",             # hygiene mask required
         ],
         "required_compliant": [
-            "Bakery-Head-Cap",  # cloth cap worn correctly
-            "Mask",  # face mask
+            "Bakery-Head-Cap",  # hair covered
+            "Gloves",           # food safety gloves worn
+            "Mask",             # face mask
         ],
-        "required_sim": ["NO-Gloves", "NO-Uniform"],
+        "required_sim": ["NO-Uniform"],
         "severity": "critical",
         "alert_prefix": "🧁 Bakery safety violation",
     },
@@ -410,6 +411,7 @@ def load_model():
         _paths_to_try = [
             _candidate,
             os.path.join(_backend_dir, _candidate),
+            os.path.join(_backend_dir, "..", _candidate),
             os.path.join(_backend_dir, "..", "training", "models", _candidate),
         ]
         for _p in _paths_to_try:
@@ -494,19 +496,8 @@ def load_model():
                     f"✅ Dedicated helmet model loaded from cache: {_HELMET_MODEL_PATH}"
                 )
             else:
-                # Download from HuggingFace (one-time, ~52 MB)
-                print("⏬ [background] Downloading dedicated helmet model…")
-                print(f"   URL: {_HELMET_MODEL_URL}")
-                urllib.request.urlretrieve(_HELMET_MODEL_URL, _HELMET_MODEL_PATH)  # nosec B310
-                if os.path.getsize(_HELMET_MODEL_PATH) < HELMET_MIN_BYTES:
-                    raise ValueError(
-                        "Downloaded file is too small — likely a network error"
-                    )
-                _helmet_model = _YOLO_hm(_HELMET_MODEL_PATH)
-                _helmet_model_dedicated = True
-                print(
-                    "✅ Dedicated helmet model ready — keremberke/yolov8m-hard-hat-detection"
-                )
+                _helmet_model = None
+                _helmet_model_dedicated = False
         except Exception as _hme:
             try:
                 if _hm_orig2:
@@ -649,7 +640,7 @@ def _run_inference_with(frame: np.ndarray, model, is_ppe: bool) -> List[Dict]:
     results = model(
         frame,
         verbose=False,
-        conf=0.20,
+        conf=max(0.40, getattr(settings, "DETECTION_CONF", 0.50)),
         iou=settings.NMS_IOU,
     )
     detections = []
@@ -678,8 +669,11 @@ def _run_inference_with(frame: np.ndarray, model, is_ppe: bool) -> List[Dict]:
                 det_type = "compliant"
             elif label in PERSON_CLASSES or label.lower() == "person":
                 det_type = "person"
-            else:
+            elif label in NEUTRAL_CLASSES:
                 det_type = "neutral"
+            else:
+                # Discard unwanted/spurious COCO classes (e.g. tennis racket, chair, bench, umbrella)
+                continue
 
             detections.append(
                 {
@@ -1522,8 +1516,8 @@ def _run_pipeline(
         "NO-Mask": "Mask",
         "NO-Safety Vest": "Safety Vest",
         "NO-Bakery-Head-Cap": "Bakery-Head-Cap",  # bakery cap compliant class
+        "NO-Gloves": "Gloves",                   # food safety gloves
         # Bangles has no "compliant" counterpart — it is always a violation
-        # simulated classes have no real compliant class in ppe.pt
     }
 
     if _use_simulation or active_model is None:
@@ -1562,7 +1556,9 @@ def _run_pipeline(
             _dt = "neutral"
 
             # Determine det_type and standardize labels for client compliance rules
-            if "fall" in _lbl_lower:
+            if "non-fall" in _lbl_lower or _lbl_lower == "non_fall":
+                continue  # Skip negative 'non-fall' class entirely
+            elif _lbl_lower == "fall" or _lbl_lower == "worker fall" or ("fall" in _lbl_lower and "non" not in _lbl_lower):
                 _lbl = "Worker Fall"
                 _dt = "violation"
             elif _lbl in ("NO-Hairnet", "no_hairnet", "Hair", "no_hair_cover"):
@@ -1602,6 +1598,16 @@ def _run_pipeline(
         log.debug(f"[MultiModel] Error during injection: {_mm_err}")
 
     # Strictly filter raw detections to only keep selected classes
+    # CRITICAL: safety-critical anomalies must NEVER be suppressed by client-side PPE checkboxes!
+    CRITICAL_SAFETY_LABELS = {
+        "Worker Fall", "fall", "Fall",
+        "Machine Anomaly", "anomaly", "Anomaly",
+        "Object Throwing", "throw", "Throw",
+        "Bangles", "bangles",
+        "Cash", "cash",
+        "Cylinder", "gas_cylinder",
+    }
+
     before_filter = [d["label"] for d in raw]
     if detection_filters is not None and len(detection_filters) > 0:
         # Build the set of compliant labels that correspond to selected violation filters
@@ -1617,6 +1623,7 @@ def _run_pipeline(
             or d["det_type"] == "neutral"  # always keep neutral
             or d["label"] in detection_filters  # keep selected violations
             or d["label"] in allowed_compliant  # keep corresponding compliant
+            or d["label"] in CRITICAL_SAFETY_LABELS  # always keep critical safety detections
         ]
     after_filter = [d["label"] for d in raw]
     # Only log when there's something worth seeing (suppresses empty-frame noise)
@@ -1633,14 +1640,21 @@ def _run_pipeline(
     if camera_id is not None:
         persons = _apply_tracking(camera_id, persons)
 
-    if not persons and ppe_dets:
-        xs = [d["bbox"][0] for d in ppe_dets] + [d["bbox"][2] for d in ppe_dets]
-        ys = [d["bbox"][1] for d in ppe_dets] + [d["bbox"][3] for d in ppe_dets]
+    # Only synthesize a person if wearable PPE items (headcap, mask, vest, hardhat) are detected
+    WEARABLE_PPE_CLASSES = {
+        "Hardhat", "Mask", "Safety Vest", "Bakery-Head-Cap", "Gloves",
+        "NO-Hardhat", "NO-Mask", "NO-Safety Vest", "NO-Bakery-Head-Cap", "NO-Gloves",
+    }
+    wearable_dets = [d for d in ppe_dets if d["label"] in WEARABLE_PPE_CLASSES]
+
+    if not persons and wearable_dets:
+        xs = [d["bbox"][0] for d in wearable_dets] + [d["bbox"][2] for d in wearable_dets]
+        ys = [d["bbox"][1] for d in wearable_dets] + [d["bbox"][3] for d in wearable_dets]
         h, w = frame.shape[:2]
         persons = [
             {
                 "label": "Person",
-                "confidence": max(d["confidence"] for d in ppe_dets),
+                "confidence": max(d["confidence"] for d in wearable_dets),
                 "bbox": [
                     max(0, min(xs) - 30),
                     max(0, min(ys) - 30),
@@ -2000,6 +2014,7 @@ def process_frame_numpy_tracked(
     camera_id: int,
     detection_filters: Optional[List[str]] = None,
     no_phone_zone: bool = False,
+    zone_type: Optional[str] = None,
 ) -> Dict:
     """
     Full violation pipeline with per-camera ByteTrack tracking.
@@ -2019,12 +2034,14 @@ def process_frame_numpy_tracked(
     """
     if frame is None:
         return {"error": "Invalid frame"}
+    _zone_cfg = {"zone_type": zone_type} if zone_type else None
     return _run_pipeline(
         frame,
         role,
         detection_filters=detection_filters,
         no_phone_zone=no_phone_zone,
         camera_id=camera_id,
+        ocr_zone_config=_zone_cfg,
     )
 
 

@@ -81,3 +81,9 @@ yolov8l.pt
 yolov8x.pt
 yolov8n-pose.pt
 portable_models_package
+MODEL_MAPPING_STRATEGY.md
+# Firebase service account private keys
+firebase_service_account.json
+occusafe-4f0c8-firebase-adminsdk-*.json
+uniform_detector_training.ipynb
+uploads

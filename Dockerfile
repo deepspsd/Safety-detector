@@ -27,9 +27,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy Backend Source
+# Copy Backend Source and Models
 COPY backend/ ./backend/
-COPY config/ ./config/
+COPY portable_models_package/ ./portable_models_package/
+COPY yolov8x.pt ./yolov8x.pt
 
 # Copy Frontend Build into backend static dist directory
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
