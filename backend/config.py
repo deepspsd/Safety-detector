@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     MIN_VIOLATION_CONF: float = 0.40  # Lowered from 0.60 to 0.40
     ALERT_COOLDOWN: int = 3
     FRAME_SKIP: int = 3  # process every Nth frame in video uploads
+    HAIRNET_CONF_THRESHOLD: float = float(os.getenv("HAIRNET_CONF_THRESHOLD", "0.10"))
+    HAIRNET_IMGSZ: int = int(os.getenv("HAIRNET_IMGSZ", "960"))
+    DEBUG_HAIRNET_RAW: bool = os.getenv("DEBUG_HAIRNET_RAW", "false").lower() in ("true", "1", "yes")
 
     # ── Face Recognition Tuning ──────────────────────────────────────────────
     FACE_RECOGNITION_TOLERANCE: float = 0.52  # 0.52 = balanced (0.60 = dlib loose, 0.42 = overly strict)
@@ -59,7 +62,7 @@ class Settings(BaseSettings):
             "enabled": True,
             "priority": 0,  # PRIMARY - person detection, vehicles, objects
             "conf_threshold": 0.25,  # Lowered for sensitive person detection
-            "target_fps": 10,
+            "target_fps": 15,
             "zones": ["*"],  # All zones
             "description": "YOLOv8x COCO - General object detection (person, vehicle, phone, etc.)",
             "capabilities": ["person_detection", "phone_detection", "vehicle_detection", "bottle_detection"],
@@ -74,14 +77,15 @@ class Settings(BaseSettings):
             "type": "yolo",
             "enabled": True,
             "priority": 1,
-            "conf_threshold": 0.35,
-            "target_fps": 5,
-            "zones": ["*", "dough_mixing", "oven", "packing", "biscuit_cutting", "entrance", "dough_table", "gas_section", "shop", "shop_counter", "store", "default"],
-            "description": "Food safety - hairnet, gloves, hand detection",
-            "capabilities": ["head_cover_compliance", "hand_protection_compliance", "sanitation_check"],
+            "conf_threshold": float(os.getenv("HAIRNET_CONF_THRESHOLD", "0.10")),
+            "imgsz": int(os.getenv("HAIRNET_IMGSZ", "960")),
+            "target_fps": 15,
+            "zones": ["*", "dough_mixing", "oven", "packing", "biscuit_cutting", "cutting_machine", "entrance", "dough_table", "gas_section", "shop", "shop_counter", "cashbox", "store", "default"],
+            "description": "Food safety - hairnet detection (YOLOv8m 2-class head detector)",
+            "capabilities": ["head_cover_compliance", "sanitation_check"],
             "classes": {
-                0: "Back_Palm", 1: "Front_Palm", 2: "Hair", 
-                3: "Hair_Cover", 4: "Hand_Gloves"
+                0: "hairnet",
+                1: "no_hairnet"
             }
         },
         "fall_detection": {
@@ -90,7 +94,7 @@ class Settings(BaseSettings):
             "enabled": True,
             "priority": 1,
             "conf_threshold": 0.50,
-            "target_fps": 10,
+            "target_fps": 15,
             "zones": ["*"],
             "description": "Worker safety - fall detection",
             "capabilities": ["worker_fall_detection", "person_down_detection"],
@@ -179,7 +183,6 @@ class Settings(BaseSettings):
         "vehicle_detection": ["yolov8x_coco"],
         "bottle_detection": ["yolov8x_coco"],
         "head_cover_compliance": ["hairnet_glove_detection"],
-        "hand_protection_compliance": ["hairnet_glove_detection"],
         "sanitation_check": ["hairnet_glove_detection"],
         "worker_fall_detection": ["fall_detection"],
         "person_down_detection": ["fall_detection"],
@@ -200,12 +203,12 @@ class Settings(BaseSettings):
     # Default required capabilities for standard zone types.
     ZONE_CAPABILITY_MAP: dict = {
         "entrance":         ["person_detection", "head_cover_compliance", "worker_fall_detection", "vehicle_detection"],
-        "dough_mixing":     ["person_detection", "head_cover_compliance", "hand_protection_compliance", "worker_fall_detection", "machine_anomaly_prediction"],
-        "dough_table":      ["person_detection", "head_cover_compliance", "hand_protection_compliance", "worker_fall_detection"],
+        "dough_mixing":     ["person_detection", "head_cover_compliance", "worker_fall_detection", "machine_anomaly_prediction"],
+        "dough_table":      ["person_detection", "head_cover_compliance", "worker_fall_detection"],
         "oven":             ["person_detection", "head_cover_compliance", "worker_fall_detection"],
-        "biscuit_cutting":  ["person_detection", "head_cover_compliance", "hand_protection_compliance", "worker_fall_detection", "machine_anomaly_prediction"],
-        "cutting_machine":  ["person_detection", "head_cover_compliance", "hand_protection_compliance", "worker_fall_detection", "machine_anomaly_prediction"],
-        "packing":          ["person_detection", "head_cover_compliance", "hand_protection_compliance", "worker_fall_detection", "hand_motion_tracking"],
+        "biscuit_cutting":  ["person_detection", "head_cover_compliance", "worker_fall_detection", "machine_anomaly_prediction"],
+        "cutting_machine":  ["person_detection", "head_cover_compliance", "worker_fall_detection", "machine_anomaly_prediction"],
+        "packing":          ["person_detection", "head_cover_compliance", "worker_fall_detection", "hand_motion_tracking"],
         "shop":             ["person_detection", "cash_monitoring", "head_cover_compliance", "worker_fall_detection"],
         "shop_counter":     ["person_detection", "cash_monitoring", "head_cover_compliance", "worker_fall_detection"],
         "cashbox":          ["person_detection", "cash_monitoring", "head_cover_compliance"],
@@ -266,6 +269,8 @@ class Settings(BaseSettings):
         "NO-Hairnet": "no_hair_cover",
         "no_hairnet": "no_hair_cover",
         "NO-Bakery-Head-Cap": "no_hair_cover",
+        "hairnet": "hair_cover_ok",
+        "Hairnet": "hair_cover_ok",
         "Hair_Cover": "hair_cover_ok",
         "Bakery-Head-Cap": "hair_cover_ok",
         "hair_cover_ok": "hair_cover_ok",

@@ -49,7 +49,7 @@ os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
     "fflags;nobuffer|"
     "flags;low_delay|"
     "stimeout;5000000|"
-    "max_delay;500000"
+    "max_delay;0"
 )
 
 import ssl
@@ -81,6 +81,45 @@ _face_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cctv-face
 
 _last_alert_time: dict = {}
 _last_phone_alert_time: dict = {}
+_active_cctv_alerts: dict = {}
+_active_cctv_alerts_lock = threading.Lock()
+
+
+def _cctv_alert_key(user_id: int, camera_id: Optional[int], missing: list, message: str = ""):
+    """Stable key for one continuous violation event.
+
+    Worker names, track IDs, confidence text, and durations must not create a
+    new event.  Key by owner + camera + normalized missing classes.
+    """
+    import re
+
+    values = [str(item).lower() for item in (missing or []) if item]
+    if not values and message:
+        values = [str(message).lower()]
+    normalized = []
+    for value in values:
+        if "head" in value or "hairnet" in value or "hair cover" in value:
+            value = "head_cap"
+        elif "uniform" in value:
+            value = "uniform"
+        elif "glove" in value:
+            value = "gloves"
+        elif "phone" in value:
+            value = "phone"
+        else:
+            value = re.sub(r"[^a-z0-9]+", "_", value).strip("_")
+        if value and value not in normalized:
+            normalized.append(value)
+    if not normalized:
+        return None
+    return (int(user_id), int(camera_id) if camera_id is not None else None, tuple(sorted(normalized)))
+
+
+def _clear_cctv_alert_events(user_id: int, camera_id: Optional[int]) -> None:
+    with _active_cctv_alerts_lock:
+        for key in list(_active_cctv_alerts):
+            if key[0] == int(user_id) and key[1] == (int(camera_id) if camera_id is not None else None):
+                _active_cctv_alerts.pop(key, None)
 
 INFER_WIDTH = 640
 INFER_HEIGHT = 480
@@ -572,7 +611,7 @@ class CameraReader:
                 "fflags;nobuffer|"
                 "flags;low_delay|"
                 "stimeout;5000000|"  # 5 seconds socket timeout
-                "max_delay;500000"
+                "max_delay;0"
             )
 
         # Support webcam index passed as string "0", "1", …
@@ -1319,14 +1358,45 @@ async def cctv_detection_websocket(websocket: WebSocket):
                         ]
                         dets_c = [d.get("confidence", 0) for d in dets]
                         top_conf = max(persons_c + dets_c, default=0.5)
-                        cooldown = settings.ALERT_COOLDOWN
                         if (
                             top_conf >= settings.MIN_VIOLATION_CONF
-                            and (now_t - _last_alert_time.get(uid, 0)) > cooldown
                         ):
-                            _last_alert_time[uid] = now_t
                             missing = response.get("missing_items", [])
                             cam_id = response.get("camera_id") or managed_camera_id
+
+                            # Managed camera head-cap state is handled by the
+                            # dedicated crop monitor. Do not create a second
+                            # per-WebSocket alert for that same violation.
+                            managed_headcap_violation = False
+                            if managed_camera_id is not None:
+                                managed_headcap_violation = any(
+                                    "head" in str(item).lower()
+                                    or "hairnet" in str(item).lower()
+                                    for item in missing
+                                )
+                                missing = [
+                                    item for item in missing
+                                    if "head" not in str(item).lower()
+                                    and "hairnet" not in str(item).lower()
+                                ]
+                            event_key = _cctv_alert_key(
+                                uid,
+                                cam_id,
+                                missing,
+                                "" if managed_headcap_violation else response.get("alert_message", ""),
+                            )
+                            alert_allowed = bool(event_key)
+
+                            # One DB row/push per continuous event. Event is
+                            # cleared only after a compliant frame arrives;
+                            # therefore all-day violation stays one alert.
+                            if alert_allowed:
+                                with _active_cctv_alerts_lock:
+                                    active_since = _active_cctv_alerts.get(event_key)
+                                    if active_since and now_t - active_since < 86400:
+                                        alert_allowed = False
+                                    else:
+                                        _active_cctv_alerts[event_key] = now_t
 
                             c_worker_name = None
                             c_emp_id = None
@@ -1366,23 +1436,27 @@ async def cctv_detection_websocket(websocket: WebSocket):
                                 detected_issue = missing_str
                                 alert_msg = response["alert_message"]
 
-                            try:
-                                save_alert(
-                                    db=db,
-                                    user_id=uid,
-                                    message=alert_msg,
-                                    role=role,
-                                    severity=response.get("severity"),
-                                    detected_issue=detected_issue,
-                                    confidence=round(top_conf, 3),
-                                    snapshot_b64=response.get("snapshot_b64") or response.get("annotated_frame"),
-                                    camera_id=cam_id,
-                                    worker_name=c_worker_name,
-                                    employee_id=c_emp_id,
-                                )
-                                response["alert_saved"] = True
-                            except Exception:
-                                pass
+                            if alert_allowed:
+                                try:
+                                    save_alert(
+                                        db=db,
+                                        user_id=uid,
+                                        message=alert_msg,
+                                        role=role,
+                                        severity=response.get("severity"),
+                                        detected_issue=detected_issue,
+                                        confidence=round(top_conf, 3),
+                                        snapshot_b64=response.get("snapshot_b64") or response.get("annotated_frame"),
+                                        camera_id=cam_id,
+                                        worker_name=c_worker_name,
+                                        employee_id=c_emp_id,
+                                    )
+                                    response["alert_saved"] = True
+                                except Exception:
+                                    with _active_cctv_alerts_lock:
+                                        _active_cctv_alerts.pop(event_key, None)
+                    elif managed_camera_id is not None:
+                        _clear_cctv_alert_events(uid, managed_camera_id)
 
                     if response.get("phone_severity") == "high" and response.get(
                         "phone_alert"

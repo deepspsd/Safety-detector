@@ -145,14 +145,21 @@ def _infer_on_crop(crop: np.ndarray) -> Tuple[float, str]:
             # Use conf=0.15 — lower than global default (0.25) to catch weaker
             # Hair / Hair_Cover signals on small top-down CCTV head crops
             dets = mm.infer("hairnet_glove_detection", crop, conf=0.15)
-            cap_confs = [
-                d.confidence for d in dets
-                if d.class_name in ("Hair_Cover", "hair_cover", "Hairnet", "hairnet", "Bakery-Head-Cap")
-            ]
-            hair_confs = [
-                d.confidence for d in dets
-                if d.class_name in ("Hair", "hair", "NO-Bakery-Head-Cap")
-            ]
+            # ModelManager returns raw model names, but other model paths can
+            # return normalized aliases.  Normalize before classification so a
+            # valid cap is not lost because it arrived as Hairnet/hair_cover_ok.
+            from services.multi_model_detector import normalize_class_label
+
+            cap_confs = []
+            hair_confs = []
+            for det in dets:
+                raw_name = str(getattr(det, "class_name", "") or "")
+                normalized, _det_type = normalize_class_label(raw_name)
+                name = normalized or raw_name
+                if name in ("Bakery-Head-Cap", "Hairnet", "hairnet", "Hair_Cover", "hair_cover_ok"):
+                    cap_confs.append(float(det.confidence))
+                elif name in ("NO-Bakery-Head-Cap", "Hair", "hair", "NO-Hairnet", "no_hairnet", "no_hair_cover"):
+                    hair_confs.append(float(det.confidence))
 
             if cap_confs:
                 return float(max(cap_confs)), DIAG_OK
@@ -183,10 +190,12 @@ def _infer_on_crop(crop: np.ndarray) -> Tuple[float, str]:
 
         detections = result.get("detections", [])
         best_conf = 0.0
+        from services.multi_model_detector import normalize_class_label
         for det in detections:
             lbl = det.get("label", "")
             conf = float(det.get("confidence", 0.0))
-            if lbl == _CAP_CLASS_LABEL and conf > best_conf:
+            normalized, _det_type = normalize_class_label(lbl)
+            if (normalized == _CAP_CLASS_LABEL or lbl in ("Hairnet", "hairnet", "Hair_Cover", "hair_cover_ok")) and conf > best_conf:
                 best_conf = conf
 
         return best_conf, DIAG_OK
@@ -274,7 +283,8 @@ def associate_headcaps_to_persons(
     """
     cap_dets = [
         d for d in raw_dets
-        if d.get("label") == _CAP_CLASS_LABEL
+        if (d.get("label") in (_CAP_CLASS_LABEL, "Hairnet", "hairnet")
+            or d.get("raw_label") in ("hairnet", "Hairnet"))
         and d.get("confidence", 0) >= _UNCERTAIN_LOW
     ]
 
@@ -441,13 +451,38 @@ class HeadCapMonitor:
                     self._state[key] = ps
 
             # ── Choose inference method ────────────────────────────────────
-            # Crop-based (primary): only when frame available and throttle allows
-            do_crop_infer = (
-                frame is not None
-                and (wall_now - ps.last_infer_at) >= _INFER_INTERVAL
-            )
+            # Priority 1: Check full-frame detections from raw_dets (native YOLO imgsz=960)
+            matching_full_frame = [
+                d for d in raw_dets
+                if (d.get("label") in ("Bakery-Head-Cap", "NO-Bakery-Head-Cap", "Hairnet", "NO-Hairnet")
+                    or d.get("raw_label") in ("hairnet", "no_hairnet"))
+                and _headcap_belongs_to_person(p_box, d.get("bbox", []), d.get("confidence", 0.0))
+            ]
 
-            if do_crop_infer:
+            if matching_full_frame:
+                best_ff = max(matching_full_frame, key=lambda d: d.get("confidence", 0.0))
+                raw_n = best_ff.get("raw_label") or best_ff.get("label")
+                ff_conf = float(best_ff.get("confidence", 0.0))
+                ff_box = best_ff.get("bbox")
+                if raw_n in ("Bakery-Head-Cap", "Hairnet", "hairnet"):
+                    raw_pred = PRED_HEAD_CAP
+                    cap_conf = ff_conf
+                else:
+                    raw_pred = PRED_NO_HEAD_CAP
+                    cap_conf = 0.0
+                diag_flag = DIAG_OK
+
+                with self._lock:
+                    ps.last_infer_at = wall_now
+                    ps.cap_bbox = ff_box
+                    ps.cap_confidence = cap_conf
+                    ps.raw_prediction = raw_pred
+                    ps.diagnostic_flag = diag_flag
+                    if raw_pred != PRED_UNCERTAIN:
+                        ps.prediction_window.append(raw_pred)
+
+            # Priority 2: Crop-based fallback only if no full-frame detection and throttle allows
+            elif frame is not None and (wall_now - ps.last_infer_at) >= _INFER_INTERVAL:
                 crop_box = _derive_head_crop_box(p_box, frame.shape)
                 crop = _extract_crop(frame, crop_box)
                 cw = crop_box[2] - crop_box[0]
@@ -533,7 +568,11 @@ class HeadCapMonitor:
                             if ps.last_alert_at is not None
                             else float("inf")
                         )
-                        if since_last >= _ALERT_COOLDOWN:
+                        # One alert per continuous violation.  Repeating after a
+                        # cooldown made a person standing all day generate
+                        # hundreds/thousands of identical alerts.  A fresh alert
+                        # is allowed only after cap compliance resets state.
+                        if ps.state != STATE_ALERT and since_last >= _ALERT_COOLDOWN:
                             ps.last_alert_at = now
                             alert_fired = True
                             log.warning(

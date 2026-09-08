@@ -1,33 +1,16 @@
 """
-YOLO Violation Detection Service — v3.1  (ppe_factory_v0 edition)
+YOLO Violation Detection Service — v4.0 (Multi-Model Architecture)
 ==================================================================
-Active model: ppe_factory_v0.pt  (upgraded factory model — 17 classes)
-Fallback chain: ppe_factory_v0.pt → ppe_factory_v1.pt → ppe.pt (10-class) → simulation
-
-  Base classes (ppe.pt, 0-9):
-    Hardhat, Mask, NO-Hardhat, NO-Mask, NO-Safety Vest,
-    Person, Safety Cone, Safety Vest, machinery, vehicle
-
-  Factory-extended classes (10-16):
-    Bakery-Head-Cap, NO-Bakery-Head-Cap, Bangles,
-    Document-in-hand, Cylinder, Exposed-Item, Cashbox
-
-  Violation classes: NO-Hardhat, NO-Mask, NO-Safety Vest,
-                     NO-Bakery-Head-Cap, Bangles, Exposed-Item
-  Compliant classes: Hardhat, Mask, Safety Vest, Bakery-Head-Cap
-  Neutral:           Person, Safety Cone, machinery, vehicle,
-                     Document-in-hand, Cylinder, Cashbox
+Primary Person & Object Model: yolov8x.pt (COCO standard, 80 classes)
+Specialized Models: portable_models_package/ (hairnet, fall, cash, anomaly)
+Legacy ppe_factory_v0.pt: DISABLED / REMOVED
 
 Flow per frame:
-  1. Run model inference (conf ≥ DETECTION_CONF).
-  2. Separate detections into violations, compliant PPE, persons, neutral.
-  3. Associate violations/PPE to nearest Person bbox via IoU + containment.
-  4. Draw RED box + label for violators.
-  5. Draw GREEN box for persons with ALL required PPE present.
-  6. Build role-specific compliance summary.
-  7. Return enriched result for the FastAPI router.
-
-Place model in:  backend/ppe_factory_v0.pt
+  1. Detect persons with yolov8x.pt.
+  2. Multi-model injection runs specialized detectors (hairnet_glove_detection, fall, etc.).
+  3. Associate head coverings / PPE to detected persons via IoU & head region geometry.
+  4. Evaluate role-specific compliance rules (Bakery Worker: Bakery-Head-Cap, Bangles, etc.).
+  5. Annotate frame and return detection payload.
 """
 
 import base64
@@ -101,6 +84,8 @@ VIOLATION_LABEL_MAP = {
     "NO-Safety Vest": "No Safety Vest",
     # Phase 1 — bakery-specific violations
     "NO-Bakery-Head-Cap": "No Head Cap",
+    "NO-Hairnet": "No Hairnet",
+    "no_hairnet": "No Hairnet",
     "Bangles": "Bangles Detected (Violation)",
     "Exposed-Item": "Stock Kept Openly",
     # Simulated classes (not detected by model natively)
@@ -187,14 +172,10 @@ ROLE_RULES: Dict[str, Dict] = {
     "Bakery Worker": {
         "required_violations": [
             "NO-Bakery-Head-Cap",  # cap absent / loose hair
-            "NO-Gloves",           # bare hands in food prep
             "Bangles",             # jewellery — always flagged in food production
-            "NO-Mask",             # hygiene mask required
         ],
         "required_compliant": [
             "Bakery-Head-Cap",  # hair covered
-            "Gloves",           # food safety gloves worn
-            "Mask",             # face mask
         ],
         "required_sim": ["NO-Uniform"],
         "severity": "critical",
@@ -214,6 +195,7 @@ ROLE_RULES: Dict[str, Dict] = {
         "alert_prefix": "🏭 Factory safety violation",
     },
 }
+ROLE_RULES["Bakery"] = ROLE_RULES["Bakery Worker"]
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -234,23 +216,6 @@ _phone_model = None  # dedicated phone detection model (COCO class 67)
 _use_simulation = False
 _model_is_ppe = False  # True when ppe.pt loaded (vs generic COCO)
 
-
-# ─────────────────────────────────────────────────────────────────
-# Public accessors for model state (used by check_models.py)
-# ─────────────────────────────────────────────────────────────────
-def get_model():
-    """Public accessor for the primary YOLO model."""
-    return _model
-
-
-def get_helmet_model():
-    """Public accessor for the helmet detection model."""
-    return _helmet_model
-
-
-def get_phone_model():
-    """Public accessor for the phone detection model."""
-    return _phone_model
 
 # ─────────────────────────────────────────────────────────────────
 # ByteTrack tracker registry  (one tracker instance per camera_id)
@@ -703,6 +668,35 @@ def _belongs_to_person(person_box: List[int], item_box: List[int]) -> bool:
     return _center_in_box(item_box, person_box)
 
 
+def _head_belongs_to_person(person_box: List[int], head_box: List[int]) -> bool:
+    """
+    True if head_box (hairnet / no_hairnet / head-cap) belongs to person_box.
+    Evaluates horizontal alignment and upper-body vertical placement.
+    """
+    px1, py1, px2, py2 = person_box
+    hx1, hy1, hx2, hy2 = head_box
+    pw = max(1, px2 - px1)
+    ph = max(1, py2 - py1)
+
+    hcx = (hx1 + hx2) / 2.0
+    hcy = (hy1 + hy2) / 2.0
+
+    # Upper 45% of person height with 15% horizontal margin
+    hr_x1 = px1 - 0.15 * pw
+    hr_x2 = px2 + 0.15 * pw
+    hr_y1 = py1 - 0.10 * ph
+    hr_y2 = py1 + 0.45 * ph
+
+    if (hr_x1 <= hcx <= hr_x2) and (hr_y1 <= hcy <= hr_y2):
+        return True
+
+    head_rgn = [max(0, int(hr_x1)), max(0, int(hr_y1)), int(hr_x2), int(hr_y2)]
+    if _iou(head_rgn, head_box) >= 0.05:
+        return True
+
+    return False
+
+
 # ─────────────────────────────────────────────────────────────────
 # ppe.pt inference + raw detection parsing
 # ─────────────────────────────────────────────────────────────────
@@ -715,10 +709,8 @@ def _run_inference_with(frame: np.ndarray, model, is_ppe: bool) -> List[Dict]:
 
     Returns flat list: {label, confidence, bbox:[x1,y1,x2,y2], det_type}
     """
-    # imgsz=640: tell YOLO the target inference size explicitly so it does NOT
-    # resize internally on every call (saves a full BGR copy + resize on CPU).
-    # stream=True: returns a generator instead of building a list of Result
-    # objects, reducing peak RAM allocation per inference call.
+    from services.multi_model_detector import normalize_class_label
+
     results = list(model(
         frame,
         verbose=False,
@@ -730,22 +722,34 @@ def _run_inference_with(frame: np.ndarray, model, is_ppe: bool) -> List[Dict]:
     detections = []
     _raw_box_count = sum(len(r.boxes) for r in results)
     if _raw_box_count > 0:
-        _raw_labels = [model.names[int(box.cls[0])] for r in results for box in r.boxes]
+        _model_names = getattr(model, "names", {})
+        _raw_labels = [
+            _model_names.get(int(box.cls[0]), f"class_{int(box.cls[0])}")
+            for r in results for box in r.boxes
+        ]
         log.debug("[INFERENCE] raw_boxes=%d labels=%s", _raw_box_count, _raw_labels)
-    from services.multi_model_detector import normalize_class_label
 
     for r in results:
         for box in r.boxes:
             cls_idx = int(box.cls[0])
-            if hasattr(model, "names") and cls_idx in model.names:
-                raw_label = model.names[cls_idx]
+
+            # Resolve raw label from model class map
+            _model_names = getattr(model, "names", {})
+            if isinstance(_model_names, dict) and cls_idx in _model_names:
+                raw_label = _model_names[cls_idx]
             elif is_ppe and cls_idx < len(PPE_CLASS_NAMES):
                 raw_label = PPE_CLASS_NAMES[cls_idx]
             else:
                 raw_label = f"class_{cls_idx}"
 
+            # Normalize label to standard taxonomy
             label, det_type = normalize_class_label(raw_label)
             if not label or det_type == "ignore":
+                continue
+
+            # For COCO (non-PPE) models: discard classes not in our detection sets.
+            # This prevents car, truck, bicycle, bench, etc. from flooding results.
+            if not is_ppe and det_type == "neutral" and label not in NEUTRAL_CLASSES:
                 continue
 
             conf = round(float(box.conf[0]), 3)
@@ -793,14 +797,44 @@ def _associate_to_persons(
 
         assigned_violations: List[str] = []
         assigned_compliant: List[str] = []
+        head_bbox: Optional[List[int]] = None
+        headwear_status: Optional[str] = None
+        headwear_label: Optional[str] = None
+        headwear_conf: float = 0.0
 
         for det in ppe_detections:
-            if not _belongs_to_person(p_box, det["bbox"]):
+            lbl = det["label"]
+            raw_lbl = det.get("raw_label", lbl)
+            is_head = (
+                lbl in ("Bakery-Head-Cap", "NO-Bakery-Head-Cap", "Hairnet", "NO-Hairnet")
+                or raw_lbl in ("hairnet", "no_hairnet", "Hairnet", "NO-Hairnet")
+            )
+            belongs = _head_belongs_to_person(p_box, det["bbox"]) if is_head else _belongs_to_person(p_box, det["bbox"])
+            if not belongs:
                 continue
+
+            if is_head:
+                det_conf = det.get("confidence", 0.0)
+                if head_bbox is None or det_conf > headwear_conf:
+                    head_bbox = det["bbox"]
+                    headwear_conf = det_conf
+                    headwear_label = raw_lbl
+                    headwear_status = "compliant" if det["det_type"] == "compliant" else "violation"
+
             if det["det_type"] == "violation":
                 assigned_violations.append(det["label"])
             elif det["det_type"] == "compliant":
                 assigned_compliant.append(det["label"])
+
+        # Resolve conflicting headwear detections using the highest-confidence prediction
+        if headwear_status == "compliant":
+            assigned_violations = [v for v in assigned_violations if v not in ("NO-Bakery-Head-Cap", "NO-Hairnet")]
+            if "Bakery-Head-Cap" not in assigned_compliant:
+                assigned_compliant.append("Bakery-Head-Cap")
+        elif headwear_status == "violation":
+            assigned_compliant = [c for c in assigned_compliant if c not in ("Bakery-Head-Cap", "Hairnet")]
+            if "NO-Bakery-Head-Cap" not in assigned_violations:
+                assigned_violations.append("NO-Bakery-Head-Cap")
 
         ppe_missing: List[str] = []
         violation_labels: List[str] = []
@@ -817,7 +851,6 @@ def _associate_to_persons(
         ABSENCE_COMPLIANT_MAP = {
             "NO-Bakery-Head-Cap": "Bakery-Head-Cap",
             "NO-Hardhat": "Hardhat",
-            "NO-Mask": "Mask",
             "NO-Safety Vest": "Safety Vest",
             "Bangles": None,  # no compliant counterpart — only flagged when detected
         }
@@ -831,6 +864,10 @@ def _associate_to_persons(
             ):
                 continue
 
+            # Skip gloves and mask (disabled per client requirements)
+            if req_v in ("NO-Mask", "NO-Gloves"):
+                continue
+
             # Mode 1: model explicitly detected the violation class
             if req_v in assigned_violations:
                 human_label = VIOLATION_LABEL_MAP.get(req_v, req_v)
@@ -841,9 +878,12 @@ def _associate_to_persons(
             # Mode 2: absence detection — if the compliant counterpart is NOT seen
             # and the violation is NOT seen, the item is likely absent.
             # Skip for classes that have no compliant counterpart (e.g. Bangles).
-            # Also skip if no model exists in the active setup to detect that class
-            # (prevents phantom 'No Mask' violations when running portable models without mask detector).
-            if req_v == "NO-Mask" and not _model_is_ppe and not _use_simulation:
+
+            # Head-cap absence is unsafe to infer from a full-frame miss.  Small
+            # heads, occlusion, lighting, and crop scale make "not detected" very
+            # different from "not worn".  The dedicated HeadCapMonitor performs
+            # crop inference + temporal confirmation for this class.
+            if req_v == "NO-Bakery-Head-Cap":
                 continue
 
             compliant_class = ABSENCE_COMPLIANT_MAP.get(req_v)
@@ -879,11 +919,17 @@ def _associate_to_persons(
                 "track_id": person.get(
                     "track_id", -1
                 ),  # passthrough from _apply_tracking
+                "worker_name": person.get("worker_name"),
+                "employee_id": person.get("employee_id"),
                 "ppe_found": list(assigned_compliant),
                 "ppe_missing": ppe_missing,
                 "assigned_violations": assigned_violations,
                 "is_compliant": len(ppe_missing) == 0,
                 "violation_labels": violation_labels,
+                "head_bbox": head_bbox,
+                "headwear_status": headwear_status,
+                "headwear_label": headwear_label,
+                "headwear_conf": headwear_conf,
             }
         )
 
@@ -1144,6 +1190,8 @@ def _draw_results(
             box_color = _COLOR_BANGLES
             prefix = "🚫 "
         elif "hair" in _lbl_lower or "head-cap" in _lbl_lower or "head cap" in _lbl_lower:
+            raw_n = det.get("raw_label", "")
+            lbl = raw_n if raw_n in ("hairnet", "no_hairnet") else lbl
             if _dt == "compliant":
                 box_color = _COLOR_HAIRNET_OK
                 prefix = "🧢 "
@@ -1610,10 +1658,17 @@ def _run_pipeline(
         # Bangles has no "compliant" counterpart — it is always a violation
     }
 
-    if _use_simulation or active_model is None:
+    if _use_simulation:
+        # Explicit simulation mode (no real model available at all)
         raw = _simulate(
             frame, role, detection_filters=detection_filters, frame_index=frame_index
         )
+    elif active_model is None:
+        # No legacy ppe.pt — use multi-model pipeline exclusively.
+        # The _mm_detector.detect() block below will inject real person detections
+        # (from yolov8x_coco), hairnet, fall, and all other PPE from portable_models.
+        # Starting with an empty raw prevents simulated phantom boxes from conflicting.
+        raw = []
     else:
         try:
             raw = _run_inference_with(frame, active_model, active_is_ppe)
@@ -1639,52 +1694,32 @@ def _run_pipeline(
         if ocr_zone_config and isinstance(ocr_zone_config, dict):
             _eff_zone = ocr_zone_config.get("zone_type") or "default"
 
+        # If primary model already ran yolov8x, only run specialized models here (saves 200ms CPU)
+        _specialized_models = ["hairnet_glove_detection", "fall_detection"] if active_model is not None else None
         _extra_dets = _mm_detector.detect(
-            frame, zone_type=_eff_zone, camera_id=camera_id, zones=zones
+            frame, zone_type=_eff_zone, camera_id=camera_id, zones=zones, enabled_models=_specialized_models
         )
         for _ed in _extra_dets:
             _lbl = _ed.label
-            _lbl_lower = _lbl.lower()
             _dt = _ed.det_type or "neutral"
 
-            # Determine det_type and standardize labels for client compliance rules
-            if "non-fall" in _lbl_lower or _lbl_lower == "non_fall":
-                continue  # Skip negative 'non-fall' class entirely
-            elif _lbl_lower == "fall" or _lbl_lower == "worker fall" or ("fall" in _lbl_lower and "non" not in _lbl_lower):
-                _lbl = "Worker Fall"
-                _dt = "violation"
-            elif _lbl in ("NO-Hairnet", "no_hairnet", "Hair", "no_hair_cover"):
-                _lbl = "NO-Bakery-Head-Cap"
-                _dt = "violation"
-            elif _lbl in ("Hairnet", "hairnet", "Hair_Cover", "hair_cover_ok"):
-                _lbl = "Bakery-Head-Cap"
-                _dt = "compliant"
-            elif _lbl in ("NO-Glove", "no_gloves", "Back_Palm", "Front_Palm"):
-                _lbl = "NO-Gloves"
-                _dt = "violation"
-            elif _lbl in ("Glove", "gloves", "Hand_Gloves", "gloves_ok"):
-                _lbl = "Gloves"
-                _dt = "compliant"
-            elif "cash" in _lbl_lower or _lbl.endswith(" BGN") or _lbl.endswith(" EUR") or _lbl.endswith(" INR") or "banknote" in _lbl_lower or "rupee" in _lbl_lower:
-                _lbl = "Cash"
-                _dt = "neutral"
-            elif "anomaly" in _lbl_lower:
-                _lbl = "Machine Anomaly"
-                _dt = "violation"
-            elif "throw" in _lbl_lower or _lbl_lower == "object_throwing":
-                _lbl = "Object Throwing"
-                _dt = "violation"
-            elif _lbl_lower == "bangles":
-                _lbl = "Bangles"
-                _dt = "violation"
-            elif _lbl_lower == "person":
-                _dt = "person"
+            # The multi-model detector already normalized labels via normalize_class_label().
+            # Only apply disable-filters for classes the client doesn't want.
+            _lbl_lower = _lbl.lower()
+
+            # Gloves disabled per client requirement
+            if "glove" in _lbl_lower or "palm" in _lbl_lower:
+                continue
+            # Mask disabled per client requirement
+            if "mask" in _lbl_lower and "no_mask" not in _lbl_lower:
+                continue
 
             raw.append({
                 "label": _lbl,
                 "confidence": _ed.confidence,
                 "bbox": _ed.bbox,
                 "det_type": _dt,
+                "raw_label": _lbl,
             })
     except Exception as _mm_err:
         log.debug(f"[MultiModel] Error during injection: {_mm_err}")
@@ -1698,6 +1733,8 @@ def _run_pipeline(
         "Bangles", "bangles",
         "Cash", "cash",
         "Cylinder", "gas_cylinder",
+        "Bakery-Head-Cap", "NO-Bakery-Head-Cap",
+        "hairnet", "no_hairnet", "Hairnet", "NO-Hairnet",
     }
 
     before_filter = [d["label"] for d in raw]
@@ -1746,10 +1783,10 @@ def _run_pipeline(
         except Exception as _ident_exc:
             log.debug(f"Worker identity attach error: {_ident_exc}")
 
-    # Only synthesize a person if wearable PPE items (headcap, mask, vest, hardhat) are detected
+    # Only synthesize a person if wearable PPE items (headcap, vest, hardhat) are detected
     WEARABLE_PPE_CLASSES = {
-        "Hardhat", "Mask", "Safety Vest", "Bakery-Head-Cap", "Gloves",
-        "NO-Hardhat", "NO-Mask", "NO-Safety Vest", "NO-Bakery-Head-Cap", "NO-Gloves",
+        "Hardhat", "Safety Vest", "Bakery-Head-Cap",
+        "NO-Hardhat", "NO-Safety Vest", "NO-Bakery-Head-Cap",
     }
     wearable_dets = [d for d in ppe_dets if d["label"] in WEARABLE_PPE_CLASSES]
 
@@ -1772,11 +1809,8 @@ def _run_pipeline(
         ]
 
     # ── COCO Person fallback ──────────────────────────────────────────────
-    # The PPE model (ppe_factory_v0.pt, 14 classes) often fails to detect
-    # Person on webcam/laptop cameras.  The phone model (yolov8x.pt, COCO)
-    # reliably detects them.  If PPE model found zero persons, run a quick
-    # Person-only pass with the COCO model to inject person bounding boxes
-    # so violations/compliance can still be evaluated.
+    # Ensure person detection pass runs with primary COCO model (yolov8x.pt)
+    # if person list is empty.
     if not persons and _phone_model is not None:
         try:
             _coco_results = _phone_model(
@@ -1803,64 +1837,8 @@ def _run_pipeline(
     # Deduplicate once more in case fallback or synthetic added overlapping boxes
     persons = _deduplicate_person_boxes(persons)
 
-    # ── Per-person specialized model inference (Hairnet / Gloves / Food Safety) ──
-    try:
-        from services.model_manager import ModelManager
-        from services.multi_model_detector import normalize_class_label
-        _mm = ModelManager()
-        if _mm.is_loaded("hairnet_glove_detection") or _mm.registry.is_model_enabled("hairnet_glove_detection"):
-            for p in persons:
-                px1, py1, px2, py2 = p["bbox"]
-                pw = px2 - px1
-                ph = py2 - py1
-                if pw >= 20 and ph >= 30:
-                    # 1. Full person crop
-                    p_crop = frame[max(0, py1):min(frame.shape[0], py2), max(0, px1):min(frame.shape[1], px2)]
-                    crop_dets = _mm.infer("hairnet_glove_detection", p_crop, conf=0.25)
-                    found_head_item = False
-                    for cd in crop_dets:
-                        norm_lbl, dt = normalize_class_label(cd.class_name)
-                        if not norm_lbl or dt == "ignore":
-                            continue
-                        if norm_lbl in ("Bakery-Head-Cap", "NO-Bakery-Head-Cap"):
-                            found_head_item = True
-                        gx1 = max(0, px1 + cd.bbox[0])
-                        gy1 = max(0, py1 + cd.bbox[1])
-                        gx2 = min(frame.shape[1], px1 + cd.bbox[2])
-                        gy2 = min(frame.shape[0], py1 + cd.bbox[3])
-                        ppe_dets.append({
-                            "label": norm_lbl,
-                            "confidence": round(cd.confidence, 3),
-                            "bbox": [gx1, gy1, gx2, gy2],
-                            "det_type": dt,
-                        })
-
-                    # 2. If head item was not resolved from person crop, run targeted head crop
-                    if not found_head_item:
-                        margin_x = int(pw * 0.15)
-                        hx1 = max(0, px1 - margin_x)
-                        hy1 = max(0, py1)
-                        hx2 = min(frame.shape[1], px2 + margin_x)
-                        hy2 = min(frame.shape[0], py1 + int(ph * 0.38))
-                        head_crop = frame[hy1:hy2, hx1:hx2]
-                        if head_crop.size > 0 and (hx2 - hx1) >= 20 and (hy2 - hy1) >= 20:
-                            h_dets = _mm.infer("hairnet_glove_detection", head_crop, conf=0.20)
-                            for hd in h_dets:
-                                norm_lbl, dt = normalize_class_label(hd.class_name)
-                                if norm_lbl in ("Bakery-Head-Cap", "NO-Bakery-Head-Cap"):
-                                    gx1 = max(0, hx1 + hd.bbox[0])
-                                    gy1 = max(0, hy1 + hd.bbox[1])
-                                    gx2 = min(frame.shape[1], hx1 + hd.bbox[2])
-                                    gy2 = min(frame.shape[0], hy1 + hd.bbox[3])
-                                    ppe_dets.append({
-                                        "label": norm_lbl,
-                                        "confidence": round(hd.confidence, 3),
-                                        "bbox": [gx1, gy1, gx2, gy2],
-                                        "det_type": dt,
-                                    })
-    except Exception as _crop_exc:
-        log.debug(f"[YOLO] per-person hairnet inference error: {_crop_exc}")
-
+    # ── Specialized model inference (Hairnet / Fall / Cash / Anomaly) ──
+    # Note: Full-frame hairnet_glove_detection runs via MultiModelDetector above at imgsz=960.
     enriched = _associate_to_persons(
         persons, ppe_dets, role, detection_filters=detection_filters
     )
@@ -1904,7 +1882,13 @@ def _run_pipeline(
 
     violations = [p for p in enriched if not p["is_compliant"]]
     ui_detections = [
-        {"label": d["label"], "confidence": d["confidence"], "bbox": d["bbox"]}
+        {
+            "label": d["label"],
+            "confidence": d["confidence"],
+            "bbox": d["bbox"],
+            "raw_label": d.get("raw_label", d["label"]),
+            "det_type": d.get("det_type", "neutral"),
+        }
         for d in raw
     ]
 

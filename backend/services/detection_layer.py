@@ -39,6 +39,7 @@ class Detection:
     model_key: str = "yolo-ppe"
     class_id: int = -1       # raw class index from the model
     det_type: Optional[str] = "neutral"
+    raw_label: Optional[str] = None
     track_id: Optional[int] = None
     camera_id: Optional[int] = None
     zone_id: Optional[int] = None
@@ -89,6 +90,7 @@ class Detection:
         return {
             "label": self.label,
             "class_name": self.label,
+            "raw_label": self.raw_label or self.label,
             "confidence": self.confidence,
             "bbox": self.bbox,
             "model_key": self.model_key,

@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import time
+import re
 from threading import Lock
 from typing import Dict, Optional, Tuple
 
@@ -214,7 +215,24 @@ def _get_oauth_token() -> Optional[str]:
 def _is_throttled(camera_id: Optional[int], issue_type: str) -> bool:
     from config import settings
     cooldown = getattr(settings, "FCM_NOTIFICATION_COOLDOWN_SEC", 120)
-    key = (str(camera_id), issue_type or "generic")
+    # Do not key throttle by worker names, track numbers, durations, or full
+    # generated messages. Those values change while same physical violation
+    # continues and previously bypassed cooldown.
+    raw = str(issue_type or "generic").lower()
+    raw = re.sub(r"person\s*#?\s*[\w-]+", "person", raw)
+    raw = re.sub(r"\(?\s*missing\s+[\d.]+s?\s*\)?", "", raw)
+    raw = re.sub(r"\b(camera|cam)\s*#?\s*\d+", "", raw)
+    if any(token in raw for token in ("head cap", "head-cap", "headcap", "hairnet", "hair cover")):
+        normalized_issue = "no_head_cap"
+    elif "uniform" in raw:
+        normalized_issue = "uniform"
+    elif "glove" in raw:
+        normalized_issue = "gloves"
+    elif "phone" in raw:
+        normalized_issue = "phone"
+    else:
+        normalized_issue = re.sub(r"[^a-z0-9]+", "_", raw).strip("_") or "generic"
+    key = (str(camera_id), normalized_issue)
     now = time.monotonic()
     with _throttle_lock:
         last = _throttle.get(key, 0.0)

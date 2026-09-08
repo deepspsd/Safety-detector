@@ -20,11 +20,10 @@ import logging
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-import cv2
 import numpy as np
 
 from config import settings
-from services.detection_layer import Detection, NormalizedDetection
+from services.detection_layer import Detection
 from services.model_manager import ModelManager
 from services.zone_service import (
     bbox_center,
@@ -59,16 +58,16 @@ LABEL_NORMALIZATION: Dict[str, Tuple[Optional[str], str]] = {
     "no_hairnet": ("NO-Bakery-Head-Cap", "violation"),
     "NO-Bakery-Head-Cap": ("NO-Bakery-Head-Cap", "violation"),
     "Bakery-Head-Cap": ("Bakery-Head-Cap", "compliant"),
-    # Gloves
-    "Hand_Gloves": ("Gloves", "compliant"),
-    "hand_gloves": ("Gloves", "compliant"),
-    "Gloves": ("Gloves", "compliant"),
-    "gloves": ("Gloves", "compliant"),
-    "Glove": ("Gloves", "compliant"),
-    "Front_Palm": ("NO-Gloves", "violation"),
-    "Back_Palm": ("NO-Gloves", "violation"),
-    "NO-Gloves": ("NO-Gloves", "violation"),
-    "no_gloves": ("NO-Gloves", "violation"),
+    # Gloves (disabled per client requirements)
+    "Hand_Gloves": (None, "ignore"),
+    "hand_gloves": (None, "ignore"),
+    "Gloves": (None, "ignore"),
+    "gloves": (None, "ignore"),
+    "Glove": (None, "ignore"),
+    "Front_Palm": (None, "ignore"),
+    "Back_Palm": (None, "ignore"),
+    "NO-Gloves": (None, "ignore"),
+    "no_gloves": (None, "ignore"),
     # Hardhat / Helmet
     "Hardhat": ("Hardhat", "compliant"),
     "hardhat": ("Hardhat", "compliant"),
@@ -77,9 +76,11 @@ LABEL_NORMALIZATION: Dict[str, Tuple[Optional[str], str]] = {
     "NO-Hardhat": ("NO-Hardhat", "violation"),
     "no_hardhat": ("NO-Hardhat", "violation"),
     "No Helmet": ("NO-Hardhat", "violation"),
-    # Mask & Vest
-    "Mask": ("Mask", "compliant"),
-    "NO-Mask": ("NO-Mask", "violation"),
+    # Mask & Vest (masks disabled per client requirements)
+    "Mask": (None, "ignore"),
+    "mask": (None, "ignore"),
+    "NO-Mask": (None, "ignore"),
+    "no_mask": (None, "ignore"),
     "Safety Vest": ("Safety Vest", "compliant"),
     "NO-Safety Vest": ("NO-Safety Vest", "violation"),
     # Person
@@ -253,6 +254,10 @@ class MultiModelDetector:
             if self.manager.registry.is_model_enabled("fall_detection"):
                 global_models.append("fall_detection")
 
+            # Hairnet detection runs globally on full frame at imgsz=960
+            if self.manager.registry.is_model_enabled("hairnet_glove_detection"):
+                global_models.append("hairnet_glove_detection")
+
         # 3. Run Global Models on Full Frame
         for m_key in global_models:
             m_info = self.manager.registry.get_model(m_key)
@@ -278,6 +283,7 @@ class MultiModelDetector:
                         class_id=nd.class_id,
                         model_key=m_key,
                         det_type=d_type,
+                        raw_label=nd.class_name,
                         zone_id=nd.zone_id,
                         camera_id=camera_id,
                     )
@@ -370,6 +376,7 @@ class MultiModelDetector:
                                 class_id=nd.class_id,
                                 model_key=zm_key,
                                 det_type=d_type,
+                                raw_label=nd.class_name,
                                 zone_id=z_id,
                                 camera_id=camera_id,
                             )
@@ -378,8 +385,9 @@ class MultiModelDetector:
                         logger.error(f"Error running zone model '{zm_key}' for zone '{z_name}': {zm_exc}")
 
         # 5. Fallback for zone_type string without polygon zones
-        elif zone_type and zone_type != "default":
-            zone_caps = settings.ZONE_CAPABILITY_MAP.get(zone_type, [])
+        elif zone_type:
+            eff_zone = zone_type if zone_type in settings.ZONE_CAPABILITY_MAP else "default"
+            zone_caps = settings.ZONE_CAPABILITY_MAP.get(eff_zone, [])
             models_for_zone = self.manager.resolve_capabilities(zone_caps)
             for zm_key in models_for_zone:
                 if zm_key in global_models:
@@ -403,6 +411,7 @@ class MultiModelDetector:
                                 class_id=nd.class_id,
                                 model_key=zm_key,
                                 det_type=d_type,
+                                raw_label=nd.class_name,
                                 camera_id=camera_id,
                             )
                         )

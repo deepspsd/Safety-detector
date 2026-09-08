@@ -25,7 +25,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import cv2
 import numpy as np
@@ -159,9 +159,29 @@ class YOLOModelAdapter(BaseModelAdapter):
             finally:
                 torch.load = _orig_load
 
-            # If model didn't specify classes in config, extract from YOLO model names
-            if not self.classes and hasattr(self.model, "names") and self.model.names:
-                self.classes = {int(k): str(v) for k, v in self.model.names.items()}
+            abs_path = os.path.abspath(model_path)
+            file_exists = os.path.exists(abs_path)
+            file_size = os.path.getsize(abs_path) if file_exists else 0
+            model_names = {int(k): str(v) for k, v in self.model.names.items()} if hasattr(self.model, "names") else {}
+
+            logger.info(
+                f"[ModelRegistry DIAGNOSTIC] Key: '{self.key}' | Path: {abs_path} | "
+                f"Exists: {file_exists} | Size: {file_size} bytes | Names: {model_names}"
+            )
+            print(
+                f"🔍 [ModelRegistry DIAGNOSTIC] Key: '{self.key}' | Path: {abs_path} | "
+                f"Exists: {file_exists} | Size: {file_size} bytes | Names: {model_names}"
+            )
+
+            # For hairnet or if classes unspecified, sync directly to the loaded model weights
+            if "hairnet" in self.key:
+                if model_names != {0: "hairnet", 1: "no_hairnet"}:
+                    logger.warning(
+                        f"⚠️ [ModelRegistry] Expected hairnet model names {{0: 'hairnet', 1: 'no_hairnet'}}, got {model_names}!"
+                    )
+                self.classes = dict(model_names)
+            elif not self.classes and model_names:
+                self.classes = dict(model_names)
 
             self.status = "READY"
             self.error_message = None
@@ -185,12 +205,16 @@ class YOLOModelAdapter(BaseModelAdapter):
 
         try:
             target_classes = list(self.classes.keys()) if self.classes else None
-            # Choose imgsz optimal for model type
-            # hairnet uses 640: small top-down CCTV head crops perform better at 640
-            # (over-upscaling to 800 reduces confidence on tiny crops)
-            imgsz = 640
-            if "cash" in self.key:
+
+            # Optimal inference resolution matching validation (e.g. imgsz=960 for hairnet)
+            if "imgsz" in self.config:
+                imgsz = int(self.config["imgsz"])
+            elif "hairnet" in self.key:
+                imgsz = getattr(settings, "HAIRNET_IMGSZ", 960)
+            elif "cash" in self.key:
                 imgsz = 832
+            else:
+                imgsz = 640
 
             results = list(self.model(
                 frame,
@@ -205,6 +229,7 @@ class YOLOModelAdapter(BaseModelAdapter):
 
             detections: List[NormalizedDetection] = []
             now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+            fh, fw = frame.shape[:2]
 
             for result in results:
                 for box in result.boxes:
@@ -218,6 +243,17 @@ class YOLOModelAdapter(BaseModelAdapter):
                         label = self.model.names[cls_id]
                     else:
                         label = f"class_{cls_id}"
+
+                    # Diagnostic log for hairnet model raw detections
+                    if "hairnet" in self.key or getattr(settings, "DEBUG_HAIRNET_RAW", False):
+                        logger.info(
+                            f"[HAIRNET RAW PREDICTION] class_id={cls_id} class_name='{label}' "
+                            f"confidence={box_conf:.4f} xyxy={xyxy} frame_shape=({fh}, {fw}) imgsz={imgsz}"
+                        )
+                        print(
+                            f"🎯 [HAIRNET RAW] id={cls_id} name='{label}' "
+                            f"conf={box_conf:.3f} xyxy={xyxy} shape=({fh},{fw}) imgsz={imgsz}"
+                        )
 
                     # Determine capability matching this detection
                     cap = self.capabilities[0] if self.capabilities else "object_detection"
@@ -606,6 +642,7 @@ class ModelRegistry:
 
     _instance: Optional[ModelRegistry] = None
     _initialized: bool = False
+    _lock: Any = None  # threading.Lock — set in __init__
 
     def __new__(cls):
         if cls._instance is None:
@@ -616,6 +653,8 @@ class ModelRegistry:
         if self._initialized:
             return
 
+        import threading
+        self._lock = threading.Lock()
         self.adapters: Dict[str, BaseModelAdapter] = {}
         self.models: Dict[str, ModelInfo] = {}
         self.load_all_models()
@@ -658,10 +697,25 @@ class ModelRegistry:
         logger.info(f"✅ Model registry initialized with {len(self.models)} active models")
 
     def load_model(self, model_key: str) -> ModelInfo:
-        """Load a single model by key on demand and cache in memory."""
+        """Load a single model by key on demand and cache in memory. Thread-safe."""
+        if self._lock is not None:
+            self._lock.acquire()
+        try:
+            return self._load_model_unlocked(model_key)
+        finally:
+            if self._lock is not None:
+                self._lock.release()
+
+    def _load_model_unlocked(self, model_key: str) -> ModelInfo:
+        """Internal: load model without acquiring the lock (caller must hold it)."""
         config = settings.MODEL_REGISTRY.get(model_key)
         if not config:
             raise ValueError(f"Model '{model_key}' not defined in settings.MODEL_REGISTRY")
+
+        # Fast path: already loaded and ready
+        existing = self.models.get(model_key)
+        if existing is not None and existing.status == "READY":
+            return existing
 
         # Reuse existing adapter if ready
         adapter = self.adapters.get(model_key)
@@ -696,17 +750,26 @@ class ModelRegistry:
 
     def unload_model(self, model_key: str) -> None:
         """Unload a model from memory."""
-        if model_key in self.adapters:
-            self.adapters[model_key].unload()
-        self.models.pop(model_key, None)
+        if self._lock is not None:
+            self._lock.acquire()
+        try:
+            if model_key in self.adapters:
+                self.adapters[model_key].unload()
+            self.models.pop(model_key, None)
+        finally:
+            if self._lock is not None:
+                self._lock.release()
 
     def get_model(self, model_key: str) -> Optional[ModelInfo]:
-        """Get model by key, loading lazily if enabled."""
-        if model_key in self.models and self.models[model_key].status == "READY":
-            return self.models[model_key]
+        """Get model by key, loading lazily if enabled. Thread-safe."""
+        # Fast path: already loaded
+        model = self.models.get(model_key)
+        if model is not None and model.status == "READY":
+            return model
+        # Lazy load
         if model_key in settings.MODEL_REGISTRY and settings.MODEL_REGISTRY[model_key].get("enabled", False):
             try:
-                return self.load_model(model_key)
+                return self._load_model_unlocked(model_key)
             except Exception:
                 return None
         return None
