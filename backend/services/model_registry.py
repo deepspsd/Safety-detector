@@ -185,12 +185,12 @@ class YOLOModelAdapter(BaseModelAdapter):
 
         try:
             target_classes = list(self.classes.keys()) if self.classes else None
-            # Choose imgsz optimal for model type (e.g. 832 for cash/banknote, 800 for hairnet, 640 default)
+            # Choose imgsz optimal for model type
+            # hairnet uses 640: small top-down CCTV head crops perform better at 640
+            # (over-upscaling to 800 reduces confidence on tiny crops)
             imgsz = 640
             if "cash" in self.key:
                 imgsz = 832
-            elif "hairnet" in self.key:
-                imgsz = 800
 
             results = list(self.model(
                 frame,

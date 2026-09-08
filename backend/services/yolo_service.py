@@ -841,6 +841,11 @@ def _associate_to_persons(
             # Mode 2: absence detection — if the compliant counterpart is NOT seen
             # and the violation is NOT seen, the item is likely absent.
             # Skip for classes that have no compliant counterpart (e.g. Bangles).
+            # Also skip if no model exists in the active setup to detect that class
+            # (prevents phantom 'No Mask' violations when running portable models without mask detector).
+            if req_v == "NO-Mask" and not _model_is_ppe and not _use_simulation:
+                continue
+
             compliant_class = ABSENCE_COMPLIANT_MAP.get(req_v)
             if (
                 compliant_class is not None
@@ -925,6 +930,7 @@ def _simulate(
         "NO-Hardhat": "Hardhat",
         "NO-Mask": "Mask",
         "NO-Safety Vest": "Safety Vest",
+        "NO-Bakery-Head-Cap": "Bakery-Head-Cap",
         "NO-Gloves": "Gloves",
         "NO-Goggles": "Safety Goggles",
         "NO-ID Card": "ID Card",
@@ -949,8 +955,14 @@ def _simulate(
         for req_v in all_req:
             is_violation = _rng.random() < 0.35  # 35% violation chance per item
 
-            # Vertical zone: helmet/mask/goggles → upper 25%; gloves/vest → mid
-            upper = "Hardhat" in req_v or "Mask" in req_v or "Goggles" in req_v
+            # Vertical zone: helmet/mask/goggles/headcap → upper 25%; gloves/vest → mid
+            upper = (
+                "Hardhat" in req_v
+                or "Mask" in req_v
+                or "Goggles" in req_v
+                or "Head-Cap" in req_v
+                or "Bakery" in req_v
+            )
             if upper:
                 iy1 = py + int((py2 - py) * 0.00)
                 iy2 = py + int((py2 - py) * 0.25)
@@ -1790,6 +1802,64 @@ def _run_pipeline(
 
     # Deduplicate once more in case fallback or synthetic added overlapping boxes
     persons = _deduplicate_person_boxes(persons)
+
+    # ── Per-person specialized model inference (Hairnet / Gloves / Food Safety) ──
+    try:
+        from services.model_manager import ModelManager
+        from services.multi_model_detector import normalize_class_label
+        _mm = ModelManager()
+        if _mm.is_loaded("hairnet_glove_detection") or _mm.registry.is_model_enabled("hairnet_glove_detection"):
+            for p in persons:
+                px1, py1, px2, py2 = p["bbox"]
+                pw = px2 - px1
+                ph = py2 - py1
+                if pw >= 20 and ph >= 30:
+                    # 1. Full person crop
+                    p_crop = frame[max(0, py1):min(frame.shape[0], py2), max(0, px1):min(frame.shape[1], px2)]
+                    crop_dets = _mm.infer("hairnet_glove_detection", p_crop, conf=0.25)
+                    found_head_item = False
+                    for cd in crop_dets:
+                        norm_lbl, dt = normalize_class_label(cd.class_name)
+                        if not norm_lbl or dt == "ignore":
+                            continue
+                        if norm_lbl in ("Bakery-Head-Cap", "NO-Bakery-Head-Cap"):
+                            found_head_item = True
+                        gx1 = max(0, px1 + cd.bbox[0])
+                        gy1 = max(0, py1 + cd.bbox[1])
+                        gx2 = min(frame.shape[1], px1 + cd.bbox[2])
+                        gy2 = min(frame.shape[0], py1 + cd.bbox[3])
+                        ppe_dets.append({
+                            "label": norm_lbl,
+                            "confidence": round(cd.confidence, 3),
+                            "bbox": [gx1, gy1, gx2, gy2],
+                            "det_type": dt,
+                        })
+
+                    # 2. If head item was not resolved from person crop, run targeted head crop
+                    if not found_head_item:
+                        margin_x = int(pw * 0.15)
+                        hx1 = max(0, px1 - margin_x)
+                        hy1 = max(0, py1)
+                        hx2 = min(frame.shape[1], px2 + margin_x)
+                        hy2 = min(frame.shape[0], py1 + int(ph * 0.38))
+                        head_crop = frame[hy1:hy2, hx1:hx2]
+                        if head_crop.size > 0 and (hx2 - hx1) >= 20 and (hy2 - hy1) >= 20:
+                            h_dets = _mm.infer("hairnet_glove_detection", head_crop, conf=0.20)
+                            for hd in h_dets:
+                                norm_lbl, dt = normalize_class_label(hd.class_name)
+                                if norm_lbl in ("Bakery-Head-Cap", "NO-Bakery-Head-Cap"):
+                                    gx1 = max(0, hx1 + hd.bbox[0])
+                                    gy1 = max(0, hy1 + hd.bbox[1])
+                                    gx2 = min(frame.shape[1], hx1 + hd.bbox[2])
+                                    gy2 = min(frame.shape[0], hy1 + hd.bbox[3])
+                                    ppe_dets.append({
+                                        "label": norm_lbl,
+                                        "confidence": round(hd.confidence, 3),
+                                        "bbox": [gx1, gy1, gx2, gy2],
+                                        "det_type": dt,
+                                    })
+    except Exception as _crop_exc:
+        log.debug(f"[YOLO] per-person hairnet inference error: {_crop_exc}")
 
     enriched = _associate_to_persons(
         persons, ppe_dets, role, detection_filters=detection_filters

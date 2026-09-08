@@ -1264,6 +1264,8 @@ class _ManagedCamera:
                         if not tid:
                             continue
                         for clf_name, clf in self._classifiers.items():
+                            if clf_name == "head_cap":
+                                continue
                             cfg = self._classifier_configs.get(clf_name, {})
                             if not self._clf_cache.should_run(
                                 tid, clf_name, cfg.get("inference_interval_ms")
@@ -1330,6 +1332,7 @@ class _ManagedCamera:
                             }.get(clf_name)
                             if (
                                 event_type
+                                and final_result.model_loaded  # skip mock predictions
                                 and final_result.confidence >= threshold
                                 and final_result.predicted_class
                                 in {"NO_UNIFORM", "NO_HEAD_CAP", "BANGLE"}

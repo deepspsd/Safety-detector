@@ -70,15 +70,15 @@ PRED_UNCERTAIN   = "UNCERTAIN"
 RULE_MSG = "Not Wearing Head Cap"
 
 # ── Tuning constants (override via config/settings as needed) ──────────────────
-_HEAD_CROP_RATIO    = 0.30   # top 30% of person bbox = head region
-_HEAD_CROP_PADDING  = 0.10   # 10% horizontal padding on crop
-_MIN_CROP_PX        = 32     # crops smaller than this → LOW_RESOLUTION flag
+_HEAD_CROP_RATIO    = 0.40   # top 40% of person bbox = head region (was 0.30)
+_HEAD_CROP_PADDING  = 0.15   # 15% horizontal padding on crop (was 0.10)
+_MIN_CROP_PX        = 24     # crops smaller than this → LOW_RESOLUTION flag (was 32)
 _WINDOW_SIZE        = 10     # sliding window for temporal smoothing
 _INFER_INTERVAL     = 1.0    # seconds between inferences per track
-_CONF_THRESHOLD     = getattr(settings, "HEADCAP_CONF_THRESHOLD", 0.45)
+_CONF_THRESHOLD     = getattr(settings, "HEADCAP_CONF_THRESHOLD", 0.35)  # lowered from 0.45
 _UNCERTAIN_LOW      = 0.20   # below this = NO_HEAD_CAP (no ambiguity)
-_MISSING_SECONDS    = getattr(settings, "HEADCAP_MISSING_SECONDS", 3.0)
-_ALERT_COOLDOWN     = getattr(settings, "HEADCAP_ALERT_COOLDOWN", 30.0)
+_MISSING_SECONDS    = getattr(settings, "HEADCAP_MISSING_SECONDS", 5.0)  # raised from 3.0
+_ALERT_COOLDOWN     = getattr(settings, "HEADCAP_ALERT_COOLDOWN", 60.0)  # raised from 30.0
 
 # ── YOLO class name to look for in crop ───────────────────────────────────────
 _CAP_CLASS_LABEL = "Bakery-Head-Cap"
@@ -132,41 +132,55 @@ def _extract_crop(frame: np.ndarray, crop_box: List[int]) -> Optional[np.ndarray
 
 def _infer_on_crop(crop: np.ndarray) -> Tuple[float, str]:
     """
-    Run YOLO on the head crop and return (confidence, diagnostic_flag).
-    confidence: 0.0–1.0 for Bakery-Head-Cap class.
-                0.0 means class not detected (= NO_HEAD_CAP confidence).
-
-    Uses the shared inference pool (same YOLO model, no extra model load).
-    The crop is submitted as a synthetic frame; we filter results for the
-    Bakery-Head-Cap class.
-
-    Returns:
-        (cap_confidence: float, diagnostic_flag: str)
+    Run hairnet_glove_detection YOLO model on the head crop.
+    Returns (cap_confidence: float, diagnostic_flag: str).
+      - Hair_Cover / Hairnet / Bakery-Head-Cap detected: returns (best_conf, DIAG_OK)
+      - Hair / NO-Bakery-Head-Cap detected (bare hair): returns (0.0, DIAG_OK)
+      - Neither detected: returns (0.0, DIAG_LOW_CONFIDENCE)
     """
     try:
-        from services.inference_pool import inference_pool  # lazy import
+        from services.model_manager import ModelManager
+        mm = ModelManager()
+        if mm.is_loaded("hairnet_glove_detection") or mm.registry.is_model_enabled("hairnet_glove_detection"):
+            # Use conf=0.15 — lower than global default (0.25) to catch weaker
+            # Hair / Hair_Cover signals on small top-down CCTV head crops
+            dets = mm.infer("hairnet_glove_detection", crop, conf=0.15)
+            cap_confs = [
+                d.confidence for d in dets
+                if d.class_name in ("Hair_Cover", "hair_cover", "Hairnet", "hairnet", "Bakery-Head-Cap")
+            ]
+            hair_confs = [
+                d.confidence for d in dets
+                if d.class_name in ("Hair", "hair", "NO-Bakery-Head-Cap")
+            ]
 
-        # Use a temporary key to avoid polluting the camera result cache.
-        # We use a thread-level unique key to allow concurrent crop inferences.
+            if cap_confs:
+                return float(max(cap_confs)), DIAG_OK
+            elif hair_confs:
+                return 0.0, DIAG_OK
+            else:
+                return 0.0, DIAG_LOW_CONFIDENCE
+    except Exception as exc:
+        log.debug("[HeadCap] model_manager crop inference error: %s", exc)
+
+    # Fallback to inference pool if hairnet model is unavailable
+    try:
+        from services.inference_pool import inference_pool
         crop_key = f"_headcap_crop_{threading.get_ident()}"
         inference_pool.put_frame(crop_key, crop)
 
-        # Wait briefly for the inference result (pool is async).
-        # If result not ready yet, use 0.0 confidence (UNCERTAIN → safe).
         result = None
-        for _ in range(10):  # up to 50ms wait total
+        for _ in range(10):
             result = inference_pool.get_result(crop_key)
             if result is not None:
                 break
             time.sleep(0.005)
 
-        # Clean up the temporary key from the pool result cache.
         inference_pool.clear_result(crop_key)
 
         if result is None:
             return 0.0, DIAG_INFER_ERROR
 
-        # Find best Bakery-Head-Cap detection in the crop result.
         detections = result.get("detections", [])
         best_conf = 0.0
         for det in detections:
@@ -182,10 +196,16 @@ def _infer_on_crop(crop: np.ndarray) -> Tuple[float, str]:
         return 0.0, DIAG_INFER_ERROR
 
 
-def _map_confidence_to_prediction(conf: float) -> str:
-    """Map raw confidence to 3-state prediction."""
+def _map_confidence_to_prediction(conf: float, diag_flag: str = DIAG_OK) -> str:
+    """Map raw confidence to 3-state prediction.
+
+    LOW_RESOLUTION / INFER_ERROR → UNCERTAIN (benefit of doubt — don't alert
+    for workers who are too far or whose crop is too small to classify).
+    """
     if conf >= _CONF_THRESHOLD:
         return PRED_HEAD_CAP
+    if diag_flag in (DIAG_LOW_CONFIDENCE, DIAG_LOW_RESOLUTION, DIAG_INFER_ERROR):
+        return PRED_UNCERTAIN  # can't see clearly enough → don't flag
     if conf <= _UNCERTAIN_LOW:
         return PRED_NO_HEAD_CAP
     return PRED_UNCERTAIN
@@ -440,7 +460,7 @@ class HeadCapMonitor:
                     diag_flag = DIAG_LOW_RESOLUTION
                 else:
                     cap_conf, diag_flag = _infer_on_crop(crop)
-                    raw_pred = _map_confidence_to_prediction(cap_conf)
+                    raw_pred = _map_confidence_to_prediction(cap_conf, diag_flag)
                     if raw_pred == PRED_UNCERTAIN and diag_flag == DIAG_OK:
                         diag_flag = DIAG_LOW_CONFIDENCE
 
@@ -649,11 +669,20 @@ class HeadCapMonitor:
 
             uid = _get_rule_engine_user_id(db)
 
+            # Resolve floor from camera record
+            floor_name = None
+            try:
+                from database import Camera
+                cam = db.query(Camera).filter(Camera.id == camera_id).first()
+                if cam:
+                    floor_name = cam.floor
+            except Exception:
+                pass
+
             # Resolve worker name from face recognition cache
             identity = get_worker_identity(camera_id, track_id)
             worker_name = identity["name"] if identity else None
             emp_id = identity["employee_id"] if identity else None
-            name_prefix = f"{worker_name} — " if worker_name else f"Person #{track_id} — "
 
             snapshot_b64 = None
             if frame is not None:
@@ -684,19 +713,21 @@ class HeadCapMonitor:
                 confidence=None,
                 snapshot_b64=snapshot_b64,
                 camera_id=camera_id,
+                floor=floor_name,
                 employee_id=emp_id,
                 confidence_tier="high",
                 worker_name=worker_name,
             )
             log.info(
-                "[HeadCap] Alert saved cam=%d track=%s worker=%s missing=%.1fs",
-                camera_id, track_id, worker_name or "Unknown", missing_seconds,
+                "[HeadCap] Alert saved cam=%d track=%s worker=%s missing=%.1fs floor=%s",
+                camera_id, track_id, worker_name or "Unknown", missing_seconds, floor_name,
             )
         except Exception as exc:
             log.error(
                 "[HeadCap] Alert save error cam=%d track=%s: %s",
                 camera_id, track_id, exc,
             )
+
 
 
 # ── Module-level singleton ────────────────────────────────────────────────────
