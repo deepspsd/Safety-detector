@@ -108,6 +108,8 @@ async def detection_websocket(websocket: WebSocket):
             "zone_type": auth_data.get("zone_type") or "default",
             "frame_count": 0,
             "alive": True,
+            "last_worker": None,
+            "last_face_time": 0.0,
         }
 
         print(f"[WS] Handshake filters ({len(state['filters'])}): {state['filters']} | zone: {state['zone_type']}")
@@ -252,14 +254,32 @@ async def detection_websocket(websocket: WebSocket):
                                 f"compliant={result.get('is_compliant')}"
                             )
 
-                        # ── Attendance: also run face recognition for non-Home roles ──
-                        # Runs every 15 frames to avoid overloading CPU (doesn't affect PPE)
-                        if frame_num % 15 == 1:
+                        # ── Face Recognition & Attendance for non-Home roles ──
+                        now_face = time.time()
+                        last_face_time = state.get("last_face_time", 0.0)
+                        need_face = (frame_num % 8 == 1) or (
+                            not result.get("is_compliant") and (now_face - last_face_time > 3.0)
+                        )
+                        if need_face:
                             try:
                                 face_result_attn = face_service.process_face_frame(
                                     b64_frame, user.id, db
                                 )
+                                state["last_face_time"] = now_face
                                 _fire_attendance(face_result_attn, camera_id=None)
+                                # Cache any recognized employee
+                                for f in face_result_attn.get("faces", []):
+                                    if not f.get("is_unknown") and f.get("label") and f["label"] != "Unknown":
+                                        w_name = f["label"]
+                                        w_emp_id = f.get("employee_id")
+                                        if w_emp_id is None and db is not None:
+                                            w_emp_id = face_service._lookup_employee_id(w_name, db)
+                                        state["last_worker"] = {
+                                            "name": w_name,
+                                            "employee_id": w_emp_id,
+                                            "ts": now_face,
+                                        }
+                                        break
                             except Exception:
                                 pass  # never let attendance failure break PPE flow
 
@@ -296,6 +316,12 @@ async def detection_websocket(websocket: WebSocket):
                             pass
 
                     # ── Build response ──────────────────────────────
+                    current_worker_name = (
+                        state["last_worker"]["name"]
+                        if (state.get("last_worker") and time.time() - state["last_worker"].get("ts", 0) <= 20.0)
+                        else None
+                    )
+
                     response = {
                         "annotated_frame": result.get("annotated_frame"),
                         "detections": detections,
@@ -310,6 +336,7 @@ async def detection_websocket(websocket: WebSocket):
                         "model_mode": result.get("model_mode", "unknown"),
                         "active_filters": state["filters"],
                         "zone_type": state.get("zone_type", "default"),
+                        "worker_name": current_worker_name,
                         # Phone detection fields
                         "phone_status": result.get("phone_status", "safe"),
                         "phone_detected": result.get("phone_detected", False),
@@ -330,8 +357,6 @@ async def detection_websocket(websocket: WebSocket):
                         uid = user.id
                         now = time.time()
                         # Use max confidence from persons (always present) then PPE detections.
-                        # This ensures College/Gloves/Goggles violations (person-level conf)
-                        # always pass the gate even when no PPE bbox detections exist.
                         persons_conf = [
                             p.get("confidence", 0) for p in result.get("persons", [])
                         ]
@@ -346,19 +371,52 @@ async def detection_websocket(websocket: WebSocket):
                         ):
                             _last_alert_time[uid] = now
                             missing = result.get("missing_items", [])
+                            missing_str = ", ".join(missing) if missing else (result.get("alert_message") or "Safety violation")
+
+                            # Resolve worker from cache or immediate check
+                            worker_name = None
+                            emp_id = None
+                            cached_w = state.get("last_worker")
+                            if cached_w and (now - cached_w.get("ts", 0) <= 20.0):
+                                worker_name = cached_w.get("name")
+                                emp_id = cached_w.get("employee_id")
+
+                            if not worker_name:
+                                try:
+                                    face_res_now = face_service.process_face_frame(b64_frame, user.id, db)
+                                    for f in face_res_now.get("faces", []):
+                                        if not f.get("is_unknown") and f.get("label") and f["label"] != "Unknown":
+                                            worker_name = f["label"]
+                                            emp_id = f.get("employee_id") or face_service._lookup_employee_id(worker_name, db)
+                                            state["last_worker"] = {"name": worker_name, "employee_id": emp_id, "ts": now}
+                                            break
+                                except Exception:
+                                    pass
+
+                            clean_items = [m.replace("NO-", "").replace("No ", "") for m in missing]
+                            clean_items_str = ", ".join(clean_items)
+
+                            if worker_name:
+                                detected_issue = f"{worker_name} — {missing_str}"
+                                if clean_items_str:
+                                    alert_msg = f"{worker_name} has not worn {clean_items_str}"
+                                else:
+                                    alert_msg = f"{worker_name} — {result['alert_message']}"
+                            else:
+                                detected_issue = missing_str
+                                alert_msg = result["alert_message"]
+
                             save_alert(
                                 db=db,
                                 user_id=uid,
-                                message=result["alert_message"],
+                                message=alert_msg,
                                 role=role,
                                 severity=result["severity"],
-                                detected_issue=(
-                                    ", ".join(missing)
-                                    if missing
-                                    else result["alert_message"]
-                                ),
+                                detected_issue=detected_issue,
                                 confidence=round(top_conf, 3),
                                 snapshot_b64=result.get("snapshot_b64"),
+                                worker_name=worker_name,
+                                employee_id=emp_id,
                             )
                             response["alert_saved"] = True
 
@@ -370,15 +428,27 @@ async def detection_websocket(websocket: WebSocket):
                         now = time.time()
                         if now - _last_phone_alert_time.get(uid, 0) > 15:
                             _last_phone_alert_time[uid] = now
+                            worker_name = None
+                            emp_id = None
+                            cached_w = state.get("last_worker")
+                            if cached_w and (now - cached_w.get("ts", 0) <= 20.0):
+                                worker_name = cached_w.get("name")
+                                emp_id = cached_w.get("employee_id")
+
+                            phone_issue = f"{worker_name} — {phone_msg}" if worker_name else phone_msg
+                            phone_full_msg = f"{worker_name}: {phone_msg}" if worker_name else phone_msg
+
                             save_alert(
                                 db=db,
                                 user_id=uid,
-                                message=phone_msg,
+                                message=phone_full_msg,
                                 role=role,
                                 severity="high",
-                                detected_issue=phone_msg,
+                                detected_issue=phone_issue,
                                 confidence=0.85,
                                 snapshot_b64=result.get("snapshot_b64"),
+                                worker_name=worker_name,
+                                employee_id=emp_id,
                             )
                             response["phone_alert_saved"] = True
 

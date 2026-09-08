@@ -645,8 +645,15 @@ class HeadCapMonitor:
             import base64
             from services.alert_service import save_alert
             from services.rule_engine import _get_rule_engine_user_id
+            from services.face_service import get_worker_identity
 
             uid = _get_rule_engine_user_id(db)
+
+            # Resolve worker name from face recognition cache
+            identity = get_worker_identity(camera_id, track_id)
+            worker_name = identity["name"] if identity else None
+            emp_id = identity["employee_id"] if identity else None
+            name_prefix = f"{worker_name} — " if worker_name else f"Person #{track_id} — "
 
             snapshot_b64 = None
             if frame is not None:
@@ -662,24 +669,28 @@ class HeadCapMonitor:
                     log.debug("[HeadCap] snapshot err: %s", snap_err)
 
             msg = (
-                f"Person #{track_id} is NOT wearing a Bakery Head Cap "
-                f"(missing {missing_seconds:.1f}s, camera {camera_id})"
+                f"{worker_name} has not worn a Bakery Head Cap (missing {missing_seconds:.1f}s, camera {camera_id})"
+                if worker_name
+                else f"Person #{track_id} — Not Wearing a Bakery Head Cap (missing {missing_seconds:.1f}s, camera {camera_id})"
             )
+            issue_title = f"{worker_name} — No Head Cap" if worker_name else RULE_MSG
             save_alert(
                 db=db,
                 user_id=uid,
                 message=msg,
                 role="Bakery Worker",
                 severity="critical",
-                detected_issue=RULE_MSG,
+                detected_issue=issue_title,
                 confidence=None,
                 snapshot_b64=snapshot_b64,
                 camera_id=camera_id,
+                employee_id=emp_id,
                 confidence_tier="high",
+                worker_name=worker_name,
             )
             log.info(
-                "[HeadCap] Alert saved cam=%d track=%s missing=%.1fs",
-                camera_id, track_id, missing_seconds,
+                "[HeadCap] Alert saved cam=%d track=%s worker=%s missing=%.1fs",
+                camera_id, track_id, worker_name or "Unknown", missing_seconds,
             )
         except Exception as exc:
             log.error(

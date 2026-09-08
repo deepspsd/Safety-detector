@@ -39,6 +39,13 @@ SNAPSHOT_BASE = "/uploads/snapshots"
 
 def alert_to_dict(a: Alert, include_snapshot: bool = True) -> dict:
     snapshot_url = f"/uploads/{a.snapshot_path}" if a.snapshot_path else None
+    # Resolve worker name: stored worker_name column first, fallback to employee relation
+    worker_name = getattr(a, "worker_name", None)
+    if not worker_name:
+        try:
+            worker_name = a.employee.name if a.employee_id and a.employee else None
+        except Exception:
+            worker_name = None
     return {
         "id": a.id,
         "user_id": a.user_id,
@@ -55,6 +62,7 @@ def alert_to_dict(a: Alert, include_snapshot: bool = True) -> dict:
         "camera_id": getattr(a, "camera_id", None),
         "floor": getattr(a, "floor", None),
         "employee_id": getattr(a, "employee_id", None),
+        "worker_name": worker_name,
     }
 
 
@@ -70,6 +78,7 @@ def get_alerts(
     status: Optional[str] = Query("confirmed"),  # default: main feed = confirmed only
     floor: Optional[str] = Query(None),
     camera_id: Optional[int] = Query(None),
+    employee_id: Optional[int] = Query(None),
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
     page: int = Query(1, ge=1),
@@ -98,6 +107,8 @@ def get_alerts(
         query = query.filter(Alert.floor == floor)
     if camera_id:
         query = query.filter(Alert.camera_id == camera_id)
+    if employee_id:
+        query = query.filter(Alert.employee_id == employee_id)
     if date_from:
         query = query.filter(
             Alert.timestamp >= datetime.combine(date_from, datetime.min.time())

@@ -271,3 +271,62 @@ def get_event_statistics(
         ],
     }
 
+
+@router.get("/me/fcm-status")
+def fcm_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    FCM health check — returns:
+      • token_count: how many device tokens are registered in DB
+      • service_account_ok: whether firebase_service_account.json is readable
+      • oauth_ok: whether a Google OAuth2 token can be fetched (needs internet)
+      • project_id: Firebase project ID from .env
+
+    Use this to self-diagnose push notification issues.
+    Requires the owner's device to visit the app and grant notification permission
+    to register a token (done automatically on login via initFCM()).
+    """
+    from database import FcmToken
+    from services.fcm_service import _load_service_account, _get_oauth_token
+    from config import settings
+
+    tokens = db.query(FcmToken).all()
+    token_count = len(tokens)
+
+    sa = _load_service_account()
+    sa_ok = bool(sa)
+
+    oauth_ok = False
+    oauth_error = None
+    try:
+        tok = _get_oauth_token()
+        oauth_ok = bool(tok)
+    except Exception as e:
+        oauth_error = str(e)
+
+    project_id = getattr(settings, "FCM_PROJECT_ID", "")
+
+    return {
+        "fcm_configured": sa_ok and bool(project_id),
+        "project_id": project_id,
+        "service_account_ok": sa_ok,
+        "oauth_ok": oauth_ok,
+        "oauth_error": oauth_error,
+        "token_count": token_count,
+        "tokens": [
+            {
+                "id": t.id,
+                "device_name": t.device_name,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+            }
+            for t in tokens
+        ],
+        "note": (
+            "token_count=0 means no device has registered for push yet. "
+            "Open the app in a browser, allow notifications, and log in. "
+            "To receive alerts on your phone outside the building, open the app "
+            "via the ngrok/localtunnel URL listed in backend/.env ALLOWED_ORIGINS."
+        ),
+    }

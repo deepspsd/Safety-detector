@@ -470,6 +470,7 @@ def send_push_alert(
     detected_issue: Optional[str] = None,
     snapshot_b64: Optional[str] = None,  # kept for API compat, not used by FCM
     camera_id: Optional[int] = None,
+    worker_name: Optional[str] = None,
     db=None,
 ) -> bool:
     """
@@ -490,6 +491,7 @@ def send_push_alert(
             camera_name=camera_name,
             detected_issue=detected_issue,
             camera_id=camera_id,
+            worker_name=worker_name,
             db=db,
         )
     except Exception as exc:

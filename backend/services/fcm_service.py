@@ -283,6 +283,7 @@ def send_fcm_alert(
     camera_name: Optional[str] = None,
     detected_issue: Optional[str] = None,
     camera_id: Optional[int] = None,
+    worker_name: Optional[str] = None,
     db=None,
 ) -> bool:
     """
@@ -309,8 +310,16 @@ def send_fcm_alert(
         return False
 
     severity_emoji = {"low": "🟡", "medium": "🟠", "high": "🔴", "critical": "🚨"}.get(severity, "⚠️")
-    title = f"{severity_emoji} {severity.upper()} — {detected_issue or 'Safety Alert'}"
-    body_parts = [message]
+    issue_label = detected_issue or 'Safety Alert'
+    # Include worker name in title if known
+    if worker_name:
+        title = f"{severity_emoji} {severity.upper()} — {worker_name}: {issue_label}"
+    else:
+        title = f"{severity_emoji} {severity.upper()} — {issue_label}"
+    body_parts = []
+    if worker_name:
+        body_parts.append(f"👷 Worker: {worker_name}")
+    body_parts.append(message)
     if camera_name:
         body_parts.append(f"📷 {camera_name}")
     if floor:
@@ -322,6 +331,7 @@ def send_fcm_alert(
         "detected_issue": detected_issue or "",
         "camera_name": camera_name or "",
         "floor": floor or "",
+        "worker_name": worker_name or "",
     }
 
     _own_db = None

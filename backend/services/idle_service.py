@@ -221,29 +221,38 @@ def _fire_alert(camera_id: int, track_id: int, zone_name: str, idle_seconds: flo
     """
     from database import SessionLocal
     from services.alert_service import save_alert
+    from services.face_service import get_worker_identity
 
     db = None
     try:
         db = SessionLocal()
+
+        # Resolve worker name from face recognition cache
+        identity = get_worker_identity(camera_id, str(track_id))
+        worker_name = identity["name"] if identity else None
+        emp_id = identity["employee_id"] if identity else None
+        name_prefix = f"{worker_name} — " if worker_name else f"Track #{track_id} — "
+
         save_alert(
             db=db,
             user_id=0,  # system alert — not from a user session
             message=(
-                f"[IDLE PERSON] Camera {camera_id} — track #{track_id} has been "
-                f"stationary in zone '{zone_name}' for "
-                f"{int(idle_seconds)}s "
+                f"[IDLE PERSON] Camera {camera_id} — {name_prefix}stationary in "
+                f"zone '{zone_name}' for {int(idle_seconds)}s "
                 f"(limit: {_idle_limit(zone_name)}s). "
-                f"No browser session is required — this alert is from the "
-                f"persistent camera daemon."
+                f"No browser session required — persistent camera daemon alert."
             ),
             role="Factory Worker",
             severity="medium",
-            detected_issue="Idle person",
+            detected_issue=f"{worker_name} — Idle person" if worker_name else "Idle person",
             confidence=None,
             snapshot_b64=None,
+            camera_id=camera_id,
+            employee_id=emp_id,
+            worker_name=worker_name,
         )
         log.warning(
-            f"[Idle] ALERT — cam={camera_id} track={track_id} "
+            f"[Idle] ALERT — cam={camera_id} track={track_id} worker={worker_name or 'Unknown'} "
             f"zone={zone_name!r} idle={idle_seconds:.0f}s"
         )
     except Exception as exc:

@@ -49,11 +49,7 @@ os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
     "fflags;nobuffer|"
     "flags;low_delay|"
     "stimeout;5000000|"
-    "max_delay;0|"
-    "analyzeduration;1000000|"
-    "probesize;1000000|"
-    "vsync;0|"
-    "async;1"
+    "max_delay;500000"
 )
 
 import ssl
@@ -575,12 +571,8 @@ class CameraReader:
                 "rtsp_transport;tcp|"
                 "fflags;nobuffer|"
                 "flags;low_delay|"
-                "stimeout;10000000|"  # 10 seconds socket timeout
-                "max_delay;500000|"
-                "analyzeduration;1000000|"
-                "probesize;1000000|"
-                "vsync;0|"
-                "async;1"
+                "stimeout;5000000|"  # 5 seconds socket timeout
+                "max_delay;500000"
             )
 
         # Support webcam index passed as string "0", "1", …
@@ -634,72 +626,33 @@ class CameraReader:
         _resized_cache = None
 
         while self._running:
-            # ── Drain: grab as many frames as FFmpeg has waiting ────────
-            #    We keep at most ONE pending candidate frame per drain cycle,
-            #    and we overwrite it with every newly-grabbed frame so we end
-            #    up holding ONLY the most recent one.  No unbounded queues,
-            #    no "process every frame in order" fallacy.
-            drained_this_cycle = 0
-            latest_decoded: Optional[np.ndarray] = None
-
-            while self._running:
-                # cap.grab() is non-blocking / fast: it reads the next packet
-                # from the socket buffer WITHOUT decoding.  It returns False
-                # when there is no packet immediately available.
-                try:
-                    grabbed = cap.grab()
-                except Exception as grab_exc:
-                    # OpenCV can throw C++ exceptions on network timeout/disconnect
-                    self._error = f"Stream grab exception: {grab_exc}"
-                    self._stream_status = STREAM_OFFLINE
-                    consecutive_failures += 1
-                    if consecutive_failures >= MAX_FAIL:
-                        break
-                    time.sleep(0.001)
-                    continue
-                    
-                if not grabbed:
-                    # No more frames pending — FFmpeg decode pipeline is empty.
+            try:
+                ret, frame = cap.read()
+            except Exception as read_exc:
+                self._error = f"Stream read exception: {read_exc}"
+                self._stream_status = STREAM_OFFLINE
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_FAIL:
                     break
-                # Now decode the ONE frame we just grabbed (cheap because
-                # grab() already moved the data into FFmpeg's decoder).
-                try:
-                    ret, f = cap.retrieve()
-                except Exception as retrieve_exc:
-                    # Handle retrieve exceptions gracefully
-                    self.decoder_error_count += 1
-                    consecutive_failures += 1
-                    continue
-                    
-                if not ret or f is None or f.size == 0:
-                    self.decoder_error_count += 1
-                    consecutive_failures += 1
-                    continue  # try next grab — bad decode doesn't mean end of stream
-                self.cap_read_total += 1
-                drained_this_cycle += 1
-                # Drop the previous candidate — we only keep the newest.
-                if latest_decoded is not None:
-                    self.capture_dropped += 1
-                latest_decoded = f
+                time.sleep(0.01)
+                continue
 
-            if latest_decoded is None:
-                # No frame arrived this drain cycle.  Sleep 0.5 ms to let the
-                # socket receive more bytes without burning 100 % CPU.  This is
-                # the ONLY sleep in the hot path and it's < 1 ms, so it cannot
-                # cause frame accumulation.
+            if not ret or frame is None or frame.size == 0:
+                self.decoder_error_count += 1
                 consecutive_failures += 1
                 if consecutive_failures >= MAX_FAIL:
                     self._error = (
-                        f"Camera stream lost after {MAX_FAIL} empty drain cycles — "
+                        f"Camera stream lost after {MAX_FAIL} failed reads — "
                         f"check URL / network: {self.url}"
                     )
                     self._stream_status = STREAM_OFFLINE
                     break
-                time.sleep(self._EMPTY_SPIN_SLEEP)
+                time.sleep(0.005)
                 continue
 
-            # ── Process the SINGLE newest frame from this drain cycle ────
             consecutive_failures = 0
+            self.cap_read_total += 1
+
             try:
                 if (
                     _resized_cache is None
@@ -707,11 +660,11 @@ class CameraReader:
                     or _resized_cache.shape[1] != INFER_WIDTH
                 ):
                     _resized_cache = cv2.resize(
-                        latest_decoded, (INFER_WIDTH, INFER_HEIGHT)
+                        frame, (INFER_WIDTH, INFER_HEIGHT)
                     )
                 else:
                     cv2.resize(
-                        latest_decoded,
+                        frame,
                         (INFER_WIDTH, INFER_HEIGHT),
                         dst=_resized_cache,
                     )
@@ -721,9 +674,6 @@ class CameraReader:
                 continue
 
             if not self._accept_frame(frame_resized, source=f"cam:{self.url}"):
-                # Bad frame: do NOT store.  Crucially, we also DO NOT sleep
-                # here (the old loop slept 50 ms on every bad frame, which
-                # let the decoder buffer fill up behind our backs).
                 if consecutive_failures == 0:
                     consecutive_failures = 1
                 if consecutive_failures >= _BAD_FRAME_DEGRADED_THRESH:
@@ -736,8 +686,6 @@ class CameraReader:
             self._error = None
             self._last_frame_ts = now_ts
             with self._lock:
-                # Make a copy into the shared buffer so the caller can't
-                # overwrite our _resized_cache scratch area from outside.
                 self._frame = frame_resized.copy()
                 self._frame_capture_ts = now_ts
                 self._frame_count += 1
@@ -1378,20 +1326,59 @@ async def cctv_detection_websocket(websocket: WebSocket):
                         ):
                             _last_alert_time[uid] = now_t
                             missing = response.get("missing_items", [])
+                            cam_id = response.get("camera_id") or managed_camera_id
+
+                            c_worker_name = None
+                            c_emp_id = None
+                            try:
+                                from services.face_service import get_worker_identity
+                                if cam_id is not None:
+                                    for p in response.get("persons", []):
+                                        if not p.get("is_compliant", True):
+                                            tid = p.get("track_id")
+                                            if tid not in (None, -1, "-1", ""):
+                                                ident = get_worker_identity(cam_id, str(tid))
+                                                if ident and ident.get("name") and ident["name"] != "Unknown":
+                                                    c_worker_name = ident["name"]
+                                                    c_emp_id = ident.get("employee_id")
+                                                    break
+                                if not c_worker_name:
+                                    fr_faces = (response.get("face_result") or {}).get("faces", [])
+                                    for ff in fr_faces:
+                                        if not ff.get("is_unknown") and ff.get("label") and ff["label"] != "Unknown":
+                                            c_worker_name = ff["label"]
+                                            c_emp_id = ff.get("employee_id")
+                                            break
+                            except Exception:
+                                pass
+
+                            missing_str = ", ".join(missing) if missing else (response.get("alert_message") or "Safety violation")
+                            clean_items = [m.replace("NO-", "").replace("No ", "") for m in missing]
+                            clean_items_str = ", ".join(clean_items)
+
+                            if c_worker_name:
+                                detected_issue = f"{c_worker_name} — {missing_str}"
+                                if clean_items_str:
+                                    alert_msg = f"{c_worker_name} has not worn {clean_items_str}"
+                                else:
+                                    alert_msg = f"{c_worker_name} — {response['alert_message']}"
+                            else:
+                                detected_issue = missing_str
+                                alert_msg = response["alert_message"]
+
                             try:
                                 save_alert(
                                     db=db,
                                     user_id=uid,
-                                    message=response["alert_message"],
+                                    message=alert_msg,
                                     role=role,
                                     severity=response.get("severity"),
-                                    detected_issue=(
-                                        ", ".join(missing)
-                                        if missing
-                                        else response["alert_message"]
-                                    ),
+                                    detected_issue=detected_issue,
                                     confidence=round(top_conf, 3),
                                     snapshot_b64=response.get("snapshot_b64"),
+                                    camera_id=cam_id,
+                                    worker_name=c_worker_name,
+                                    employee_id=c_emp_id,
                                 )
                                 response["alert_saved"] = True
                             except Exception:
@@ -1402,16 +1389,23 @@ async def cctv_detection_websocket(websocket: WebSocket):
                     ):
                         if now_t - _last_phone_alert_time.get(uid, 0) > 15:
                             _last_phone_alert_time[uid] = now_t
+                            cam_id = response.get("camera_id") or managed_camera_id
+                            p_msg = response["phone_alert"]
+                            p_issue = f"{c_worker_name} — {p_msg}" if c_worker_name else p_msg
+                            p_full = f"{c_worker_name}: {p_msg}" if c_worker_name else p_msg
                             try:
                                 save_alert(
                                     db=db,
                                     user_id=uid,
-                                    message=response["phone_alert"],
+                                    message=p_full,
                                     role=role,
                                     severity="high",
-                                    detected_issue=response["phone_alert"],
+                                    detected_issue=p_issue,
                                     confidence=0.85,
                                     snapshot_b64=response.get("snapshot_b64"),
+                                    camera_id=cam_id,
+                                    worker_name=c_worker_name,
+                                    employee_id=c_emp_id,
                                 )
                                 response["phone_alert_saved"] = True
                             except Exception:

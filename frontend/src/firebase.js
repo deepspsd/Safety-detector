@@ -81,8 +81,9 @@ export async function initFCM(authToken, backendBase) {
     })
 
     if (!token) {
-      console.warn('[FCM] getToken returned null — check VAPID key and notification permission')
-      return null
+      const errDetail = 'getToken returned empty. Ensure notification permission is allowed in browser settings and service worker registered.'
+      console.warn('[FCM]', errDetail)
+      throw new Error(errDetail)
     }
 
     console.log('[FCM] Received device token:', token.slice(0, 20) + '...')
@@ -104,8 +105,9 @@ export async function initFCM(authToken, backendBase) {
       }),
     })
     if (!resp.ok) {
-      console.warn('[FCM] Token registration failed, status:', resp.status, await resp.text())
-      return null
+      const errText = await resp.text()
+      console.warn('[FCM] Token registration failed, status:', resp.status, errText)
+      throw new Error(`Server returned ${resp.status}: ${errText}`)
     }
 
     const regResult = await resp.json()
@@ -113,7 +115,7 @@ export async function initFCM(authToken, backendBase) {
     return token
   } catch (err) {
     console.error('[FCM] initFCM error:', err)
-    return null
+    throw err
   }
 }
 

@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import math
 import threading
 import time
 from typing import Dict, List, Optional, Tuple
@@ -237,6 +238,11 @@ class _ManagedCamera:
             inference_pool.remove_camera(self.camera_id)
         except Exception:
             pass
+        try:
+            from services.face_service import clear_worker_identity_camera
+            clear_worker_identity_camera(self.camera_id)
+        except Exception:
+            pass
         with self._stream_lock:
             self._stream_result = None
 
@@ -288,7 +294,7 @@ class _ManagedCamera:
     def stream_result_age_ms(self) -> float:
         with self._stream_lock:
             if self._stream_result_ts == 0.0:
-                return float("inf")
+                return -1.0
             return max(0.0, (time.time() - self._stream_result_ts) * 1000.0)
 
     def stream_fps(self) -> float:
@@ -296,13 +302,15 @@ class _ManagedCamera:
 
     def metrics(self) -> dict:
         base = self.reader.metrics()
+        age = self.stream_result_age_ms()
+        age_ms = None if (age < 0 or math.isinf(age) or math.isnan(age)) else round(age, 1)
         base.update({
             "stream_fps": self.stream_fps(),
             "stream_frame_count": self._stream_frame_count,
             "stream_dropped": self._stream_dropped,
-            "stream_result_age_ms": round(self.stream_result_age_ms(), 1),
+            "stream_result_age_ms": age_ms,
         })
-        return base
+        return _sanitize_metrics(base)
 
     # ── Shared streaming annotation loop ─────────────────────────────────────
     #     ONE thread per camera.  Runs the full YOLO + Face + Cash + uniform
@@ -584,6 +592,21 @@ class _ManagedCamera:
                                 )
                         except Exception:
                             pass
+
+                    # Update worker identity cache: face bbox → track_id
+                    # Allows monitors to name the violating worker in alerts
+                    try:
+                        from services.face_service import (
+                            update_worker_identity_from_face_result,
+                        )
+                        update_worker_identity_from_face_result(
+                            camera_id=self.camera_id,
+                            persons=ppe_result.get("persons", []),
+                            face_result=face_result,
+                            db=db,
+                        )
+                    except Exception:
+                        pass
 
             except Exception as exc:
                 log.debug(
@@ -1520,7 +1543,7 @@ def get_reader_frame_age_ms(camera_id: int) -> float:
     """Milliseconds since the latest available frame was captured."""
     with _lock:
         mc = _registry.get(camera_id)
-    return mc.frame_age_ms() if mc else float("inf")
+    return mc.frame_age_ms() if mc else -1.0
 
 
 def get_reader_fps(camera_id: int) -> float:
@@ -1535,6 +1558,24 @@ def get_reader_error(camera_id: int) -> Optional[str]:
     return mc.last_error() if mc else None
 
 
+def _sanitize_metrics(d: dict) -> dict:
+    """Sanitize float values like inf/nan so JSON response never crashes."""
+    sanitized = {}
+    for k, v in d.items():
+        if isinstance(v, float) and (math.isinf(v) or math.isnan(v)):
+            sanitized[k] = None
+        elif isinstance(v, dict):
+            sanitized[k] = _sanitize_metrics(v)
+        elif isinstance(v, list):
+            sanitized[k] = [
+                None if isinstance(x, float) and (math.isinf(x) or math.isnan(x)) else x
+                for x in v
+            ]
+        else:
+            sanitized[k] = v
+    return sanitized
+
+
 def get_metrics(camera_id: int) -> dict:
     """Browser-safe operational metrics. Never returns stream URLs."""
     with _lock:
@@ -1545,8 +1586,10 @@ def get_metrics(camera_id: int) -> dict:
             "last_frame_at": None,
             "reconnect_count": 0,
             "last_error": "Camera is not streaming",
+            "stream_fps": 0.0,
+            "stream_result_age_ms": None,
         }
-    return mc.metrics()
+    return _sanitize_metrics(mc.metrics())
 
 
 def get_latest_stream_result(camera_id: int) -> Optional[dict]:
@@ -1568,7 +1611,7 @@ def get_latest_stream_result(camera_id: int) -> Optional[dict]:
 def get_stream_result_age_ms(camera_id: int) -> float:
     with _lock:
         mc = _registry.get(camera_id)
-    return mc.stream_result_age_ms() if mc else float("inf")
+    return mc.stream_result_age_ms() if mc else -1.0
 
 
 def get_stream_fps(camera_id: int) -> float:

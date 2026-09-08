@@ -38,6 +38,7 @@ from services.camera_discovery import (discover_onvif, hikvision_quick_add,
                                        probe_onvif_endpoints)
 from services.onvif_client import (OnvifConnectionError, OnvifUnavailable,
                                    inspect_camera)
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 log = logging.getLogger("cameras_router")
@@ -783,12 +784,9 @@ def delete_camera(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Stop the camera reader thread and delete the camera from the DB.
-    If there are foreign key constraints (e.g. existing alerts), it falls back
-    to soft-deleting by setting status="deleted".
+    Stop the camera reader thread and permanently delete the camera from DB.
+    Preserves historical alerts/attendance by unlinking camera_id to NULL.
     """
-    from sqlalchemy.exc import IntegrityError
-
     cam = db.query(CameraModel).filter(CameraModel.id == camera_id).first()
     if not cam:
         raise HTTPException(status_code=404, detail="Camera not found")
@@ -796,20 +794,76 @@ def delete_camera(
     # Stop the live reader (no-op if not running)
     camera_manager.stop_camera(camera_id)
 
-    # Try hard delete
     try:
+        # 1. Unlink historical records so alerts & attendance are preserved
+        for tbl in [
+            "alerts",
+            "alert_cases",
+            "attendance_records",
+            "anomaly_events",
+            "cylinder_logs",
+            "idle_sessions",
+            "invoice_logs",
+            "lift_events",
+            "order_form_logs",
+            "rule_evaluations",
+            "surveillance_events",
+            "notification_queue",
+            "context_snapshots",
+        ]:
+            try:
+                db.execute(
+                    text(f"UPDATE {tbl} SET camera_id = NULL WHERE camera_id = :cid"),
+                    {"cid": camera_id},
+                )
+            except Exception:
+                pass
+
+        # 2. Unlink zone references before deleting zone_configs
+        for tbl in ["context_snapshots", "rule_definitions", "surveillance_events", "track_zone_history"]:
+            try:
+                db.execute(
+                    text(
+                        f"UPDATE {tbl} SET zone_id = NULL WHERE zone_id IN "
+                        f"(SELECT id FROM zone_configs WHERE camera_id = :cid)"
+                    ),
+                    {"cid": camera_id},
+                )
+            except Exception:
+                pass
+
+        # 3. Delete camera child configurations
+        for tbl in [
+            "camera_streams",
+            "camera_credentials",
+            "camera_health",
+            "calibration_versions",
+            "dirty_floor_baselines",
+            "track_zone_history",
+            "track_sessions",
+            "virtual_lines",
+            "zone_configs",
+        ]:
+            try:
+                db.execute(
+                    text(f"DELETE FROM {tbl} WHERE camera_id = :cid"),
+                    {"cid": camera_id},
+                )
+            except Exception:
+                pass
+
+        # 4. Permanently delete camera row
         db.delete(cam)
         db.commit()
-        log.info(f"[cameras] Camera {camera_id} hard-deleted")
+        log.info(f"[cameras] Camera {camera_id} permanently deleted from database")
         return {"id": camera_id, "status": "deleted"}
-    except IntegrityError:
-        # Fallback to soft delete
+    except Exception as exc:
         db.rollback()
+        # Fallback if any unexpected error
         cam.status = "deleted"
         db.commit()
-        db.refresh(cam)
-        log.info(f"[cameras] Camera {camera_id} soft-deleted (status=deleted)")
-        return _camera_to_dict(cam)
+        log.warning(f"[cameras] Camera {camera_id} fallback soft-deleted: {exc}")
+        return {"id": camera_id, "status": "deleted"}
 
 
 @router.post("/{camera_id}/restart")

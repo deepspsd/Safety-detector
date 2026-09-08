@@ -4,7 +4,7 @@ import { useToast } from '../context/ToastContext'
 import {
   Bell, Trash2, Eye, Filter, ChevronLeft,
   ChevronRight, Clock, X, Camera, AlertTriangle,
-  ShieldAlert, CheckCircle, ExternalLink
+  ShieldAlert, CheckCircle, ExternalLink, User
 } from 'lucide-react'
 
 const SEVERITIES = ['', 'critical', 'high', 'medium', 'low']
@@ -279,6 +279,13 @@ function AlertCards({ alerts, onOpen, onDelete, snapSrc }) {
                     <Clock size={11} />
                     {tsStr}
                   </div>
+                  {/* Worker name badge */}
+                  {a.worker_name && (
+                    <div style={{ display:'flex', alignItems:'center', gap:4, fontSize:'0.72rem', color:'#a78bfa', fontWeight:600 }}>
+                      <User size={11} />
+                      {a.worker_name}
+                    </div>
+                  )}
                   {a.role && (
                     <span style={{
                       fontSize:'0.70rem', padding:'2px 8px', borderRadius:99, width:'fit-content',
@@ -317,6 +324,7 @@ function AlertTable({ alerts, onOpen, onDelete, snapSrc }) {
               <th>#</th>
               <th>Timestamp</th>
               <th>Issue</th>
+              <th>Worker</th>
               <th>Role</th>
               <th>Severity</th>
               <th>Conf.</th>
@@ -350,6 +358,13 @@ function AlertTable({ alerts, onOpen, onDelete, snapSrc }) {
                   </td>
                   <td style={{ color:'var(--text-primary)', maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                     {a.detected_issue || a.message}
+                  </td>
+                  <td>
+                    {a.worker_name ? (
+                      <span style={{ display:'flex', alignItems:'center', gap:4, fontSize:'0.78rem', color:'#a78bfa', fontWeight:600 }}>
+                        <User size={11} />{a.worker_name}
+                      </span>
+                    ) : <span style={{ color:'var(--text-muted)', fontSize:'0.75rem' }}>—</span>}
                   </td>
                   <td><span className="badge badge-medium">{a.role || '—'}</span></td>
                   <td><span className={`badge badge-${a.severity}`}>{a.severity}</span></td>
@@ -440,6 +455,13 @@ function AlertModal({ alert: a, snapSrc, onClose }) {
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, fontSize:'0.85rem' }}>
           <InfoRow label="Timestamp" value={new Date(a.timestamp).toLocaleString()} />
           <InfoRow label="Role" value={a.role || '—'} />
+          {a.worker_name && (
+            <InfoRow label="Worker" value={
+              <span style={{ display:'flex', alignItems:'center', gap:6, color:'#a78bfa', fontWeight:600 }}>
+                <User size={13} />{a.worker_name}
+              </span>
+            } />
+          )}
           <InfoRow label="Severity"
             value={<span className={`badge badge-${a.severity}`}>{a.severity}</span>} />
           <InfoRow label="Confidence"

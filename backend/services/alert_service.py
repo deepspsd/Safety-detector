@@ -175,6 +175,8 @@ def save_alert(
     employee_id: int = None,
     # v3 — confidence tier (optional, defaults to auto-detect via issue name)
     confidence_tier: str = "auto",  # "high" | "low" | "auto"
+    # v4 — worker name from face recognition (persisted in DB + FCM push)
+    worker_name: str = None,
 ) -> Alert:
     """
     Persist an alert and (if confirmed) send a Telegram notification.
@@ -188,6 +190,38 @@ def save_alert(
 
     All other parameters are unchanged from v2 — existing callers need no edits.
     """
+    # Cross-resolve employee_id and worker_name if one is missing
+    if not worker_name and employee_id:
+        try:
+            from database import Employee
+            emp = db.query(Employee).filter(Employee.id == employee_id).first()
+            if emp:
+                worker_name = emp.name
+        except Exception:
+            pass
+
+    if worker_name and not employee_id:
+        try:
+            from database import Employee
+            from sqlalchemy import func
+            emp = (
+                db.query(Employee)
+                .filter(func.lower(Employee.name) == worker_name.strip().lower())
+                .first()
+            )
+            if emp:
+                employee_id = emp.id
+        except Exception:
+            pass
+
+    # Ensure worker name is included in detected_issue and message if known
+    if worker_name:
+        w_clean = worker_name.strip()
+        if detected_issue and w_clean.lower() not in detected_issue.lower():
+            detected_issue = f"{w_clean} — {detected_issue}"
+        if message and w_clean.lower() not in message.lower():
+            message = f"{w_clean}: {message}"
+
     # Resolve confidence tier → DB status
     status = _resolve_status(detected_issue or "", confidence_tier)
 
@@ -212,6 +246,7 @@ def save_alert(
         camera_id=camera_id,
         floor=floor,
         employee_id=employee_id,
+        worker_name=worker_name,
         status=status,
     )
     db.add(alert)
@@ -241,6 +276,8 @@ def save_alert(
             camera_name=camera_name,
             detected_issue=detected_issue,
             snapshot_b64=push_snapshot_b64,  # in-flight only, not from DB
+            camera_id=camera_id,
+            worker_name=worker_name,
         )
         if severity in ("high", "critical"):
             try:
@@ -318,6 +355,7 @@ def _fire_push(
     detected_issue: str | None,
     snapshot_b64: str | None,
     camera_id: int | None = None,
+    worker_name: str | None = None,
 ) -> None:
     """
     Background-safe push dispatch via FCM.
@@ -334,6 +372,7 @@ def _fire_push(
             detected_issue=detected_issue,
             snapshot_b64=snapshot_b64,
             camera_id=camera_id,
+            worker_name=worker_name,
         )
     except Exception as exc:
         log.error(f"[alert_service] Push dispatch error: {exc}")

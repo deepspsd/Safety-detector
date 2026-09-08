@@ -21,7 +21,12 @@ const messaging = firebase.messaging();
 messaging.onBackgroundMessage((payload) => {
   console.log('[SW] Background FCM received:', payload);
   const title = payload.notification?.title || payload.data?.title || '🚨 Safety Alert';
-  const body = payload.notification?.body || payload.data?.body || payload.data?.message || 'Safety alert triggered.';
+  const workerName = payload.data?.worker_name;
+  const rawBody = payload.notification?.body || payload.data?.body || payload.data?.message || 'Safety alert triggered.';
+  // Prepend worker name if present and not already in body
+  const body = (workerName && !rawBody.includes(workerName))
+    ? `👷 Worker: ${workerName}\n${rawBody}`
+    : rawBody;
   const severity = payload.data?.severity || 'medium';
 
   self.registration.showNotification(title, {
@@ -37,6 +42,37 @@ messaging.onBackgroundMessage((payload) => {
     tag: `safety-alert-${payload.data?.detected_issue || 'generic'}`,
     renotify: true,
   });
+});
+
+// ── Native push fallback (in case FCM SDK onBackgroundMessage does not catch) ─
+self.addEventListener('push', (event) => {
+  if (!event.data) return;
+  try {
+    const raw = event.data.json();
+    console.log('[SW] Native push received:', raw);
+    const n = raw.notification || {};
+    const d = raw.data || {};
+    const title = n.title || d.title || '🚨 Safety Alert';
+    const workerName = d.worker_name;
+    const rawBody = n.body || d.body || d.message || 'Safety alert detected.';
+    const body = (workerName && !rawBody.includes(workerName))
+      ? `👷 Worker: ${workerName}\n${rawBody}`
+      : rawBody;
+
+    event.waitUntil(
+      self.registration.showNotification(title, {
+        body: body,
+        icon: '/pwa-192x192.png',
+        badge: '/pwa-192x192.png',
+        vibrate: [200, 100, 200],
+        data: d,
+        tag: `safety-alert-${d.detected_issue || 'generic'}`,
+        renotify: true,
+      })
+    );
+  } catch (err) {
+    console.error('[SW] push error:', err);
+  }
 });
 
 // Optional message event listener for compatibility

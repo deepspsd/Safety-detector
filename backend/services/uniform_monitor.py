@@ -385,8 +385,15 @@ class UniformMonitor:
             import base64
             from services.alert_service import save_alert
             from services.rule_engine import _get_rule_engine_user_id
+            from services.face_service import get_worker_identity
 
             uid = _get_rule_engine_user_id(db)
+
+            # Resolve worker identity from face recognition cache
+            identity = get_worker_identity(camera_id, track_id)
+            worker_name = identity["name"] if identity else None
+            emp_id = identity["employee_id"] if identity else None
+            name_prefix = f"{worker_name} — " if worker_name else f"Person #{track_id} — "
 
             snapshot_b64 = None
             if frame is not None:
@@ -396,19 +403,29 @@ class UniformMonitor:
                 except Exception:
                     pass
 
-            msg = f"⚠️ Person (Track #{track_id}) is not wearing required uniform ({missing_seconds:.1f}s)"
+            msg = (
+                f"⚠️ {worker_name} has not worn required uniform ({missing_seconds:.1f}s)"
+                if worker_name
+                else f"⚠️ Person (Track #{track_id}) is not wearing required uniform ({missing_seconds:.1f}s)"
+            )
+            issue_title = f"{worker_name} — No Uniform" if worker_name else "Not Wearing Uniform"
             save_alert(
                 db=db,
                 user_id=uid,
                 message=msg,
                 role="Factory Worker",
                 severity="high",
-                detected_issue="Not Wearing Uniform",
+                detected_issue=issue_title,
                 confidence=0.85,
                 snapshot_b64=snapshot_b64,
                 camera_id=camera_id,
+                employee_id=emp_id,
+                worker_name=worker_name,
             )
-            log.info("[Uniform] Saved alert to DB for cam=%d track=%s", camera_id, track_id)
+            log.info(
+                "[Uniform] Saved alert cam=%d track=%s worker=%s",
+                camera_id, track_id, worker_name or "Unknown",
+            )
         except Exception as exc:
             log.error("[Uniform] Failed to fire alert: %s", exc)
 

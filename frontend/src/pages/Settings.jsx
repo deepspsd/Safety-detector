@@ -67,14 +67,12 @@ export default function Settings() {
           setNotificationPermission('granted')
           setFcmStatus('✅ Device registered! FCM token saved to backend.')
           addToast('Push Registered', 'This device will now receive safety alerts', 'success')
-        } else {
-          setFcmStatus('⚠️ Could not register device. Please check browser permissions.')
-          addToast('Registration Incomplete', 'Check browser permission or VAPID key', 'warning')
         }
       }
     } catch (err) {
-      setFcmStatus(`❌ Error: ${err.message || err}`)
-      addToast('Error', 'Failed to enable push notifications', 'error')
+      const msg = err.message || String(err)
+      setFcmStatus(`❌ Error: ${msg}`)
+      addToast('Registration Incomplete', msg, 'warning')
     } finally {
       setFcmLoading(false)
     }

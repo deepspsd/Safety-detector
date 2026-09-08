@@ -133,6 +133,9 @@ class Alert(Base):
         String(20), nullable=False, default="confirmed"
     )  # confirmed | pending_review | dismissed
 
+    # v4 — worker identity from face recognition
+    worker_name = Column(String(100), nullable=True)
+
     # Relationships
     user = relationship("User", back_populates="alerts")
     camera = relationship("Camera", back_populates="alerts", foreign_keys=[camera_id])
@@ -1034,6 +1037,7 @@ def ensure_enterprise_schema() -> None:
         "clip_path": "VARCHAR(500)",
         "rule_id": "INTEGER",
         "event_type": "VARCHAR(100)",
+        "worker_name": "VARCHAR(100)",
     }
     if "alerts" in inspector.get_table_names():
         existing_alert_cols = {c["name"] for c in inspector.get_columns("alerts")}
