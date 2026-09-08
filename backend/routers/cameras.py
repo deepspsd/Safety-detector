@@ -238,12 +238,13 @@ def hikvision_add(
     Builds the RTSP URL from the supplied IP, username, password and channel,
     then creates the camera row and starts the reader — no manual URL needed.
     """
+    effective_floor = _normalize_floor(payload.floor)
     cam_dict = hikvision_quick_add(
         name=payload.name,
         ip=payload.ip,
         username=payload.username,
         password=payload.password,
-        floor=payload.floor,
+        floor=effective_floor,
         channel=payload.channel,
         ai_stream=payload.ai_stream,
         display_stream=payload.display_stream,
@@ -421,6 +422,23 @@ def list_cameras(
     return [_camera_to_dict(c) for c in cameras]
 
 
+def _normalize_floor(floor: Optional[str], zone_type: Optional[str] = None) -> str:
+    """Normalize floor input into standard identifier: ground | first | second | shop."""
+    f = (floor or "").strip().lower()
+    if "shop" in f:
+        return "shop"
+    if "first" in f or f in ("1", "1st"):
+        return "first"
+    if "second" in f or f in ("2", "2nd"):
+        return "second"
+    # Auto-infer shop floor if specific shop zone selected
+    if zone_type in ("cashbox", "shop_counter", "vendor_desk"):
+        return "shop"
+    if "ground" in f or f in ("0", "g"):
+        return "ground"
+    return f or "ground"
+
+
 @router.post("/", status_code=201)
 def create_camera(
     payload: CameraCreate,
@@ -432,9 +450,10 @@ def create_camera(
     If rtsp_url is provided and status is not 'offline', the reader thread
     is started immediately without restarting the server.
     """
+    effective_floor = _normalize_floor(payload.floor, payload.zone_type)
     cam = CameraModel(
         name=payload.name,
-        floor=payload.floor,
+        floor=effective_floor,
         zone_type=payload.zone_type,
         rtsp_url=payload.rtsp_url,
         status=payload.status,
@@ -731,7 +750,9 @@ def update_camera(
     if payload.name is not None:
         cam.name = payload.name
     if payload.floor is not None:
-        cam.floor = payload.floor
+        cam.floor = _normalize_floor(payload.floor, payload.zone_type or cam.zone_type)
+    elif payload.zone_type is not None and payload.zone_type in ("cashbox", "shop_counter", "vendor_desk") and cam.floor == "ground":
+        cam.floor = "shop"
     if payload.zone_type is not None:
         cam.zone_type = payload.zone_type
     if payload.rtsp_url is not None:
@@ -938,6 +959,18 @@ class ZoneCreate(BaseModel):
     idle_threshold: Optional[float] = None
     confidence_threshold: Optional[float] = None
     visibility_threshold: Optional[float] = None
+    capabilities: Optional[list[str]] = None
+    zone_models: Optional[list[str]] = None
+
+
+@router.get("/capabilities", summary="List system AI detection capabilities and zone mappings")
+def get_detection_capabilities():
+    """Return capability definitions and zone default capability mappings."""
+    from config import settings
+    return {
+        "capabilities": settings.CAPABILITY_REGISTRY,
+        "zone_mapping": settings.ZONE_CAPABILITY_MAP,
+    }
 
 
 @router.get("/{camera_id}/zones")
@@ -948,7 +981,7 @@ def get_zones(
 ):
     """
     Return all configured zone polygons for this camera.
-    Response: list of { id, zone_name, polygon_json, created_at }
+    Response: list of { id, zone_name, polygon_json, created_at, capabilities, zone_models }
     """
     cam = db.query(CameraModel).filter(CameraModel.id == camera_id).first()
     if not cam:
@@ -977,6 +1010,8 @@ def get_zones(
             "idle_threshold": z.idle_threshold,
             "confidence_threshold": z.confidence_threshold,
             "visibility_threshold": z.visibility_threshold,
+            "capabilities": _json_load(getattr(z, "capabilities_json", None), []),
+            "zone_models": _json_load(getattr(z, "zone_models_json", None), []),
             "is_active": z.is_active,
             "calibration_version": z.calibration_version,
         }
@@ -1069,6 +1104,16 @@ def create_or_replace_zone(
             "idle_threshold": payload.idle_threshold,
             "confidence_threshold": payload.confidence_threshold,
             "visibility_threshold": payload.visibility_threshold,
+            "capabilities_json": (
+                _json.dumps(payload.capabilities)
+                if payload.capabilities is not None
+                else None
+            ),
+            "zone_models_json": (
+                _json.dumps(payload.zone_models)
+                if payload.zone_models is not None
+                else None
+            ),
         }.items():
             if value is not None:
                 setattr(existing, field, value)
@@ -1117,6 +1162,18 @@ def create_or_replace_zone(
             idle_threshold=payload.idle_threshold,
             confidence_threshold=payload.confidence_threshold,
             visibility_threshold=payload.visibility_threshold,
+            capabilities_json=(
+                _json.dumps(payload.capabilities)
+                if payload.capabilities is not None
+                else None
+            ),
+            zone_models_json=(
+                _json.dumps(payload.zone_models)
+                if payload.zone_models is not None
+                else None
+            ),
+            is_active=True,
+            calibration_version=1,
         )
         db.add(zone)
         db.commit()

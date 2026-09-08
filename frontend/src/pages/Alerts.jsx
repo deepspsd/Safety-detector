@@ -24,6 +24,21 @@ const SEV_COLORS = {
 // AlertsReview.jsx uses the identical pattern — keep them in sync.
 const BASE_URL = import.meta.env.VITE_API_BASE_URL?.replace(/\/api$/, '') || ''
 
+export function formatAlertTimestamp(ts) {
+  if (!ts) return '—'
+  const d = new Date(ts)
+  if (isNaN(d.getTime())) return ts
+  return d.toLocaleString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true
+  })
+}
+
 export default function Alerts() {
   const { addToast } = useToast()
   const [alerts,        setAlerts]        = useState([])
@@ -201,7 +216,7 @@ function AlertCards({ alerts, onOpen, onDelete, snapSrc }) {
       {alerts.map(a => {
         const sev   = SEV_COLORS[a.severity] || SEV_COLORS.medium
         const src   = snapSrc(a)
-        const tsStr = new Date(a.timestamp).toLocaleString('en-IN', { dateStyle:'short', timeStyle:'short' })
+        const tsStr = formatAlertTimestamp(a.timestamp)
         return (
           <div key={a.id}
             onClick={() => onOpen(a)}
@@ -354,7 +369,7 @@ function AlertTable({ alerts, onOpen, onDelete, snapSrc }) {
                   <td style={{ color:'var(--text-muted)', fontSize:'0.75rem' }}>#{a.id}</td>
                   <td style={{ color:'var(--text-muted)', fontSize:'0.78rem', whiteSpace:'nowrap' }}>
                     <Clock size={11} style={{ marginRight:4 }} />
-                    {new Date(a.timestamp).toLocaleString('en-IN', { dateStyle:'short', timeStyle:'short' })}
+                    {formatAlertTimestamp(a.timestamp)}
                   </td>
                   <td style={{ color:'var(--text-primary)', maxWidth:200, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                     {a.detected_issue || a.message}
@@ -453,7 +468,7 @@ function AlertModal({ alert: a, snapSrc, onClose }) {
 
         {/* Info grid */}
         <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, fontSize:'0.85rem' }}>
-          <InfoRow label="Timestamp" value={new Date(a.timestamp).toLocaleString()} />
+          <InfoRow label="Timestamp" value={formatAlertTimestamp(a.timestamp)} />
           <InfoRow label="Role" value={a.role || '—'} />
           {a.worker_name && (
             <InfoRow label="Worker" value={
@@ -466,6 +481,8 @@ function AlertModal({ alert: a, snapSrc, onClose }) {
             value={<span className={`badge badge-${a.severity}`}>{a.severity}</span>} />
           <InfoRow label="Confidence"
             value={a.confidence ? `${(a.confidence*100).toFixed(1)}%` : '—'} />
+          <InfoRow label="Model / Engine" value={a.model_name || 'yolov8x_coco'} />
+          <InfoRow label="Zone" value={a.zone_id ? `#${a.zone_id}` : (a.floor ? `${a.floor.toUpperCase()} Floor` : 'Global')} />
           <div style={{ gridColumn:'1/-1' }}>
             <InfoRow label="Detected Issue" value={a.detected_issue || '—'} />
           </div>

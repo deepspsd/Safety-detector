@@ -1295,11 +1295,13 @@ function CamerasTab({ addToast }) {
                   <input className="input" value={addForm.name} onChange={e => setAddForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Ground Floor Entrance" />
                 </div>
                 <div>
-                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Floor</label>
-                  <input className="input" list="camera-floors" value={addForm.floor} onChange={e => setAddForm(f => ({ ...f, floor: e.target.value }))} placeholder="e.g. ground or third" />
-                  <datalist id="camera-floors">
-                    <option value="ground" /><option value="first" /><option value="second" /><option value="shop" /><option value="store" />
-                  </datalist>
+                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Floor *</label>
+                  <select className="input" value={addForm.floor} onChange={e => setAddForm(f => ({ ...f, floor: e.target.value }))}>
+                    <option value="ground">🏭 Ground Floor</option>
+                    <option value="first">🏗️ First Floor</option>
+                    <option value="second">🏢 Second Floor</option>
+                    <option value="shop">🛒 Shop Floor</option>
+                  </select>
                 </div>
                 <div style={{ gridColumn: 'span 2' }}>
                   <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>RTSP / HTTP URL</label>
@@ -1310,7 +1312,18 @@ function CamerasTab({ addToast }) {
                     Zone Type
                     <span title="Sets the camera's primary purpose. Paint zone polygons for precise spatial detection — polygon names override this." style={{ marginLeft: 4, cursor: 'help', opacity: 0.6 }}>ⓘ</span>
                   </label>
-                  <select className="input" value={addForm.zone_type} onChange={e => setAddForm(f => ({ ...f, zone_type: e.target.value }))}>
+                  <select
+                    className="input"
+                    value={addForm.zone_type}
+                    onChange={e => {
+                      const z = e.target.value
+                      setAddForm(f => ({
+                        ...f,
+                        zone_type: z,
+                        floor: ['cashbox', 'shop_counter', 'vendor_desk'].includes(z) ? 'shop' : f.floor
+                      }))
+                    }}
+                  >
                     <option value="">— select —</option>
                     <optgroup label="Entrances &amp; Movement">
                       <option value="entrance">entrance — inward invoice OCR</option>
@@ -1389,11 +1402,13 @@ function CamerasTab({ addToast }) {
                   <input className="input" type="password" value={hikForm.password} onChange={e => setHikForm(f => ({ ...f, password: e.target.value }))} placeholder="••••••••" />
                 </div>
                 <div>
-                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Floor</label>
-                  <input className="input" list="hik-floors" value={hikForm.floor} onChange={e => setHikForm(f => ({ ...f, floor: e.target.value }))} placeholder="ground" />
-                  <datalist id="hik-floors">
-                    <option value="ground" /><option value="first" /><option value="second" /><option value="shop" />
-                  </datalist>
+                  <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Floor *</label>
+                  <select className="input" value={hikForm.floor} onChange={e => setHikForm(f => ({ ...f, floor: e.target.value }))}>
+                    <option value="ground">🏭 Ground Floor</option>
+                    <option value="first">🏗️ First Floor</option>
+                    <option value="second">🏢 Second Floor</option>
+                    <option value="shop">🛒 Shop Floor</option>
+                  </select>
                 </div>
                 <div>
                   <label style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Channel (1–32)</label>
@@ -1476,10 +1491,38 @@ function CamerasTab({ addToast }) {
               {/* Info */}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 700, fontSize: '0.95rem', color: isSelected ? '#a78bfa' : 'var(--text-primary)' }}>{cam.name}</div>
-                <div style={{ display: 'flex', gap: 6, marginTop: 5, flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: 99, background: 'rgba(59,130,246,0.1)', color: '#60a5fa', border: '1px solid rgba(59,130,246,0.2)' }}>
-                    {cam.floor} floor
-                  </span>
+                <div style={{ display: 'flex', gap: 6, marginTop: 5, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <select
+                    value={cam.floor || 'ground'}
+                    onClick={e => e.stopPropagation()}
+                    onChange={async (e) => {
+                      e.stopPropagation()
+                      const newFloor = e.target.value
+                      try {
+                        await camerasApi.update(cam.id, { floor: newFloor })
+                        addToast('Floor updated', `${cam.name} → ${newFloor} floor`, 'success')
+                        loadCameras()
+                      } catch {
+                        addToast('Failed to update floor', '', 'danger')
+                      }
+                    }}
+                    style={{
+                      fontSize: '0.68rem',
+                      fontWeight: 600,
+                      padding: '2px 8px',
+                      borderRadius: 99,
+                      background: 'rgba(59,130,246,0.15)',
+                      color: '#60a5fa',
+                      border: '1px solid rgba(59,130,246,0.3)',
+                      cursor: 'pointer',
+                    }}
+                    title="Click to switch camera floor"
+                  >
+                    <option value="ground">🏭 Ground</option>
+                    <option value="first">🏗️ First</option>
+                    <option value="second">🏢 Second</option>
+                    <option value="shop">🛒 Shop</option>
+                  </select>
                   {cam.zone_type && (
                     <span style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: 99, background: 'rgba(139,92,246,0.1)', color: '#a78bfa', border: '1px solid rgba(139,92,246,0.2)' }}>
                       {cam.zone_type}

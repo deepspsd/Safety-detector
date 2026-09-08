@@ -488,7 +488,10 @@ export default function Dashboard() {
                 <tr key={a.id}>
                   <td style={{ color: 'var(--text-muted)', fontSize: '0.78rem', whiteSpace: 'nowrap' }}>
                     <Clock size={11} style={{ marginRight: 4, verticalAlign: 'middle' }} />
-                    {new Date(a.timestamp).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}
+                    {new Date(a.timestamp).toLocaleString('en-IN', {
+                      day: '2-digit', month: 'short', year: 'numeric',
+                      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true
+                    })}
                   </td>
                   <td>
                     {a.floor ? (

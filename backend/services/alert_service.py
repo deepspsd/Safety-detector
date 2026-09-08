@@ -177,6 +177,15 @@ def save_alert(
     confidence_tier: str = "auto",  # "high" | "low" | "auto"
     # v4 — worker name from face recognition (persisted in DB + FCM push)
     worker_name: str = None,
+    # v5 — multi-model + zone-aware architecture metadata
+    zone_id: int = None,
+    model_name: str = None,
+    capability: str = None,
+    class_name: str = None,
+    bbox_json: str = None,
+    track_id: int = None,
+    violation_type: str = None,
+    event_id: str = None,
 ) -> Alert:
     """
     Persist an alert and (if confirmed) send a Telegram notification.
@@ -248,6 +257,14 @@ def save_alert(
         employee_id=employee_id,
         worker_name=worker_name,
         status=status,
+        zone_id=zone_id,
+        model_name=model_name,
+        capability=capability,
+        class_name=class_name,
+        bbox_json=bbox_json,
+        track_id=track_id,
+        violation_type=violation_type,
+        event_id=event_id,
     )
     db.add(alert)
     db.commit()

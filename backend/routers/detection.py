@@ -481,3 +481,41 @@ async def detection_websocket(websocket: WebSocket):
             pass
     finally:
         db.close()
+
+
+# ── Model Health & Management Endpoints ─────────────────────────────────────
+
+
+@router.get("/models/health", summary="Get multi-model health, latency, and telemetry")
+def get_models_health():
+    """Return runtime telemetry for all registered models in the portable multi-model platform."""
+    from services.model_manager import ModelManager
+
+    manager = ModelManager()
+    return manager.get_health()
+
+
+@router.post("/models/{model_name}/load", summary="Load a specialized AI model into memory")
+def load_ai_model(model_name: str):
+    """Dynamically load and cache a model from portable_models_package or backend registry."""
+    from services.model_manager import ModelManager
+
+    manager = ModelManager()
+    res = manager.load_model(model_name)
+    if res is None:
+        return {"success": False, "message": f"Failed to load model '{model_name}'"}
+    return {
+        "success": True,
+        "model": model_name,
+        "status": res.adapter.status if res.adapter else "READY",
+    }
+
+
+@router.post("/models/{model_name}/unload", summary="Unload a specialized AI model from memory")
+def unload_ai_model(model_name: str):
+    """Unload model from memory to free VRAM/RAM."""
+    from services.model_manager import ModelManager
+
+    manager = ModelManager()
+    manager.unload_model(model_name)
+    return {"success": True, "model": model_name, "status": "NOT_LOADED"}

@@ -136,12 +136,23 @@ class Alert(Base):
     # v4 — worker identity from face recognition
     worker_name = Column(String(100), nullable=True)
 
+    # v5 — multi-model & zone-aware detection metadata
+    zone_id = Column(Integer, ForeignKey("zone_configs.id"), nullable=True)
+    model_name = Column(String(100), nullable=True)
+    capability = Column(String(100), nullable=True)
+    class_name = Column(String(100), nullable=True)
+    bbox_json = Column(Text, nullable=True)
+    track_id = Column(Integer, nullable=True)
+    violation_type = Column(String(100), nullable=True)
+    event_id = Column(String(100), nullable=True)
+
     # Relationships
     user = relationship("User", back_populates="alerts")
     camera = relationship("Camera", back_populates="alerts", foreign_keys=[camera_id])
     employee = relationship(
         "Employee", back_populates="alerts", foreign_keys=[employee_id]
     )
+    zone = relationship("ZoneConfig", foreign_keys=[zone_id])
 
 
 class UserConfig(Base):
@@ -434,10 +445,10 @@ class ZoneConfig(Base):
     is_active = Column(Boolean, nullable=False, default=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    # Multi-model AI configuration (Phase 1)
-    # JSON-encoded list of model keys specific to this zone.
-    # e.g. '["ppe_factory_v0_cash", "hairnet_glove_detection"]'
-    # If NULL, inherits from camera's enabled_models_json or zone_type default.
+    # Multi-model AI configuration
+    # JSON-encoded list of capability keys (e.g. '["head_cover_compliance", "hand_protection_compliance"]')
+    capabilities_json = Column(Text, nullable=True)
+    # JSON-encoded list of model keys specific to this zone (optional override)
     zone_models_json = Column(Text, nullable=True)
 
     camera = relationship("Camera", back_populates="zones")
@@ -1015,6 +1026,8 @@ def ensure_enterprise_schema() -> None:
             "calibration_version": "INTEGER NOT NULL DEFAULT 0",
             "is_active": "BOOLEAN NOT NULL DEFAULT 1",
             "updated_at": "DATETIME",
+            "capabilities_json": "TEXT",
+            "zone_models_json": "TEXT",
         },
     }
     inspector = inspect(engine)
@@ -1031,13 +1044,21 @@ def ensure_enterprise_schema() -> None:
                         )
                     )
 
-    # ── Extend alerts table with evidence + rule link ──────────────────────────
+    # ── Extend alerts table with multi-model metadata + evidence link ──────────
     alert_additions = {
         "evidence_path": "VARCHAR(500)",
         "clip_path": "VARCHAR(500)",
         "rule_id": "INTEGER",
         "event_type": "VARCHAR(100)",
         "worker_name": "VARCHAR(100)",
+        "zone_id": "INTEGER",
+        "model_name": "VARCHAR(100)",
+        "capability": "VARCHAR(100)",
+        "class_name": "VARCHAR(100)",
+        "bbox_json": "TEXT",
+        "track_id": "INTEGER",
+        "violation_type": "VARCHAR(100)",
+        "event_id": "VARCHAR(100)",
     }
     if "alerts" in inspector.get_table_names():
         existing_alert_cols = {c["name"] for c in inspector.get_columns("alerts")}

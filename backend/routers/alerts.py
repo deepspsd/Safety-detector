@@ -18,7 +18,7 @@ Endpoints
 """
 
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from database import Alert, Camera, User, get_db
@@ -110,13 +110,13 @@ def get_alerts(
     if employee_id:
         query = query.filter(Alert.employee_id == employee_id)
     if date_from:
-        query = query.filter(
-            Alert.timestamp >= datetime.combine(date_from, datetime.min.time())
-        )
+        # Client date_from is local IST day start (00:00:00 IST = prev day 18:30:00 UTC)
+        start_utc = datetime.combine(date_from, datetime.min.time()) - timedelta(hours=5, minutes=30)
+        query = query.filter(Alert.timestamp >= start_utc)
     if date_to:
-        query = query.filter(
-            Alert.timestamp <= datetime.combine(date_to, datetime.max.time())
-        )
+        # Client date_to is local IST day end (23:59:59 IST = same day 18:29:59 UTC)
+        end_utc = datetime.combine(date_to, datetime.max.time()) - timedelta(hours=5, minutes=30)
+        query = query.filter(Alert.timestamp <= end_utc)
 
     total = query.count()
     alerts = (

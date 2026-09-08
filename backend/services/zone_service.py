@@ -182,6 +182,71 @@ def load_zones_for_camera(
     return zones
 
 
+_zone_details_cache: Dict[int, Dict[str, Dict[str, Any]]] = {}
+
+
+def load_zone_details_for_camera(
+    camera_id: int,
+    db,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Return full zone details { zone_name: { id, polygon, capabilities, zone_models, zone_type } }
+    for all zones configured for camera_id. Cached until invalidate_zone_cache().
+    """
+    with _cache_lock:
+        if camera_id in _zone_details_cache:
+            return _zone_details_cache[camera_id]
+
+    from database import ZoneConfig
+
+    try:
+        rows = db.query(ZoneConfig).filter(ZoneConfig.camera_id == camera_id).all()
+    except Exception as exc:
+        log.error(f"[zone_service] DB query failed for cam {camera_id}: {exc}")
+        return {}
+
+    details: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        try:
+            polygon = json.loads(row.polygon_json)
+            if not isinstance(polygon, list) or len(polygon) < 3:
+                continue
+            caps = []
+            if getattr(row, "capabilities_json", None):
+                try:
+                    caps = json.loads(row.capabilities_json)
+                except Exception:
+                    caps = []
+            z_models = []
+            if getattr(row, "zone_models_json", None):
+                try:
+                    z_models = json.loads(row.zone_models_json)
+                except Exception:
+                    z_models = []
+
+            details[row.zone_name] = {
+                "id": row.id,
+                "zone_name": row.zone_name,
+                "zone_type": getattr(row, "zone_type", None) or row.zone_name,
+                "polygon": [[int(p[0]), int(p[1])] for p in polygon],
+                "capabilities": caps,
+                "zone_models": z_models,
+            }
+        except Exception as exc:
+            log.warning(f"[zone_service] parse error for zone {row.zone_name}: {exc}")
+
+    with _cache_lock:
+        _zone_details_cache[camera_id] = details
+
+    return details
+
+
+def load_zone_details_without_db(camera_id: int) -> Optional[Dict[str, Dict[str, Any]]]:
+    """Return cached zone details if available without querying DB."""
+    with _cache_lock:
+        return _zone_details_cache.get(camera_id)
+
+
 def invalidate_zone_cache(camera_id: int) -> None:
     """
     Bust the cache for camera_id.
@@ -189,6 +254,7 @@ def invalidate_zone_cache(camera_id: int) -> None:
     """
     with _cache_lock:
         _zone_cache.pop(camera_id, None)
+        _zone_details_cache.pop(camera_id, None)
     log.info(f"[zone_service] Zone cache invalidated for cam {camera_id}")
 
 

@@ -1375,7 +1375,7 @@ async def cctv_detection_websocket(websocket: WebSocket):
                                     severity=response.get("severity"),
                                     detected_issue=detected_issue,
                                     confidence=round(top_conf, 3),
-                                    snapshot_b64=response.get("snapshot_b64"),
+                                    snapshot_b64=response.get("snapshot_b64") or response.get("annotated_frame"),
                                     camera_id=cam_id,
                                     worker_name=c_worker_name,
                                     employee_id=c_emp_id,
@@ -1402,7 +1402,7 @@ async def cctv_detection_websocket(websocket: WebSocket):
                                     severity="high",
                                     detected_issue=p_issue,
                                     confidence=0.85,
-                                    snapshot_b64=response.get("snapshot_b64"),
+                                    snapshot_b64=response.get("snapshot_b64") or response.get("annotated_frame"),
                                     camera_id=cam_id,
                                     worker_name=c_worker_name,
                                     employee_id=c_emp_id,
@@ -1424,7 +1424,7 @@ async def cctv_detection_websocket(websocket: WebSocket):
                                     severity="critical",
                                     detected_issue="Unknown face",
                                     confidence=0.90,
-                                    snapshot_b64=response.get("snapshot_b64"),
+                                    snapshot_b64=response.get("snapshot_b64") or response.get("annotated_frame"),
                                 )
                                 response["face_alert_saved"] = True
                             except Exception:

@@ -1736,3 +1736,106 @@ def _fire_workflow_alert(
         )
     except Exception as exc:
         log.error(f"[rule_engine] workflow alert save failed: {exc}")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SECTION G — Multi-Model Rules & Temporal Fall Debouncing
+# ═════════════════════════════════════════════════════════════════════════════
+
+_fall_consecutive_frames: Dict[int, int] = {}
+_multi_model_last_alert: Dict[Tuple[int, str, Optional[int]], float] = {}
+_FALL_CONFIRMATION_FRAMES = 3
+_ALERT_COOLDOWN_SEC = 60.0
+
+
+def process_multi_model_rules(
+    camera_id: int,
+    detections: List[Dict],
+    persons: List[Dict],
+    db,
+    floor: str = "ground",
+    snapshot_b64: Optional[str] = None,
+    frame: Optional[Any] = None,
+) -> None:
+    """
+    Evaluate multi-model detections with temporal debouncing and cooldowns:
+    - Worker Fall: must be observed for >= 3 frames before triggering critical alert.
+    - Machine Anomaly / Object Throwing: debounced by 60s cooldown per camera.
+    """
+    now = time.time()
+    from services.alert_service import save_alert
+
+    if snapshot_b64 is None and frame is not None:
+        try:
+            import cv2, base64
+            _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            snapshot_b64 = "data:image/jpeg;base64," + base64.b64encode(buf).decode("utf-8")
+        except Exception:
+            snapshot_b64 = None
+
+    # 1. Fall Detection Temporal Debouncing
+    fall_dets = [
+        d for d in detections
+        if d.get("label") == "Worker Fall" or "fall" in str(d.get("label", "")).lower()
+    ]
+    if fall_dets:
+        _fall_consecutive_frames[camera_id] = _fall_consecutive_frames.get(camera_id, 0) + 1
+        consecutive = _fall_consecutive_frames[camera_id]
+        if consecutive >= _FALL_CONFIRMATION_FRAMES:
+            # Check cooldown
+            cooldown_key = (camera_id, "Worker Fall", None)
+            last_alert = _multi_model_last_alert.get(cooldown_key, 0.0)
+            if (now - last_alert) >= _ALERT_COOLDOWN_SEC:
+                _multi_model_last_alert[cooldown_key] = now
+                best_fall = max(fall_dets, key=lambda x: x.get("confidence", 0.0))
+                try:
+                    save_alert(
+                        db=db,
+                        user_id=_get_rule_engine_user_id(db),
+                        message=f"🚨 CRITICAL SAFETY ALERT: Worker fall detected on Camera {camera_id} ({floor} floor)!",
+                        role="Factory Worker",
+                        severity="critical",
+                        detected_issue="Worker Fall Detected",
+                        confidence=best_fall.get("confidence", 0.9),
+                        snapshot_b64=snapshot_b64,
+                        camera_id=camera_id,
+                        floor=floor,
+                        confidence_tier="high",
+                        model_name="fall_detection",
+                        capability="fall_detection",
+                        violation_type="worker_fall",
+                    )
+                    log.warning(f"[rule_engine] Confirmed Worker Fall alert fired for cam={camera_id}")
+                except Exception as exc:
+                    log.error(f"[rule_engine] Failed to save worker fall alert: {exc}")
+    else:
+        # Decay fall counter if frame clear
+        if camera_id in _fall_consecutive_frames:
+            _fall_consecutive_frames[camera_id] = max(0, _fall_consecutive_frames[camera_id] - 1)
+
+    # 2. Machine Sensor / Visual Anomaly & Object Throwing Debouncing
+    for det in detections:
+        lbl = det.get("label", "")
+        if lbl in ("Machine Anomaly", "Object Throwing"):
+            cooldown_key = (camera_id, lbl, None)
+            last_alert = _multi_model_last_alert.get(cooldown_key, 0.0)
+            if (now - last_alert) >= _ALERT_COOLDOWN_SEC:
+                _multi_model_last_alert[cooldown_key] = now
+                try:
+                    save_alert(
+                        db=db,
+                        user_id=_get_rule_engine_user_id(db),
+                        message=f"⚠️ {lbl.upper()}: Detected on Camera {camera_id} ({floor} floor).",
+                        role="Factory Worker",
+                        severity="high",
+                        detected_issue=f"{lbl} Detected",
+                        confidence=det.get("confidence", 0.85),
+                        snapshot_b64=snapshot_b64,
+                        camera_id=camera_id,
+                        floor=floor,
+                        confidence_tier="high",
+                        violation_type=lbl.lower().replace(" ", "_"),
+                    )
+                    log.warning(f"[rule_engine] {lbl} alert fired for cam={camera_id}")
+                except Exception as exc:
+                    log.error(f"[rule_engine] Failed to save {lbl} alert: {exc}")

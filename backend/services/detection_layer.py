@@ -38,6 +38,20 @@ class Detection:
     bbox: List[int]          # [x1, y1, x2, y2]
     model_key: str = "yolo-ppe"
     class_id: int = -1       # raw class index from the model
+    det_type: Optional[str] = "neutral"
+    track_id: Optional[int] = None
+    camera_id: Optional[int] = None
+    zone_id: Optional[int] = None
+    capability: Optional[str] = None
+    timestamp: Optional[str] = None
+
+    @property
+    def class_name(self) -> str:
+        return self.label
+
+    @property
+    def model_name(self) -> str:
+        return self.model_key
 
     @property
     def x1(self) -> int:
@@ -74,15 +88,26 @@ class Detection:
     def to_dict(self) -> Dict:
         return {
             "label": self.label,
+            "class_name": self.label,
             "confidence": self.confidence,
             "bbox": self.bbox,
             "model_key": self.model_key,
+            "model_name": self.model_key,
             "class_id": self.class_id,
+            "det_type": self.det_type,
+            "track_id": self.track_id,
+            "camera_id": self.camera_id,
+            "zone_id": self.zone_id,
+            "capability": self.capability,
+            "timestamp": self.timestamp,
             "center_x": self.center_x,
             "center_y": self.center_y,
             "width": self.width,
             "height": self.height,
         }
+
+
+NormalizedDetection = Detection
 
 
 # ─────────────────────────────────────────────────────────────────────────────

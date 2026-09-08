@@ -105,7 +105,18 @@ function CameraDrawer({ camera, onClose, onSaved }) {
             </div>
             <div>
               <label className="form-label">Zone Type</label>
-              <select className="form-select" value={form.zone_type || ''} onChange={e => set('zone_type', e.target.value)}>
+              <select
+                className="form-select"
+                value={form.zone_type || ''}
+                onChange={e => {
+                  const z = e.target.value
+                  setForm(prev => ({
+                    ...prev,
+                    zone_type: z,
+                    floor: ['cashbox', 'shop_counter', 'vendor_desk'].includes(z) ? 'shop' : prev.floor
+                  }))
+                }}
+              >
                 <option value="">— none —</option>
                 <optgroup label="Entrances & Movement">
                   <option value="entrance">entrance — inward invoice OCR</option>

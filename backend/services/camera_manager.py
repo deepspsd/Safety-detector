@@ -419,6 +419,20 @@ class _ManagedCamera:
                 #    (c) individual WebSocket consumers can override the
                 #    alert logic in their browser if needed.  Per-browser
                 #    filter toggles are applied on the client side.
+                cam_zone_details = getattr(self, "_cached_zone_details", None)
+                if cam_zone_details is None:
+                    from services.zone_service import (
+                        load_zone_details_for_camera,
+                        load_zone_details_without_db,
+                    )
+                    cam_zone_details = load_zone_details_without_db(self.camera_id)
+                    if cam_zone_details is None and db is not None:
+                        try:
+                            cam_zone_details = load_zone_details_for_camera(self.camera_id, db)
+                            self._cached_zone_details = cam_zone_details
+                        except Exception:
+                            cam_zone_details = None
+
                 ppe_result = yolo_service.process_frame_numpy(
                     frame,
                     role="Bakery Worker",
@@ -426,6 +440,8 @@ class _ManagedCamera:
                     no_phone_zone=True,
                     frame_index=local_frame_idx,
                     zone_type=cam_zone,
+                    camera_id=self.camera_id,
+                    zones=cam_zone_details,
                 )
 
                 # ── Face recognition ───────────────────────────────────
@@ -511,6 +527,7 @@ class _ManagedCamera:
 
                 shared_payload = {
                     "annotated_frame": ann_b64,
+                    "snapshot_b64": ppe_result.get("snapshot_b64") or ann_b64,
                     "detections": ppe_result.get("detections", []),
                     "is_compliant": is_compliant,
                     "missing_items": ppe_result.get("missing_items", []),
@@ -833,6 +850,19 @@ class _ManagedCamera:
                 # ── Rule engine — person seen recording (shift-start) ────────
                 if persons:
                     rule_engine.record_person_seen(self.floor)
+
+                # ── Multi-Model rule evaluation (Fall debouncing + Anomaly cooldown) ─
+                try:
+                    rule_engine.process_multi_model_rules(
+                        camera_id=self.camera_id,
+                        detections=raw_dets,
+                        persons=persons,
+                        db=db,
+                        floor=self.floor,
+                        frame=frame,
+                    )
+                except Exception as mm_rule_exc:
+                    log.debug(f"[CamMgr] multi-model rule error (cam={self.camera_id}): {mm_rule_exc}")
 
                 # ── Head-Cap monitor (crop-based inference + temporal smoothing) ─
                 try:

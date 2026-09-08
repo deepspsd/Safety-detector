@@ -34,7 +34,7 @@ import base64
 import datetime
 import logging
 import random
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -732,32 +732,24 @@ def _run_inference_with(frame: np.ndarray, model, is_ppe: bool) -> List[Dict]:
     if _raw_box_count > 0:
         _raw_labels = [model.names[int(box.cls[0])] for r in results for box in r.boxes]
         log.debug("[INFERENCE] raw_boxes=%d labels=%s", _raw_box_count, _raw_labels)
+    from services.multi_model_detector import normalize_class_label
+
     for r in results:
         for box in r.boxes:
-            if is_ppe:
-                cls_idx = int(box.cls[0])
-                label = (
-                    PPE_CLASS_NAMES[cls_idx]
-                    if cls_idx < len(PPE_CLASS_NAMES)
-                    else "unknown"
-                )
+            cls_idx = int(box.cls[0])
+            if hasattr(model, "names") and cls_idx in model.names:
+                raw_label = model.names[cls_idx]
+            elif is_ppe and cls_idx < len(PPE_CLASS_NAMES):
+                raw_label = PPE_CLASS_NAMES[cls_idx]
             else:
-                label = model.names[int(box.cls[0])]
+                raw_label = f"class_{cls_idx}"
+
+            label, det_type = normalize_class_label(raw_label)
+            if not label or det_type == "ignore":
+                continue
 
             conf = round(float(box.conf[0]), 3)
             x1, y1, x2, y2 = [int(v) for v in box.xyxy[0]]
-
-            if label in VIOLATION_CLASSES:
-                det_type = "violation"
-            elif label in COMPLIANT_CLASSES:
-                det_type = "compliant"
-            elif label in PERSON_CLASSES or label.lower() == "person":
-                det_type = "person"
-            elif label in NEUTRAL_CLASSES:
-                det_type = "neutral"
-            else:
-                # Discard unwanted/spurious COCO classes (e.g. tennis racket, chair, bench, umbrella)
-                continue
 
             detections.append(
                 {
@@ -1447,6 +1439,7 @@ def _run_pipeline(
     # Pass camera_id to enable per-camera stable track_id.
     # None = skip tracking (track_id=-1 on all persons).
     camera_id: Optional[int] = None,
+    zones: Optional[Dict[str, Any]] = None,
 ) -> Dict:
     """
     Shared pipeline used by both process_frame and process_frame_numpy.
@@ -1634,11 +1627,13 @@ def _run_pipeline(
         if ocr_zone_config and isinstance(ocr_zone_config, dict):
             _eff_zone = ocr_zone_config.get("zone_type") or "default"
 
-        _extra_dets = _mm_detector.detect(frame, zone_type=_eff_zone, camera_id=camera_id)
+        _extra_dets = _mm_detector.detect(
+            frame, zone_type=_eff_zone, camera_id=camera_id, zones=zones
+        )
         for _ed in _extra_dets:
             _lbl = _ed.label
             _lbl_lower = _lbl.lower()
-            _dt = "neutral"
+            _dt = _ed.det_type or "neutral"
 
             # Determine det_type and standardize labels for client compliance rules
             if "non-fall" in _lbl_lower or _lbl_lower == "non_fall":
@@ -1727,6 +1722,17 @@ def _run_pipeline(
     # ── ByteTrack: assign stable track_id to each person (no-op if camera_id is None) ──
     if camera_id is not None:
         persons = _apply_tracking(camera_id, persons)
+        try:
+            from services.face_service import get_worker_identity
+            for p in persons:
+                t_id = p.get("track_id")
+                if t_id is not None and t_id != -1:
+                    ident = get_worker_identity(camera_id, t_id)
+                    if ident:
+                        p["worker_name"] = ident.get("worker_name")
+                        p["employee_id"] = ident.get("employee_id")
+        except Exception as _ident_exc:
+            log.debug(f"Worker identity attach error: {_ident_exc}")
 
     # Only synthesize a person if wearable PPE items (headcap, mask, vest, hardhat) are detected
     WEARABLE_PPE_CLASSES = {
@@ -2080,6 +2086,8 @@ def process_frame_numpy(
     no_phone_zone: bool = False,
     frame_index: int = -1,
     zone_type: Optional[str] = None,
+    camera_id: Optional[int] = None,
+    zones: Optional[Dict[str, Any]] = None,
 ) -> Dict:
     """
     Full violation pipeline from a numpy frame directly.
@@ -2096,6 +2104,8 @@ def process_frame_numpy(
         no_phone_zone=no_phone_zone,
         frame_index=frame_index,
         ocr_zone_config=_zone_cfg,
+        camera_id=camera_id,
+        zones=zones,
     )
 
 
@@ -2106,6 +2116,7 @@ def process_frame_numpy_tracked(
     detection_filters: Optional[List[str]] = None,
     no_phone_zone: bool = False,
     zone_type: Optional[str] = None,
+    zones: Optional[Dict[str, Any]] = None,
 ) -> Dict:
     """
     Full violation pipeline with per-camera ByteTrack tracking.
@@ -2133,6 +2144,7 @@ def process_frame_numpy_tracked(
         no_phone_zone=no_phone_zone,
         camera_id=camera_id,
         ocr_zone_config=_zone_cfg,
+        zones=zones,
     )
 
 

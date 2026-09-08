@@ -107,7 +107,7 @@ export default function FloorOverview() {
         api.get('/workflow/summary').catch(() => null),
       ])
       const all = Array.isArray(camRes.data) ? camRes.data : (camRes.data.cameras || [])
-      setCameras(all.filter(c => c.floor === floorId))
+      setCameras(all.filter(c => (c.floor || '').toLowerCase() === (floorId || '').toLowerCase()))
       setStats(statRes?.data || null)
       if (sumRes?.data?.floor_counts) setFloorAlerts(sumRes.data.floor_counts)
     } catch { addToast('Failed to load cameras', '', 'danger') }

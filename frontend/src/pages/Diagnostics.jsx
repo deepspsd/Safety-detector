@@ -6,6 +6,7 @@ export default function Diagnostics() {
   const [cameras, setCameras] = useState([])
   const [selectedCamId, setSelectedCamId] = useState(null)
   const [diagnostics, setDiagnostics] = useState(null)
+  const [modelHealth, setModelHealth] = useState([])
   const [_loading, setLoading] = useState(true)  // Prefixed with _ to indicate intentionally unused
   const [autoRefresh, setAutoRefresh] = useState(true)
 
@@ -26,6 +27,27 @@ export default function Diagnostics() {
     }
   }
 
+  const loadModelHealth = async () => {
+    try {
+      const res = await api.get('/detection/models/health')
+      if (res.data?.models) {
+        setModelHealth(res.data.models)
+      }
+    } catch (err) {
+      console.error('Failed to load model health', err)
+    }
+  }
+
+  const toggleModelLoad = async (modelName, isLoaded) => {
+    try {
+      const action = isLoaded ? 'unload' : 'load'
+      await api.post(`/detection/models/${modelName}/${action}`)
+      await loadModelHealth()
+    } catch (err) {
+      console.error(`Failed to ${isLoaded ? 'unload' : 'load'} model ${modelName}`, err)
+    }
+  }
+
   const loadDiagnostics = async (camId) => {
     if (!camId) return
     try {
@@ -38,6 +60,7 @@ export default function Diagnostics() {
 
   useEffect(() => {
     loadCameras()
+    loadModelHealth()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -49,9 +72,10 @@ export default function Diagnostics() {
   }, [selectedCamId])
 
   useEffect(() => {
-    if (!autoRefresh || !selectedCamId) return
+    if (!autoRefresh) return
     const interval = setInterval(() => {
-      loadDiagnostics(selectedCamId)
+      if (selectedCamId) loadDiagnostics(selectedCamId)
+      loadModelHealth()
     }, 2000)
     return () => clearInterval(interval)
   }, [autoRefresh, selectedCamId])
@@ -295,6 +319,110 @@ export default function Diagnostics() {
             </div>
           )}
         </div>
+      </div>
+
+      {/* Registered Multi-Model Telemetry & Health */}
+      <div style={{ marginTop: 24, background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+          <h3 style={{ fontSize: '1.05rem', fontWeight: 600, color: '#f3f4f6', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Layers size={18} color="#60a5fa" />
+            Registered Multi-Model CV Engines & Telemetry
+          </h3>
+          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+            Total Models: <strong>{modelHealth.length}</strong>
+          </span>
+        </div>
+
+        {modelHealth.length === 0 ? (
+          <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-muted)' }}>
+            No model telemetry available.
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem', textAlign: 'left' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-muted)' }}>
+                  <th style={{ padding: '8px 10px' }}>Model Name</th>
+                  <th style={{ padding: '8px 10px' }}>Type</th>
+                  <th style={{ padding: '8px 10px' }}>Device</th>
+                  <th style={{ padding: '8px 10px' }}>Status</th>
+                  <th style={{ padding: '8px 10px' }}>Capabilities</th>
+                  <th style={{ padding: '8px 10px' }}>Inferences</th>
+                  <th style={{ padding: '8px 10px' }}>Avg Latency</th>
+                  <th style={{ padding: '8px 10px', textAlign: 'right' }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {modelHealth.map((m) => (
+                  <tr key={m.model_name} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                    <td style={{ padding: '10px', fontWeight: 600, color: '#f3f4f6' }}>
+                      {m.model_name}
+                    </td>
+                    <td style={{ padding: '10px', color: '#94a3b8' }}>
+                      {m.model_type}
+                    </td>
+                    <td style={{ padding: '10px', color: '#cbd5e1' }}>
+                      <span style={{ fontFamily: 'monospace', fontSize: '0.75rem', background: 'rgba(255,255,255,0.06)', padding: '2px 6px', borderRadius: 4 }}>
+                        {m.device || 'cpu'}
+                      </span>
+                    </td>
+                    <td style={{ padding: '10px' }}>
+                      <span
+                        style={{
+                          padding: '2px 8px',
+                          borderRadius: 99,
+                          fontSize: '0.72rem',
+                          fontWeight: 700,
+                          background: m.status === 'loaded' ? 'rgba(16,185,129,0.15)' : 'rgba(100,116,139,0.15)',
+                          color: m.status === 'loaded' ? '#34d399' : '#94a3b8',
+                        }}
+                      >
+                        {m.status?.toUpperCase()}
+                      </span>
+                    </td>
+                    <td style={{ padding: '10px' }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                        {m.capabilities?.map((cap) => (
+                          <span
+                            key={cap}
+                            style={{
+                              padding: '1px 6px',
+                              borderRadius: 4,
+                              fontSize: '0.7rem',
+                              background: 'rgba(59,130,246,0.12)',
+                              color: '#60a5fa',
+                            }}
+                          >
+                            {cap}
+                          </span>
+                        ))}
+                      </div>
+                    </td>
+                    <td style={{ padding: '10px', color: '#cbd5e1' }}>
+                      {m.inference_count || 0}
+                    </td>
+                    <td style={{ padding: '10px', fontWeight: 600, color: '#60a5fa' }}>
+                      {m.avg_latency_ms ? `${m.avg_latency_ms.toFixed(1)} ms` : '—'}
+                    </td>
+                    <td style={{ padding: '10px', textAlign: 'right' }}>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => toggleModelLoad(m.model_name, m.status === 'loaded')}
+                        style={{
+                          padding: '3px 8px',
+                          fontSize: '0.75rem',
+                          color: m.status === 'loaded' ? '#f87171' : '#34d399',
+                        }}
+                      >
+                        {m.status === 'loaded' ? 'Unload' : 'Load'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   )
