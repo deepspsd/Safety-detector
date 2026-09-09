@@ -15,6 +15,7 @@ OS socket buffer for 200-400ms (one inference cycle) and were often lost
 when the user stopped the stream before the next cycle.
 """
 
+from PIL.Image import logger
 import asyncio
 import json
 import time
@@ -406,19 +407,23 @@ async def detection_websocket(websocket: WebSocket):
                                 detected_issue = missing_str
                                 alert_msg = result["alert_message"]
 
-                            save_alert(
-                                db=db,
-                                user_id=uid,
-                                message=alert_msg,
-                                role=role,
-                                severity=result["severity"],
-                                detected_issue=detected_issue,
-                                confidence=round(top_conf, 3),
-                                snapshot_b64=result.get("snapshot_b64"),
-                                worker_name=worker_name,
-                                employee_id=emp_id,
-                            )
-                            response["alert_saved"] = True
+                            try:
+                                save_alert(
+                                    db=db,
+                                    user_id=uid,
+                                    message=alert_msg,
+                                    role=role,
+                                    severity=result["severity"],
+                                    detected_issue=detected_issue,
+                                    confidence=round(top_conf, 3),
+                                    snapshot_b64=result.get("snapshot_b64"),
+                                    worker_name=worker_name,
+                                    employee_id=emp_id,
+                                )
+                                response["alert_saved"] = True
+                            except Exception as _det_alert_err:
+                                logger.error(f"[WS] Failed to save alert: {_det_alert_err}", exc_info=True)
+                                db.rollback()
 
                     # ── Save PHONE alert (separate cooldown — 15 s) ─────
                     phone_sev = result.get("phone_severity")

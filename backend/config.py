@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     MIN_VIOLATION_CONF: float = 0.40  # Lowered from 0.60 to 0.40
     ALERT_COOLDOWN: int = 3
     FRAME_SKIP: int = 3  # process every Nth frame in video uploads
-    HAIRNET_CONF_THRESHOLD: float = float(os.getenv("HAIRNET_CONF_THRESHOLD", "0.10"))
+    HAIRNET_CONF_THRESHOLD: float = float(os.getenv("HAIRNET_CONF_THRESHOLD", "0.45"))
     HAIRNET_IMGSZ: int = int(os.getenv("HAIRNET_IMGSZ", "960"))
     DEBUG_HAIRNET_RAW: bool = os.getenv("DEBUG_HAIRNET_RAW", "false").lower() in ("true", "1", "yes")
 
@@ -77,7 +77,7 @@ class Settings(BaseSettings):
             "type": "yolo",
             "enabled": True,
             "priority": 1,
-            "conf_threshold": float(os.getenv("HAIRNET_CONF_THRESHOLD", "0.10")),
+            "conf_threshold": float(os.getenv("HAIRNET_CONF_THRESHOLD", "0.40")),
             "imgsz": int(os.getenv("HAIRNET_IMGSZ", "960")),
             "target_fps": 15,
             "zones": ["*", "dough_mixing", "oven", "packing", "biscuit_cutting", "cutting_machine", "entrance", "dough_table", "gas_section", "shop", "shop_counter", "cashbox", "store", "default"],
@@ -93,7 +93,7 @@ class Settings(BaseSettings):
             "type": "yolo",
             "enabled": True,
             "priority": 1,
-            "conf_threshold": 0.50,
+            "conf_threshold": float(os.getenv("FALL_CONF_THRESHOLD", "0.95")),
             "target_fps": 15,
             "zones": ["*"],
             "description": "Worker safety - fall detection",

@@ -1367,23 +1367,11 @@ async def cctv_detection_websocket(websocket: WebSocket):
                             # Managed camera head-cap state is handled by the
                             # dedicated crop monitor. Do not create a second
                             # per-WebSocket alert for that same violation.
-                            managed_headcap_violation = False
-                            if managed_camera_id is not None:
-                                managed_headcap_violation = any(
-                                    "head" in str(item).lower()
-                                    or "hairnet" in str(item).lower()
-                                    for item in missing
-                                )
-                                missing = [
-                                    item for item in missing
-                                    if "head" not in str(item).lower()
-                                    and "hairnet" not in str(item).lower()
-                                ]
                             event_key = _cctv_alert_key(
                                 uid,
                                 cam_id,
                                 missing,
-                                "" if managed_headcap_violation else response.get("alert_message", ""),
+                                response.get("alert_message", ""),
                             )
                             alert_allowed = bool(event_key)
 
@@ -1393,7 +1381,8 @@ async def cctv_detection_websocket(websocket: WebSocket):
                             if alert_allowed:
                                 with _active_cctv_alerts_lock:
                                     active_since = _active_cctv_alerts.get(event_key)
-                                    if active_since and now_t - active_since < 86400:
+                                    cooldown = getattr(settings, "ALERT_COOLDOWN", 15)
+                                    if active_since and (now_t - active_since < cooldown):
                                         alert_allowed = False
                                     else:
                                         _active_cctv_alerts[event_key] = now_t
@@ -1452,7 +1441,9 @@ async def cctv_detection_websocket(websocket: WebSocket):
                                         employee_id=c_emp_id,
                                     )
                                     response["alert_saved"] = True
-                                except Exception:
+                                except Exception as _alert_exc:
+                                    logger.error(f"[CCTV] Failed to save alert: {_alert_exc}", exc_info=True)
+                                    db.rollback()
                                     with _active_cctv_alerts_lock:
                                         _active_cctv_alerts.pop(event_key, None)
                     elif managed_camera_id is not None:

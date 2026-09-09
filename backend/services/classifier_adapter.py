@@ -316,6 +316,104 @@ class TeachableMachineAdapter(AbstractClassifier):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# YOLO (.pt) classifier adapter (runs YOLO object detector on person crop)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class YOLOClassifierAdapter(AbstractClassifier):
+    """Evaluates a YOLO detector (.pt) on person / head crops.
+
+    Extracts highest-confidence detection in the crop and maps model classes
+    (e.g. hairnet / no_hairnet) to normalized classifier classes (HEAD_CAP / NO_HEAD_CAP).
+    """
+
+    def __init__(
+        self,
+        name: str,
+        model_path: str,
+        classes: List[str],
+        confidence_threshold: float = 0.25,
+        class_aliases: Optional[Dict[str, str]] = None,
+    ):
+        self.name = name
+        self.classes = classes if classes else ["UNKNOWN"]
+        self.confidence_threshold = confidence_threshold
+        self._class_aliases: Dict[str, str] = class_aliases or {}
+        self._model = None
+        self._load(model_path)
+
+    def _load(self, model_path: str) -> None:
+        if not model_path or not os.path.exists(model_path):
+            log.warning(
+                "YOLOClassifierAdapter '%s': model not found at '%s'. Running as MockClassifier.",
+                self.name,
+                model_path,
+            )
+            return
+
+        try:
+            from ultralytics import YOLO
+
+            self._model = YOLO(model_path)
+            log.info("YOLOClassifierAdapter '%s': loaded YOLO from %s", self.name, model_path)
+        except Exception as exc:
+            log.warning(
+                "YOLOClassifierAdapter '%s': YOLO load failed (%s) — using mock",
+                self.name,
+                exc,
+            )
+
+    def predict(self, image: np.ndarray) -> ClassificationResult:
+        if self._model is None:
+            return MockClassifier(self.name, self.classes, self.confidence_threshold).predict(image)
+
+        try:
+            conf_th = getattr(settings, "HAIRNET_CONF_THRESHOLD", 0.40)
+            results = self._model(image, conf=conf_th, verbose=False)
+            best_label = None
+            best_conf = 0.0
+
+            if results and len(results) > 0 and results[0].boxes is not None and len(results[0].boxes) > 0:
+                for box in results[0].boxes:
+                    cls_id = int(box.cls[0].item())
+                    conf = float(box.conf[0].item())
+                    raw_name = self._model.names.get(cls_id, str(cls_id))
+                    norm_name = self._class_aliases.get(raw_name, raw_name)
+                    if conf > best_conf:
+                        best_conf = conf
+                        best_label = norm_name
+
+            # If no box detected above threshold, default to non-compliant / bare hair
+            if best_label is None:
+                best_label = self.classes[-1] if len(self.classes) > 1 else self.classes[0]
+                best_conf = 0.50
+
+            all_probs = {
+                cls: (round(best_conf, 4) if cls == best_label else round(max(0.0, 1.0 - best_conf), 4))
+                for cls in self.classes
+            }
+
+            return ClassificationResult(
+                predicted_class=best_label,
+                confidence=round(best_conf, 4),
+                all_class_probabilities=all_probs,
+                classifier_name=self.name,
+                model_loaded=True,
+            )
+        except Exception as exc:
+            log.warning("YOLOClassifierAdapter '%s' predict error: %s", self.name, exc)
+            return ClassificationResult(
+                predicted_class="UNKNOWN",
+                confidence=0.0,
+                classifier_name=self.name,
+                model_loaded=True,
+            )
+
+    def is_loaded(self) -> bool:
+        return self._model is not None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Per-track inference rate limiter
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -442,9 +540,15 @@ _BUILTIN_CONFIGS: Dict[str, Dict] = {
     },
     "head_cap": {
         "classes": ["HEAD_CAP", "NO_HEAD_CAP"],
+        "class_aliases": {
+            "hairnet": "HEAD_CAP",
+            "no_hairnet": "NO_HEAD_CAP",
+            "Bakery-Head-Cap": "HEAD_CAP",
+            "NO-Bakery-Head-Cap": "NO_HEAD_CAP",
+        },
         "crop_mode": "head",
-        "confidence_threshold": 0.80,
-        "model_path": "",
+        "confidence_threshold": 0.40,
+        "model_path": "portable_models_package/hairnet_glove_detection/best.pt",
     },
     "bangle": {
         "classes": ["BANGLE", "NO_BANGLE"],
@@ -548,6 +652,14 @@ def get_classifier(classifier_name: str) -> AbstractClassifier:
     aliases = cfg.get("class_aliases") or {}
 
     if model_path and os.path.exists(model_path):
+        if model_path.endswith(".pt"):
+            return YOLOClassifierAdapter(
+                name=classifier_name,
+                model_path=model_path,
+                classes=classes,
+                confidence_threshold=threshold,
+                class_aliases=aliases,
+            )
         return TeachableMachineAdapter(
             name=classifier_name,
             model_path=model_path,

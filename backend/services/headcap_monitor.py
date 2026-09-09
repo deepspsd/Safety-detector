@@ -75,8 +75,8 @@ _HEAD_CROP_PADDING  = 0.15   # 15% horizontal padding on crop (was 0.10)
 _MIN_CROP_PX        = 24     # crops smaller than this → LOW_RESOLUTION flag (was 32)
 _WINDOW_SIZE        = 10     # sliding window for temporal smoothing
 _INFER_INTERVAL     = 1.0    # seconds between inferences per track
-_CONF_THRESHOLD     = getattr(settings, "HEADCAP_CONF_THRESHOLD", 0.35)  # lowered from 0.45
-_UNCERTAIN_LOW      = 0.20   # below this = NO_HEAD_CAP (no ambiguity)
+_CONF_THRESHOLD     = getattr(settings, "HEADCAP_CONF_THRESHOLD", 0.30)
+_UNCERTAIN_LOW      = 0.15   # below this = NO_HEAD_CAP (kills 0.12 noise)
 _MISSING_SECONDS    = getattr(settings, "HEADCAP_MISSING_SECONDS", 5.0)  # raised from 3.0
 _ALERT_COOLDOWN     = getattr(settings, "HEADCAP_ALERT_COOLDOWN", 60.0)  # raised from 30.0
 
@@ -142,9 +142,8 @@ def _infer_on_crop(crop: np.ndarray) -> Tuple[float, str]:
         from services.model_manager import ModelManager
         mm = ModelManager()
         if mm.is_loaded("hairnet_glove_detection") or mm.registry.is_model_enabled("hairnet_glove_detection"):
-            # Use conf=0.15 — lower than global default (0.25) to catch weaker
-            # Hair / Hair_Cover signals on small top-down CCTV head crops
-            dets = mm.infer("hairnet_glove_detection", crop, conf=0.15)
+            conf_th = getattr(settings, "HAIRNET_CONF_THRESHOLD", 0.40)
+            dets = mm.infer("hairnet_glove_detection", crop, conf=conf_th)
             # ModelManager returns raw model names, but other model paths can
             # return normalized aliases.  Normalize before classification so a
             # valid cap is not lost because it arrived as Hairnet/hair_cover_ok.

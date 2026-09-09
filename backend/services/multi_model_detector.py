@@ -174,12 +174,15 @@ def fuse_detections(detections: List[Detection]) -> List[Detection]:
                 continue
 
             iou = compute_iou(det1.bbox, det2.bbox)
-            if iou > iou_thresh:
-                if det1.label == det2.label or (
-                    det1.det_type == det2.det_type and det1.det_type == "violation"
-                ):
-                    group.append(det2)
-                    group_indices.append(j)
+            is_head1 = det1.label in ("Bakery-Head-Cap", "NO-Bakery-Head-Cap", "Hairnet", "NO-Hairnet") or getattr(det1, "raw_label", "") in ("hairnet", "no_hairnet")
+            is_head2 = det2.label in ("Bakery-Head-Cap", "NO-Bakery-Head-Cap", "Hairnet", "NO-Hairnet") or getattr(det2, "raw_label", "") in ("hairnet", "no_hairnet")
+
+            if (is_head1 and is_head2 and iou > 0.30) or (iou > iou_thresh and (
+                det1.label == det2.label
+                or (det1.det_type == det2.det_type and det1.det_type == "violation")
+            )):
+                group.append(det2)
+                group_indices.append(j)
 
         for idx in group_indices:
             used_indices.add(idx)

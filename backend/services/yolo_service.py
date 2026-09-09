@@ -656,6 +656,62 @@ def _deduplicate_person_boxes(
     return kept
 
 
+def _deduplicate_headwear_boxes(
+    detections: List[Dict], iou_thresh: float = 0.30
+) -> List[Dict]:
+    """
+    Deduplicate overlapping headwear/hairnet detections.
+    Ensures only the highest confidence head detection survives for each person head.
+    """
+    head_dets: List[Dict] = []
+    other_dets: List[Dict] = []
+
+    for d in detections:
+        lbl_low = str(d.get("label", "")).lower()
+        raw_low = str(d.get("raw_label", "")).lower()
+        if (
+            "hair" in lbl_low
+            or "head-cap" in lbl_low
+            or "head cap" in lbl_low
+            or "hairnet" in raw_low
+        ):
+            head_dets.append(d)
+        else:
+            other_dets.append(d)
+
+    if len(head_dets) <= 1:
+        return detections
+
+    sorted_h = sorted(head_dets, key=lambda d: d.get("confidence", 0.0), reverse=True)
+    kept_h: List[Dict] = []
+
+    for d in sorted_h:
+        box1 = d["bbox"]
+        area1 = max(1, (box1[2] - box1[0]) * (box1[3] - box1[1]))
+        is_dup = False
+
+        for k in kept_h:
+            box2 = k["bbox"]
+            area2 = max(1, (box2[2] - box2[0]) * (box2[3] - box2[1]))
+
+            xA, yA = max(box1[0], box2[0]), max(box1[1], box2[1])
+            xB, yB = min(box1[2], box2[2]), min(box1[3], box2[3])
+            inter = max(0, xB - xA) * max(0, yB - yA)
+
+            if inter > 0:
+                union = area1 + area2 - inter
+                iou = inter / float(union) if union > 0 else 0.0
+                containment = inter / float(min(area1, area2))
+                if iou > iou_thresh or containment > 0.50:
+                    is_dup = True
+                    break
+
+        if not is_dup:
+            kept_h.append(d)
+
+    return other_dets + kept_h
+
+
 def _belongs_to_person(person_box: List[int], item_box: List[int]) -> bool:
     """
     True if item_box can be assigned to person_box.
@@ -1238,48 +1294,51 @@ def _draw_results(
         is_compliant = person["is_compliant"]
 
         if not is_compliant:
-            color = COLOR_VIOLATION
-            thick = 3
+            # If the only violation is headcap (No Head Cap / No Hairnet), omit the giant outer person box
+            # so the focused inner headwear box is prominent and uncluttered.
+            other_violations = [
+                v for v in person.get("violation_labels", [])
+                if v not in ("No Head Cap", "No Hairnet")
+            ]
+            if other_violations:
+                color = COLOR_VIOLATION
+                thick = 3
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), color, thick)
 
-            # Box
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, thick)
-
-            # Confidence header
-            conf_text = f"Person {person['confidence']:.0%}"
-            (tw, th), _ = cv2.getTextSize(conf_text, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 1)
-            cv2.rectangle(annotated, (x1, y1 - th - 10), (x1 + tw + 8, y1), color, -1)
-            cv2.putText(
-                annotated,
-                conf_text,
-                (x1 + 4, y1 - 4),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.52,
-                (255, 255, 255),
-                1,
-                cv2.LINE_AA,
-            )
-
-            # Violation label pills (stacked below top edge)
-            for idx, vlabel in enumerate(person["violation_labels"]):
-                label_y = y1 + 26 + idx * 24
-                (lw, lh), _ = cv2.getTextSize(vlabel, cv2.FONT_HERSHEY_SIMPLEX, 0.58, 2)
-                cv2.rectangle(
-                    annotated,
-                    (x1 + 4, label_y - lh - 4),
-                    (x1 + lw + 14, label_y + 5),
-                    (0, 0, 0),
-                    -1,
-                )
+                conf_text = f"Person {person['confidence']:.0%}"
+                (tw, th), _ = cv2.getTextSize(conf_text, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 1)
+                cv2.rectangle(annotated, (x1, y1 - th - 10), (x1 + tw + 8, y1), color, -1)
                 cv2.putText(
                     annotated,
-                    vlabel,
-                    (x1 + 8, label_y),
+                    conf_text,
+                    (x1 + 4, y1 - 4),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.58,
-                    (90, 90, 255),
-                    2,
+                    0.52,
+                    (255, 255, 255),
+                    1,
                     cv2.LINE_AA,
                 )
+
+                for idx, vlabel in enumerate(other_violations):
+                    label_y = y1 + 26 + idx * 24
+                    (lw, lh), _ = cv2.getTextSize(vlabel, cv2.FONT_HERSHEY_SIMPLEX, 0.58, 2)
+                    cv2.rectangle(
+                        annotated,
+                        (x1 + 4, label_y - lh - 4),
+                        (x1 + lw + 14, label_y + 5),
+                        (0, 0, 0),
+                        -1,
+                    )
+                    cv2.putText(
+                        annotated,
+                        vlabel,
+                        (x1 + 8, label_y),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.58,
+                        (90, 90, 255),
+                        2,
+                        cv2.LINE_AA,
+                    )
 
         else:
             color = COLOR_COMPLIANT
@@ -1719,7 +1778,7 @@ def _run_pipeline(
                 "confidence": _ed.confidence,
                 "bbox": _ed.bbox,
                 "det_type": _dt,
-                "raw_label": _lbl,
+                "raw_label": _ed.raw_label or _lbl,
             })
     except Exception as _mm_err:
         log.debug(f"[MultiModel] Error during injection: {_mm_err}")
@@ -1762,6 +1821,7 @@ def _run_pipeline(
             before_filter, after_filter, detection_filters,
         )
 
+    raw = _deduplicate_headwear_boxes(raw)
     persons = [d for d in raw if d["det_type"] == "person"]
     ppe_dets = [d for d in raw if d["det_type"] in ("violation", "compliant")]
 
