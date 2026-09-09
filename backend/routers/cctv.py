@@ -694,9 +694,9 @@ class CameraReader:
 
             try:
                 fh, fw = frame.shape[:2]
-                if fw > 960:
-                    target_w = 960
-                    target_h = int(fh * (960.0 / fw))
+                if fw > 640:
+                    target_w = 640
+                    target_h = int(fh * (640.0 / fw))
                     target_h = target_h - (target_h % 2)
                     frame_resized = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
                 else:
@@ -837,6 +837,8 @@ def _run_combined_inference_inner(
             from database import Camera as CameraModel
             cam_obj = db.query(CameraModel).filter(CameraModel.id == camera_id).first()
             if cam_obj:
+                if cam_obj.floor:
+                    floor = cam_obj.floor.lower()
                 if cam_obj.zone_type:
                     _cam_zone = cam_obj.zone_type
                 if hasattr(cam_obj, "zones"):
@@ -872,6 +874,7 @@ def _run_combined_inference_inner(
             zone_type=_cam_zone,
             camera_id=camera_id,
             zones=_zones_map if _zones_map else None,
+            floor=floor,
         )
         print(f"[CCTV-DEBUG] PPE detection: persons={len(ppe_result.get('persons', []))}, detections={len(ppe_result.get('detections', []))}")
     else:
@@ -885,6 +888,7 @@ def _run_combined_inference_inner(
             zone_type=_cam_zone,
             camera_id=camera_id,
             zones=_zones_map if _zones_map else None,
+            floor=floor,
         )
         print(f"[CCTV-DEBUG] Home detection: persons={len(ppe_result.get('persons', []))}, detections={len(ppe_result.get('detections', []))}")
 
@@ -1443,7 +1447,7 @@ async def cctv_detection_websocket(websocket: WebSocket):
         #       • MIN_INTERVAL_MS caps user-visible send rate at ~20 fps.
         # ─────────────────────────────────────────────────────────────────────
         async def process_frames():
-            MIN_INTERVAL_MS = 50  # hard floor: don't send faster than 20 fps
+            MIN_INTERVAL_MS = 33  # hard floor: don't send faster than 30 fps
             last_sent_ts: float = 0.0
             last_sent_frame_count: int = -1
             ws_send_count: int = 0

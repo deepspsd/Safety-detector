@@ -213,29 +213,31 @@ class Settings(BaseSettings):
         "object_throwing_detection": ["object_throwing"],
         "theft_trajectory": ["object_throwing"],
         "person_action_monitoring": ["person_action_recognition"],
+        "wrist_accessory_detection": ["hand_landmarks"],
+        "bangles_compliance": ["hand_landmarks"],
     }
 
     # ── Zone-to-Capability Mapping ─────────────────────────────────────────
     # Default required capabilities for standard zone types.
     ZONE_CAPABILITY_MAP: dict = {
-        "entrance":         ["person_detection", "head_cover_compliance", "worker_fall_detection", "vehicle_detection"],
-        "dough_mixing":     ["person_detection", "head_cover_compliance", "worker_fall_detection", "machine_anomaly_prediction"],
-        "dough_table":      ["person_detection", "head_cover_compliance", "worker_fall_detection"],
-        "oven":             ["person_detection", "head_cover_compliance", "worker_fall_detection"],
-        "biscuit_cutting":  ["person_detection", "head_cover_compliance", "worker_fall_detection", "machine_anomaly_prediction"],
-        "cutting_machine":  ["person_detection", "head_cover_compliance", "worker_fall_detection", "machine_anomaly_prediction"],
-        "packing":          ["person_detection", "head_cover_compliance", "worker_fall_detection", "hand_motion_tracking"],
+        "entrance":         ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "vehicle_detection"],
+        "dough_mixing":     ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "machine_anomaly_prediction"],
+        "dough_table":      ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection"],
+        "oven":             ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection"],
+        "biscuit_cutting":  ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "machine_anomaly_prediction"],
+        "cutting_machine":  ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "machine_anomaly_prediction"],
+        "packing":          ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "hand_motion_tracking"],
         "shop":             ["person_detection", "cash_monitoring", "head_cover_compliance", "worker_fall_detection"],
         "shop_counter":     ["person_detection", "cash_monitoring", "head_cover_compliance", "worker_fall_detection"],
         "cashbox":          ["person_detection", "cash_monitoring", "head_cover_compliance"],
         "lift":             ["person_detection", "worker_fall_detection"],
-        "gas_section":      ["person_detection", "head_cover_compliance", "worker_fall_detection"],
-        "passage":          ["person_detection", "worker_fall_detection"],
-        "store":            ["person_detection", "head_cover_compliance", "worker_fall_detection"],
-        "raw_material":     ["person_detection", "worker_fall_detection"],
+        "gas_section":      ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection"],
+        "passage":          ["person_detection", "wrist_accessory_detection", "worker_fall_detection"],
+        "store":            ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection"],
+        "raw_material":     ["person_detection", "wrist_accessory_detection", "worker_fall_detection"],
         "window":           ["person_detection", "object_throwing_detection"],
         "loading":          ["person_detection", "hardhat_compliance", "vehicle_detection"],
-        "default":          ["person_detection", "head_cover_compliance", "worker_fall_detection"],
+        "default":          ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection"],
     }
 
     # ── Zone-to-Model Mapping (derived helper) ─────────────────────────────

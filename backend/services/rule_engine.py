@@ -1910,3 +1910,37 @@ def process_multi_model_rules(
                     log.warning(f"[rule_engine] {lbl} alert fired for cam={camera_id}")
                 except Exception as exc:
                     log.error(f"[rule_engine] Failed to save {lbl} alert: {exc}")
+
+    # 3. Hand Item / Bangle Violation Alert Debouncing (all factory floors except shop)
+    if (floor or "").lower() != "shop":
+        bangle_dets = [
+            d for d in detections
+            if d.get("label") in ("Bangles", "bangles")
+            or "bangle" in str(d.get("label", "")).lower()
+            or "wrist" in str(d.get("raw_label", "")).lower()
+            or "hand" in str(d.get("raw_label", "")).lower()
+        ]
+        if bangle_dets:
+            cooldown_key = (camera_id, "Bangles", None)
+            last_alert = _multi_model_last_alert.get(cooldown_key, 0.0)
+            if (now - last_alert) >= _ALERT_COOLDOWN_SEC:
+                _multi_model_last_alert[cooldown_key] = now
+                best_bangle = max(bangle_dets, key=lambda x: x.get("confidence", 0.0))
+                try:
+                    save_alert(
+                        db=db,
+                        user_id=_get_rule_engine_user_id(db),
+                        message=f"⚠️ DRESS CODE VIOLATION: Hand/wrist item worn detected on Camera {camera_id} ({floor} floor)!",
+                        role="Bakery Worker",
+                        severity="high",
+                        detected_issue="Hand/Wrist Item Worn (Bangle/Watch/Jewelry)",
+                        confidence=best_bangle.get("confidence", 0.75),
+                        snapshot_b64=snapshot_b64,
+                        camera_id=camera_id,
+                        floor=floor,
+                        confidence_tier="high",
+                        violation_type="bangles_hand_accessory",
+                    )
+                    log.warning(f"[rule_engine] Hand accessory / Bangle alert fired for cam={camera_id}")
+                except Exception as exc:
+                    log.error(f"[rule_engine] Failed to save bangle alert: {exc}")

@@ -134,10 +134,9 @@ class _ManagedCamera:
     # After this many seconds with no fresh frame, declare offline
     _OFFLINE_TIMEOUT = 30
     # Min interval between shared streaming annotations (ms)  →  cap the shared
-    # annotation loop at ~15 fps.  Going higher than the screen refresh rate
-    # (60 fps is physically wasted for display; 10–15 fps is perfectly adequate
-    # for a surveillance monitor and keeps CPU / GPU load sane).
-    _STREAM_MIN_INTERVAL_S = 0.066  # ~15 fps  (≈66 ms)
+    # annotation loop at ~25 fps.  25 fps gives smooth motion on any monitor
+    # while staying well within typical CPU headroom on modern hardware.
+    _STREAM_MIN_INTERVAL_S = 0.040  # ~25 fps  (≈40 ms)
 
     def __init__(self, camera_id: int, name: str, url: str, floor: str = "ground"):
         self.camera_id = camera_id
@@ -333,6 +332,7 @@ class _ManagedCamera:
 
         last_sent_ts: float = 0.0
         last_frame_capture_ts: float = 0.0
+        last_frame_hash: Optional[bytes] = None   # scene-change skip
         t_fps = time.time()
         fps_frames = 0
         local_frame_idx = 0
@@ -396,6 +396,21 @@ class _ManagedCamera:
             try:
                 local_frame_idx += 1
 
+                # ── Scene-change skip: don't run YOLO on identical frames ──
+                # Compute a cheap 4-byte perceptual hash (resize to 8×8 gray,
+                # threshold at mean). Saves 100% inference cost on static scenes
+                # (idle factory, night, unchanged background).
+                try:
+                    import cv2 as _cv2_sc
+                    _small = _cv2_sc.resize(frame, (8, 8), interpolation=_cv2_sc.INTER_AREA)
+                    _gray  = _cv2_sc.cvtColor(_small, _cv2_sc.COLOR_BGR2GRAY)
+                    _mean  = int(_gray.mean())
+                    _phash = bytes([1 if int(px) > _mean else 0 for row in _gray for px in row])
+                    _scene_changed = (_phash != last_frame_hash)
+                    last_frame_hash = _phash
+                except Exception:
+                    _scene_changed = True  # if hash fails, always infer
+
                 # Load camera zone_type / cash polygons from DB (cached per camera)
                 cam_zone = getattr(self, "_cached_zone", "default")
                 if cam_zone == "default" and db is not None:
@@ -433,6 +448,14 @@ class _ManagedCamera:
                         except Exception:
                             cam_zone_details = None
 
+                # Only run full YOLO pipeline when scene actually changed.
+                # On static frames, reuse the last shared_payload (already cached).
+                if not _scene_changed and self._stream_result is not None:
+                    # Frame identical — bump frame_count but skip heavy inference
+                    self._stream_dropped += 1
+                    time.sleep(0.005)
+                    continue
+
                 ppe_result = yolo_service.process_frame_numpy(
                     frame,
                     role="Bakery Worker",
@@ -442,14 +465,15 @@ class _ManagedCamera:
                     zone_type=cam_zone,
                     camera_id=self.camera_id,
                     zones=cam_zone_details,
+                    floor=self.floor,
                 )
 
                 # ── Face recognition ───────────────────────────────────
-                #    Rate-limited to 1× per 2 s via _last_face_rec_ts so
-                #    face_recognition (dlib, CPU-heavy) never runs every frame.
+                #    Rate-limited to 1× per 5 s — dlib is the #1 CPU hog.
+                #    5 s is sufficient to catch unknown intruders entering frame.
                 face_result: Optional[dict] = None
                 _face_now = time.time()
-                if db is not None and (_face_now - self._last_face_rec_ts) >= 2.0:
+                if db is not None and (_face_now - self._last_face_rec_ts) >= 5.0:
                     try:
                         face_result = face_service.process_face_numpy(
                             frame_bgr=frame, user_id=1, db=db
@@ -459,31 +483,35 @@ class _ManagedCamera:
                         face_result = None
 
                 # ── Cash monitoring ────────────────────────────────────
+                # Only active on shop / cashbox / bakery floors to avoid
+                # wasting CPU on factory cameras that have no cash flow.
+                _CASH_FLOORS = {"shop", "bakery", "shop_counter", "cashbox"}
                 _cash_alert_msg = None
                 _payee_detected = False
                 _payee_snapshot_b64 = None
                 _payee_id = None
-                try:
-                    from services import cash_monitor as _cm
-                    if db is not None:
-                        _persons = ppe_result.get("persons", [])
-                        _c_res = _cm.check_cash_zone(
-                            db=db,
-                            camera_id=self.camera_id,
-                            detections=ppe_result.get("detections", []),
-                            persons=_persons,
-                            cashbox_polygon=None,
-                            floor=self.floor,
-                            frame=frame,
-                            vendor_polygon=None,
-                        )
-                        if _c_res.get("theft_alert"):
-                            _cash_alert_msg = _c_res["theft_alert"]
-                        _payee_detected = _c_res.get("payee_detected", False)
-                        _payee_snapshot_b64 = _c_res.get("payee_snapshot_b64")
-                        _payee_id = _c_res.get("payee_id")
-                except Exception:
-                    pass
+                if self.floor in _CASH_FLOORS or cam_zone in _CASH_FLOORS:
+                    try:
+                        from services import cash_monitor as _cm
+                        if db is not None:
+                            _persons = ppe_result.get("persons", [])
+                            _c_res = _cm.check_cash_zone(
+                                db=db,
+                                camera_id=self.camera_id,
+                                detections=ppe_result.get("detections", []),
+                                persons=_persons,
+                                cashbox_polygon=None,
+                                floor=self.floor,
+                                frame=frame,
+                                vendor_polygon=None,
+                            )
+                            if _c_res.get("theft_alert"):
+                                _cash_alert_msg = _c_res["theft_alert"]
+                            _payee_detected = _c_res.get("payee_detected", False)
+                            _payee_snapshot_b64 = _c_res.get("payee_snapshot_b64")
+                            _payee_id = _c_res.get("payee_id")
+                    except Exception:
+                        pass
 
                 # ── Build the shared WebSocket payload ─────────────────
                 #     IMPORTANT: keep field names identical to what the
@@ -509,7 +537,7 @@ class _ManagedCamera:
                         if _ann_np is not None:
                             _ann_np = _overlay_faces_stream(_ann_np, face_result)
                             _, _buf = _cv2.imencode(
-                                ".jpg", _ann_np, [_cv2.IMWRITE_JPEG_QUALITY, 85]
+                                ".jpg", _ann_np, [_cv2.IMWRITE_JPEG_QUALITY, 75]
                             )
                             ann_b64 = (
                                 "data:image/jpeg;base64,"
@@ -789,7 +817,7 @@ class _ManagedCamera:
                     pass
 
         while self._det_running:
-            time.sleep(0.2)
+            time.sleep(0.333)
             if not self._det_running:
                 break
 

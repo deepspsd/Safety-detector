@@ -143,3 +143,43 @@ class TestRuleStateMachines:
         assert "tracks" in dets
         assert "detections" in dets
         assert len(dets["tracks"]) > 0
+
+
+import unittest
+
+
+class TestBanglesAndHandAccessory(unittest.TestCase):
+    def test_zone_capability_mapping(self):
+        from config import settings
+        # Factory production / default zones have wrist_accessory_detection
+        for z in ("entrance", "packing", "dough_mixing", "dough_table", "oven", "default"):
+            assert "wrist_accessory_detection" in settings.ZONE_CAPABILITY_MAP[z]
+        # Shop floor / retail zones MUST NOT have wrist accessory detection
+        for sz in ("shop", "shop_counter", "cashbox"):
+            assert "wrist_accessory_detection" not in settings.ZONE_CAPABILITY_MAP[sz]
+
+    def test_pose_adapter_shop_exclusion(self):
+        from services.pose_layer import pose_adapter
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        # When is_shop=True, detection must return empty list immediately
+        dets = pose_adapter.detect_wrist_accessories(frame, is_shop=True)
+        assert dets == []
+
+    def test_associate_to_persons_bangle_shop_policy(self):
+        from services.yolo_service import _associate_to_persons
+        persons = [{"bbox": [100, 100, 200, 400], "confidence": 0.95, "det_type": "person"}]
+        ppe_dets = [
+            {"label": "Bangles", "raw_label": "hand_wrist_item", "confidence": 0.88, "bbox": [110, 250, 140, 280], "det_type": "violation"}
+        ]
+
+        # 1. Non-shop floor -> Bangles MUST be flagged as violation
+        enriched_factory = _associate_to_persons(persons, ppe_dets, role="Bakery Worker", is_shop=False)
+        assert len(enriched_factory) == 1
+        assert "Bangles" in enriched_factory[0]["ppe_missing"]
+        assert enriched_factory[0]["is_compliant"] is False
+
+        # 2. Shop floor -> Bangles MUST be excluded (permitted for retail staff / customers)
+        enriched_shop = _associate_to_persons(persons, ppe_dets, role="Bakery Worker", is_shop=True)
+        assert len(enriched_shop) == 1
+        assert "Bangles" not in enriched_shop[0]["ppe_missing"]
+

@@ -86,7 +86,7 @@ VIOLATION_LABEL_MAP = {
     "NO-Bakery-Head-Cap": "No Head Cap",
     "NO-Hairnet": "No Hairnet",
     "no_hairnet": "No Hairnet",
-    "Bangles": "Bangles Detected (Violation)",
+    "Bangles": "Hand Item / Bangles Worn (Violation)",
     "Exposed-Item": "Stock Kept Openly",
     # Simulated classes (not detected by model natively)
     "NO-Gloves": "No Gloves",
@@ -767,12 +767,21 @@ def _run_inference_with(frame: np.ndarray, model, is_ppe: bool) -> List[Dict]:
     """
     from services.multi_model_detector import normalize_class_label
 
+    # Use FP16 half-precision if GPU available → 2× throughput, half VRAM.
+    # On CPU-only (16 GB RAM) gracefully falls back to FP32.
+    try:
+        import torch as _torch
+        _use_half = _torch.cuda.is_available()
+    except Exception:
+        _use_half = False
+
     results = list(model(
         frame,
         verbose=False,
-        imgsz=640,
+        imgsz=480,
         conf=max(0.40, getattr(settings, "DETECTION_CONF", 0.50)),
         iou=settings.NMS_IOU,
+        half=_use_half,
         stream=True,
     ))
     detections = []
@@ -832,11 +841,15 @@ def _associate_to_persons(
     ppe_detections: List[Dict],
     role: str,
     detection_filters: Optional[List[str]] = None,
+    is_shop: bool = False,
 ) -> List[Dict]:
     """
     Assign violation/compliant PPE detections to their nearest person.
     For role='None': required violations come from detection_filters directly.
     For other roles: req_violations come from ROLE_RULES and the filter acts as a subset mask.
+    
+    is_shop: if True, bangles and hand/wrist items are permitted (customer/cashier retail zone)
+             and excluded from violations. If False, any item worn on hand/wrist is an immediate violation.
     """
     rules = ROLE_RULES.get(role, ROLE_RULES["Home"])
     req_violations = list(rules.get("required_violations", []))
@@ -882,6 +895,10 @@ def _associate_to_persons(
             elif det["det_type"] == "compliant":
                 assigned_compliant.append(det["label"])
 
+        # Spatial check: In shop floor, hand accessories / bangles are permitted
+        if is_shop:
+            assigned_violations = [v for v in assigned_violations if v not in ("Bangles", "bangles")]
+
         # Resolve conflicting headwear detections using the highest-confidence prediction
         if headwear_status == "compliant":
             assigned_violations = [v for v in assigned_violations if v not in ("NO-Bakery-Head-Cap", "NO-Hairnet")]
@@ -894,6 +911,14 @@ def _associate_to_persons(
 
         ppe_missing: List[str] = []
         violation_labels: List[str] = []
+
+        # Hand/wrist item worn check: on all non-shop floors, any detected hand/wrist accessory is a violation
+        if not is_shop and ("Bangles" in assigned_violations or "bangles" in assigned_violations):
+            if "Bangles" not in ppe_missing:
+                ppe_missing.append("Bangles")
+            bangle_lbl = VIOLATION_LABEL_MAP.get("Bangles", "Hand Item / Bangles Worn (Violation)")
+            if bangle_lbl not in violation_labels:
+                violation_labels.append(bangle_lbl)
 
         # ── Native ppe.pt violations ───────────────────────────────
         # Two detection modes:
@@ -927,8 +952,10 @@ def _associate_to_persons(
             # Mode 1: model explicitly detected the violation class
             if req_v in assigned_violations:
                 human_label = VIOLATION_LABEL_MAP.get(req_v, req_v)
-                ppe_missing.append(req_v)
-                violation_labels.append(human_label)
+                if req_v not in ppe_missing:
+                    ppe_missing.append(req_v)
+                if human_label not in violation_labels:
+                    violation_labels.append(human_label)
                 continue
 
             # Mode 2: absence detection — if the compliant counterpart is NOT seen
@@ -971,7 +998,7 @@ def _associate_to_persons(
         enriched.append(
             {
                 "bbox": p_box,
-                "confidence": person["confidence"],
+                "confidence": person.get("confidence", 0.9),
                 "track_id": person.get(
                     "track_id", -1
                 ),  # passthrough from _apply_tracking
@@ -1559,6 +1586,7 @@ def _run_pipeline(
     # None = skip tracking (track_id=-1 on all persons).
     camera_id: Optional[int] = None,
     zones: Optional[Dict[str, Any]] = None,
+    floor: Optional[str] = None,
 ) -> Dict:
     """
     Shared pipeline used by both process_frame and process_frame_numpy.
@@ -1747,20 +1775,37 @@ def _run_pipeline(
         from services.multi_model_detector import get_multi_model_detector
         _mm_detector = get_multi_model_detector()
 
-        # Determine zone_type:
+        # Determine zone_type & floor context:
         # process_frame / process_frame_numpy pack zone_type into ocr_zone_config when called
         _eff_zone = "default"
         if ocr_zone_config and isinstance(ocr_zone_config, dict):
             _eff_zone = ocr_zone_config.get("zone_type") or "default"
+
+        _eff_floor = (floor or "").lower()
+        if not _eff_floor and camera_id is not None:
+            try:
+                from database import Camera as _CamModel, SessionLocal as _SL
+                with _SL() as _s:
+                    _c = _s.query(_CamModel).filter(_CamModel.id == camera_id).first()
+                    if _c and _c.floor:
+                        _eff_floor = _c.floor.lower()
+                        if _eff_zone == "default" and _c.zone_type:
+                            _eff_zone = _c.zone_type.lower()
+            except Exception:
+                pass
+
+        is_shop_floor = (
+            _eff_floor == "shop"
+            or _eff_zone in ("shop", "shop_counter", "cashbox", "cash")
+            or bool(zones and any(k.lower() in ("shop", "shop_counter", "cashbox", "cash") for k in zones.keys()))
+        )
 
         # If primary model already ran yolov8x, resolve specialized models for this zone
         _specialized_models = None
         if active_model is not None:
             _specialized_models = ["hairnet_glove_detection", "fall_detection"]
             # Auto-include cash_detection for shop/cashbox zones
-            _is_cash_target = _eff_zone in ("shop", "shop_counter", "cashbox", "cash") or bool(
-                zones and any(k in ("cashbox", "shop", "cash", "shop_counter") for k in zones.keys())
-            )
+            _is_cash_target = is_shop_floor or _eff_zone in ("shop", "shop_counter", "cashbox", "cash")
             if _is_cash_target and "cash_detection" not in _specialized_models:
                 _specialized_models.append("cash_detection")
             # Auto-include helmet_model for loading zones
@@ -1794,6 +1839,24 @@ def _run_pipeline(
             })
     except Exception as _mm_err:
         log.debug(f"[MultiModel] Error during injection: {_mm_err}")
+
+    # ── Wrist accessory / Hand item / Bangles detection via Pose keypoints ───────────
+    # Active across all factory floors (Ground, First, Second) and default zones EXCEPT Shop.
+    if not is_shop_floor:
+        try:
+            from services.pose_layer import pose_adapter
+            _wrist_dets = pose_adapter.detect_wrist_accessories(frame, is_shop=False)
+            for _wd in _wrist_dets:
+                raw.append(_wd)
+        except Exception as _wr_err:
+            log.debug(f"[Pose] Wrist accessory check error: {_wr_err}")
+    else:
+        # Shop floor: exclude any bangle / hand item detections
+        raw = [
+            d for d in raw
+            if d.get("label") not in ("Bangles", "bangles")
+            and d.get("raw_label") != "hand_wrist_item"
+        ]
 
     # Strictly filter raw detections to only keep selected classes
     # CRITICAL: safety-critical anomalies must NEVER be suppressed by client-side PPE checkboxes!
@@ -1855,10 +1918,11 @@ def _run_pipeline(
         except Exception as _ident_exc:
             log.debug(f"Worker identity attach error: {_ident_exc}")
 
-    # Only synthesize a person if wearable PPE items (headcap, vest, hardhat) are detected
+    # Only synthesize a person if wearable PPE items (headcap, vest, hardhat, bangles) are detected
     WEARABLE_PPE_CLASSES = {
         "Hardhat", "Safety Vest", "Bakery-Head-Cap",
         "NO-Hardhat", "NO-Safety Vest", "NO-Bakery-Head-Cap",
+        "Bangles", "bangles",
     }
     wearable_dets = [d for d in ppe_dets if d["label"] in WEARABLE_PPE_CLASSES]
 
@@ -1912,7 +1976,7 @@ def _run_pipeline(
     # ── Specialized model inference (Hairnet / Fall / Cash / Anomaly) ──
     # Note: Full-frame hairnet_glove_detection runs via MultiModelDetector above at imgsz=960.
     enriched = _associate_to_persons(
-        persons, ppe_dets, role, detection_filters=detection_filters
+        persons, ppe_dets, role, detection_filters=detection_filters, is_shop=is_shop_floor
     )
 
     # ── Uniform classifier check on detected persons ──────────────────────────
@@ -2311,6 +2375,7 @@ def process_frame_numpy(
     zone_type: Optional[str] = None,
     camera_id: Optional[int] = None,
     zones: Optional[Dict[str, Any]] = None,
+    floor: Optional[str] = None,
 ) -> Dict:
     """
     Full violation pipeline from a numpy frame directly.
@@ -2329,6 +2394,7 @@ def process_frame_numpy(
         ocr_zone_config=_zone_cfg,
         camera_id=camera_id,
         zones=zones,
+        floor=floor,
     )
 
 

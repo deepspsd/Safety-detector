@@ -392,70 +392,93 @@ class _InferencePool:
         log.info("[InferencePool] Inference loop running")
 
         while self._running:
-            processed_any = False
+            batch: list = []  # [(camera_id, zone_type, infer_frame)]
 
             with self._lock:
                 camera_ids = list(self._queues.keys())
 
-            for camera_id in camera_ids:
-                if not self._running:
-                    break
+            try:
+                from config import settings as _s
+                _infer_width = _s.YOLO_INFERENCE_WIDTH
+            except Exception:
+                _infer_width = 640
 
+            for camera_id in camera_ids:
                 with self._lock:
                     q = self._queues.get(camera_id)
                 if q is None:
                     continue
-
                 try:
                     frame = q.get_nowait()
                 except queue.Empty:
                     continue
-
-                processed_any = True
-                infer_start = time.perf_counter()
                 try:
-                    from config import settings
+                    infer_frame = _resize_for_inference(frame, _infer_width)
+                except Exception:
+                    infer_frame = frame
+                with self._lock:
+                    zone_type = self._camera_zones.get(camera_id)
+                batch.append((camera_id, zone_type, infer_frame))
 
-                    infer_frame = _resize_for_inference(
-                        frame, settings.YOLO_INFERENCE_WIDTH
+            if not batch:
+                time.sleep(_IDLE_SLEEP)
+                continue
+
+            # ── Batch inference ──────────────────────────────────────────────
+            # Try detector.detect_batch() (list[frame] → list[list[Detection]])
+            # If unavailable, fall back to sequential detect() calls.
+            infer_start = time.perf_counter()
+            batch_results: list = []  # list of det_dicts per camera in batch order
+
+            try:
+                if hasattr(detector, "detect_batch"):
+                    # Fast path: single model forward pass for all frames
+                    frames_list = [item[2] for item in batch]
+                    zone_types_list = [item[1] for item in batch]
+                    all_detections = detector.detect_batch(
+                        frames_list, zone_types=zone_types_list
                     )
-
-                    zone_type: Optional[str]
-                    with self._lock:
-                        zone_type = self._camera_zones.get(camera_id)
-
-                    if hasattr(detector, 'detect'):
-                        if zone_type:
-                            detections = detector.detect(
-                                infer_frame, zone_type=zone_type, camera_id=camera_id
+                    batch_results = [
+                        [d.to_dict() for d in dets] for dets in all_detections
+                    ]
+                else:
+                    # Fallback: sequential (same as before, but within one loop)
+                    for _cam_id, _zone, _frame in batch:
+                        try:
+                            if hasattr(detector, "detect"):
+                                if _zone:
+                                    dets = detector.detect(
+                                        _frame, zone_type=_zone, camera_id=_cam_id
+                                    )
+                                else:
+                                    dets = detector.detect(_frame)
+                            else:
+                                dets = []
+                            batch_results.append([d.to_dict() for d in dets])
+                        except Exception as _exc:
+                            log.debug(
+                                "[InferencePool] seq-fallback cam=%s: %s", _cam_id, _exc
                             )
-                        else:
-                            detections = detector.detect(infer_frame)
-                    else:
-                        detections = []
+                            batch_results.append([])
+            except Exception as exc:
+                log.debug("[InferencePool] batch inference error: %s", exc, exc_info=True)
+                batch_results = [[] for _ in batch]
 
-                    det_dicts = [d.to_dict() for d in detections]
-                except Exception as exc:
-                    log.debug(
-                        f"[InferencePool] Inference error cam={camera_id}: {exc}",
-                        exc_info=True,
-                    )
-                    det_dicts = []
-                latency_ms = (time.perf_counter() - infer_start) * 1000.0
-                now = time.time()
+            total_latency_ms = (time.perf_counter() - infer_start) * 1000.0
+            per_cam_latency_ms = total_latency_ms / max(len(batch), 1)
+            now = time.time()
 
+            # ── Distribute results back per camera ───────────────────────────
+            for (camera_id, _zone, _frame), det_dicts in zip(batch, batch_results):
                 with self._lock:
                     self._results[camera_id] = {"detections": det_dicts}
                     metrics = self._ensure_metrics(camera_id)
                     metrics["frames_processed"] += 1
-                    metrics["last_inference_latency_ms"] = latency_ms
+                    metrics["last_inference_latency_ms"] = per_cam_latency_ms
                     metrics["_process_times"].append(now)
                     metrics["inference_fps"] = self._rolling_fps(
                         metrics["_process_times"], now
                     )
-
-            if not processed_any:
-                time.sleep(_IDLE_SLEEP)
 
 
 # ── Module-level singleton ────────────────────────────────────────────────────

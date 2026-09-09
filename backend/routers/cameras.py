@@ -175,6 +175,113 @@ def stream_camera_mjpeg(camera_id: int):
     )
 
 
+# ── Annotated MJPEG Stream Endpoint ────────────────────────────────────────
+@router.get("/{camera_id}/annotated-stream")
+def stream_camera_annotated_mjpeg(camera_id: int):
+    """
+    MJPEG stream that serves the ANNOTATED frame (with YOLO detection boxes,
+    alerts, PPE overlays) from the shared _stream_annotation_loop cache.
+
+    This is the same detection pipeline that the WebSocket live monitor uses,
+    but delivered as a simple multipart MJPEG so floor overview camera tiles
+    (and any <img> tag) can display full detection output without WebSocket.
+
+    Falls back to raw camera frame while the annotation thread warms up.
+    Capped at ~15 fps — matches the annotation loop rate.
+    """
+    import base64
+    import time
+    from fastapi.responses import StreamingResponse
+
+    _MIN_YIELD_INTERVAL_S = 1.0 / 15.0  # ~15 fps
+
+    def iter_annotated():
+        import cv2
+        import numpy as np
+
+        last_frame_count: int = -1
+        last_yield_at: float = 0.0
+        blank_frame: Optional[bytes] = None
+        last_blank_at: float = 0.0
+
+        while True:
+            # ── Try to get latest annotated result ──────────────────────
+            stream_result = camera_manager.get_latest_stream_result(camera_id)
+            ann_b64: Optional[str] = None
+            frame_count: int = -1
+
+            if stream_result is not None:
+                ann_b64 = stream_result.get("ann_b64")
+                frame_count = int(stream_result.get("frame_count", -1))
+
+            if ann_b64 and frame_count != last_frame_count:
+                # Decode base64 JPEG from annotation thread
+                try:
+                    raw = ann_b64.split(",")[1] if "," in ann_b64 else ann_b64
+                    jpeg_bytes = base64.b64decode(raw)
+                    last_frame_count = frame_count
+                    last_yield_at = time.time()
+                    yield (
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n\r\n"
+                        + jpeg_bytes
+                        + b"\r\n"
+                    )
+                    remaining = _MIN_YIELD_INTERVAL_S - (time.time() - last_yield_at)
+                    if remaining > 0:
+                        time.sleep(remaining)
+                    continue
+                except Exception:
+                    pass  # fall through to raw frame fallback
+
+            # ── Fallback: raw camera frame while annotation warms up ────
+            frame, capture_ts = camera_manager.get_latest_frame_with_ts(camera_id)
+            if frame is not None and frame_count == last_frame_count:
+                ret, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                if ret:
+                    last_yield_at = time.time()
+                    yield (
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n\r\n"
+                        + jpeg.tobytes()
+                        + b"\r\n"
+                    )
+                remaining = _MIN_YIELD_INTERVAL_S - (time.time() - last_yield_at)
+                if remaining > 0:
+                    time.sleep(remaining)
+                continue
+
+            # ── Blank placeholder if camera offline ─────────────────────
+            now = time.time()
+            if now - last_blank_at >= 0.25:
+                if blank_frame is None:
+                    blank = np.zeros((360, 640, 3), dtype=np.uint8)
+                    cv2.putText(
+                        blank,
+                        f"Camera {camera_id} — Initializing...",
+                        (100, 180),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8,
+                        (120, 120, 120),
+                        2,
+                    )
+                    _, blank_jpeg = cv2.imencode(".jpg", blank)
+                    blank_frame = blank_jpeg.tobytes()
+                last_blank_at = now
+                last_yield_at = now
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n"
+                    + blank_frame
+                    + b"\r\n"
+                )
+            time.sleep(_MIN_YIELD_INTERVAL_S)
+
+    return StreamingResponse(
+        iter_annotated(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
 # ── Diagnostics Endpoint ───────────────────────────────────────────────────
 @router.get("/{camera_id}/diagnostics")
 def get_camera_diagnostics(camera_id: int):

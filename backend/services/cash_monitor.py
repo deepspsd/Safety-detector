@@ -86,7 +86,7 @@ def _is_cash_label(label: str) -> bool:
 # Minimum confidence to treat a detection as real Cash.
 # The global DETECTION_CONF=0.30 is intentionally low for PPE.
 # Cash false-positives (random boxes labelled Cash) are suppressed here.
-_CASH_MIN_CONF: float = 0.65
+_CASH_MIN_CONF: float = 0.85
 
 
 # ─────────────────────────────────────────────────────────────────────────────

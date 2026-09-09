@@ -30,7 +30,7 @@ const POLL_MS = 3000
 function CameraTile({ camera, onSelect }) {
   const [streamError, setStreamError] = useState(false)
   const BASE = import.meta.env.VITE_API_BASE_URL?.replace(/\/api$/, '') || ''
-  const streamUrl = `${BASE}/api/cameras/${camera.id}/stream`
+  const streamUrl = `${BASE}/api/cameras/${camera.id}/annotated-stream`
 
   const sc = STATUS_COLORS[camera.status] || STATUS_COLORS.offline
 
