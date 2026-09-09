@@ -132,6 +132,17 @@ class Settings(BaseSettings):
             "capabilities": ["hardhat_compliance", "head_protection"],
             "classes": {0: "Hardhat", 1: "NO-Hardhat"}
         },
+        "pose_estimation": {
+            "path": _resolve_model_path("POSE_MODEL_PATH", "yolov8n-pose.pt"),
+            "type": "pose",
+            "enabled": True,
+            "priority": 3,
+            "conf_threshold": 0.35,
+            "target_fps": 10,
+            "zones": ["shop", "shop_counter", "cashbox", "cash"],
+            "description": "YOLOv8-Pose - Body keypoints & cash-pocket trajectory tracking",
+            "capabilities": ["pose_estimation", "pocket_tracking", "trajectory_tracking"]
+        },
         "hand_landmarks": {
             "path": _resolve_model_path("HAND_LANDMARKS_PATH", "portable_models_package/hand_landmarks/hand_landmarker.task"),
             "type": "mediapipe",
@@ -409,9 +420,10 @@ class Settings(BaseSettings):
     # ── Shift schedules (floor → required_start_time HH:MM) ─────────────────
     SHIFT_SCHEDULES: dict = {
         "ground": "08:00",
+        "first": "06:00",
         "dough": "06:00",
         "second": "05:00",
-        "shop": "09:00",
+        "shop": "08:00",
     }
 
     # ── Shop absence threshold (seconds) ────────────────────────────────────

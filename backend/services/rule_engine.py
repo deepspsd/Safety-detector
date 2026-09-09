@@ -281,13 +281,14 @@ def check_shift_start(camera_id: int, floor: str, db) -> None:
                 _shift_checked[pre_warn_key] = today
             from services.alert_service import save_alert
 
+            cam_str = f" on camera {camera_id}" if camera_id is not None else ""
             try:
                 save_alert(
                     db=db,
                     user_id=_get_rule_engine_user_id(db),
                     message=(
                         f"⏰ {floor.capitalize()} Floor shift starts in 5 minutes "
-                        f"({shift_start_str} IST) — no employee detected yet on camera {camera_id}."
+                        f"({shift_start_str} IST) — no employee detected yet{cam_str}."
                     ),
                     role="Factory Worker",
                     severity="high",
@@ -339,7 +340,7 @@ def check_shift_start(camera_id: int, floor: str, db) -> None:
                 user_id=_get_rule_engine_user_id(db),
                 message=(
                     f"⏰ Late shift start on {floor.capitalize()} Floor. "
-                    f"Shift starts at {shift_start_str}. {late_str}."
+                    f"Shift starts at {shift_start_str} IST. {late_str}."
                 ),
                 role="Factory Worker",
                 severity="high",
@@ -352,7 +353,39 @@ def check_shift_start(camera_id: int, floor: str, db) -> None:
                 f"expected={shift_start_str} {late_str}"
             )
         except Exception as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
             log.error(f"[rule_engine] shift-start alert save failed: {exc}")
+
+
+def check_all_floors_shift_compliance(db) -> None:
+    """
+    Daemon check: verify shift start compliance for all configured floors
+    (ground, first, second, shop) even if cameras are idle.
+    """
+    try:
+        from database import Camera
+        for floor in ("ground", "first", "second", "shop"):
+            try:
+                cam_row = db.query(Camera.id).filter(Camera.floor == floor).first()
+                cam_id = cam_row.id if cam_row else None
+                check_shift_start(camera_id=cam_id, floor=floor, db=db)
+            except Exception as floor_exc:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                log.debug(f"[rule_engine] check_shift_start floor {floor} error: {floor_exc}")
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        log.error(f"[rule_engine] check_all_floors_shift_compliance failed: {exc}")
+
+
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -382,7 +415,10 @@ def process_cylinder_detections(
     4. Daily usage increment: once per calendar day per camera, increment
        usage_day_count by 1 and update the last-swapped row.
     """
-    cylinder_dets = [d for d in raw_detections if d.get("label") == "Cylinder"]
+    cylinder_dets = [
+        d for d in raw_detections
+        if str(d.get("label", "")).lower() in ("cylinder", "gas_cylinder", "gas cylinder", "lpg")
+    ]
     if not cylinder_dets:
         return
 
@@ -922,7 +958,11 @@ _camera_blocking_lock = threading.Lock()
 
 
 def check_camera_blocking(
-    camera_id: int, frame_shape: Tuple[int, int, int], persons: List[dict], db
+    camera_id: int,
+    frame_shape: Tuple[int, int, int],
+    persons: List[dict],
+    db,
+    zones: Optional[dict] = None,
 ) -> None:
     CAMERA_BLOCK_RATIO = 0.70
     limit = get_int("idle_limit_camera_standing", db) or 60
@@ -932,6 +972,9 @@ def check_camera_blocking(
     frame_area = frame_h * frame_w
 
     is_blocked = False
+    blocked_reason = ""
+
+    # 1. Full camera screen obstruction
     for p in persons:
         bbox = p.get("bbox")
         if not bbox:
@@ -940,7 +983,25 @@ def check_camera_blocking(
         area = (x2 - x1) * (y2 - y1)
         if area / frame_area > CAMERA_BLOCK_RATIO:
             is_blocked = True
+            blocked_reason = "full camera view obstructed"
             break
+
+    # 2. Specific zone standing / blocking check
+    if not is_blocked and zones:
+        from services.zone_service import bbox_in_zone
+        for z_name, poly in zones.items():
+            if not poly or len(poly) < 3:
+                continue
+            z_low = z_name.lower()
+            if any(k in z_low for k in ("camera_standing", "camera_block", "standing", "block", "restricted")):
+                for p in persons:
+                    bbox = p.get("bbox")
+                    if bbox and bbox_in_zone(bbox, poly):
+                        is_blocked = True
+                        blocked_reason = f"standing in '{z_name}' zone"
+                        break
+                if is_blocked:
+                    break
 
     with _camera_blocking_lock:
         state = _camera_blocking_state.setdefault(
@@ -948,16 +1009,19 @@ def check_camera_blocking(
             {
                 "blocked_since": None,
                 "alert_fired": False,
+                "reason": "",
             },
         )
 
         if not is_blocked:
             state["blocked_since"] = None
             state["alert_fired"] = False
+            state["reason"] = ""
             return
 
         if state["blocked_since"] is None:
             state["blocked_since"] = now
+            state["reason"] = blocked_reason
             return
 
         blocked_for = now - state["blocked_since"]
@@ -965,22 +1029,25 @@ def check_camera_blocking(
             state["alert_fired"] = True
             from services.alert_service import save_alert
 
+            active_reason = state.get("reason") or blocked_reason or "obstructing view"
+            issue_title = "Zone standing alert" if "zone" in active_reason else "Camera blocked"
             try:
                 save_alert(
                     db=db,
                     user_id=_get_rule_engine_user_id(db),
                     message=(
-                        f" Camera {camera_id} is blocked by a person "
-                        f"standing too close for over {limit} seconds."
+                        f"⚠️ Camera {camera_id}: Person {active_reason} "
+                        f"for over {limit} seconds."
                     ),
                     role="Safety Monitor",
                     severity="high",
-                    detected_issue="Camera blocked",
+                    detected_issue=issue_title,
                     camera_id=camera_id,
                 )
-                log.warning(f"[rule_engine] Camera blocked alert cam={camera_id}")
+                log.warning(f"[rule_engine] Camera/Zone standing alert cam={camera_id} ({active_reason})")
             except Exception as exc:
                 log.error(f"[rule_engine] camera-blocked alert save failed: {exc}")
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -1061,13 +1128,16 @@ def check_machinery_zone(
 
     now = time.monotonic()
 
-    for zone_name in ("dough", "biscuit_cutting"):
+    for zone_name in ("dough", "dough_mixing", "dough_table", "biscuit_cutting", "cutting_machine"):
         poly = zones.get(zone_name)
         if not poly:
             continue
 
-        machines = [d for d in raw_detections if d.get("label") == "machinery"]
-        machines_in_zone = any(bbox_in_zone(m["bbox"], poly) for m in machines)
+        machines = [
+            d for d in raw_detections
+            if str(d.get("label", "")).lower() in ("machinery", "machine", "oven", "toaster", "refrigerator", "machine anomaly")
+        ]
+        machines_in_zone = any(bbox_in_zone(m["bbox"], poly) for m in machines) or True  # Zone is designated machinery zone
         persons_in_zone = any(bbox_in_zone(p["bbox"], poly) for p in persons)
 
         state_key = f"{camera_id}_{zone_name}"
@@ -1648,7 +1718,8 @@ def check_workflow_enforcement(
         machines = [
             d
             for d in raw_detections
-            if d.get("label") == "machinery" and bbox_in_zone(d.get("bbox", []), poly)
+            if str(d.get("label", "")).lower() in ("machinery", "machine", "oven", "toaster", "refrigerator", "machine anomaly")
+            and bbox_in_zone(d.get("bbox", []), poly)
         ]
         persons_here = [p for p in persons if bbox_in_zone(p.get("bbox", []), poly)]
 

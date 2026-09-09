@@ -1753,8 +1753,20 @@ def _run_pipeline(
         if ocr_zone_config and isinstance(ocr_zone_config, dict):
             _eff_zone = ocr_zone_config.get("zone_type") or "default"
 
-        # If primary model already ran yolov8x, only run specialized models here (saves 200ms CPU)
-        _specialized_models = ["hairnet_glove_detection", "fall_detection"] if active_model is not None else None
+        # If primary model already ran yolov8x, resolve specialized models for this zone
+        _specialized_models = None
+        if active_model is not None:
+            _specialized_models = ["hairnet_glove_detection", "fall_detection"]
+            # Auto-include cash_detection for shop/cashbox zones
+            _is_cash_target = _eff_zone in ("shop", "shop_counter", "cashbox", "cash") or bool(
+                zones and any(k in ("cashbox", "shop", "cash", "shop_counter") for k in zones.keys())
+            )
+            if _is_cash_target and "cash_detection" not in _specialized_models:
+                _specialized_models.append("cash_detection")
+            # Auto-include helmet_model for loading zones
+            if _eff_zone in ("loading", "construction") and "helmet_model" not in _specialized_models:
+                _specialized_models.append("helmet_model")
+
         _extra_dets = _mm_detector.detect(
             frame, zone_type=_eff_zone, camera_id=camera_id, zones=zones, enabled_models=_specialized_models
         )

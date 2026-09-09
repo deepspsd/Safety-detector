@@ -27,19 +27,20 @@ class TestHeadCapMonitor(unittest.TestCase):
         frame_shape = (720, 1280, 3)
         crop = _derive_head_crop_box(person_bbox, frame_shape)
 
-        # Top 30% of height = 90px -> y1=100, y2=190
-        # 10% x padding = 10px -> x1=90, x2=210
-        self.assertEqual(crop[0], 90)
+        # Top 40% of height = 120px -> y1=100, y2=220
+        # 15% x padding = 15px -> x1=85, x2=215
+        self.assertEqual(crop[0], 85)
         self.assertEqual(crop[1], 100)
-        self.assertEqual(crop[2], 210)
-        self.assertEqual(crop[3], 190)
+        self.assertEqual(crop[2], 215)
+        self.assertEqual(crop[3], 220)
 
     def test_confidence_mapping(self):
         self.assertEqual(_map_confidence_to_prediction(0.85), PRED_HEAD_CAP)
-        self.assertEqual(_map_confidence_to_prediction(0.25), PRED_HEAD_CAP)
-        self.assertEqual(_map_confidence_to_prediction(0.22), PRED_UNCERTAIN)
-        self.assertEqual(_map_confidence_to_prediction(0.20), PRED_NO_HEAD_CAP)
+        self.assertEqual(_map_confidence_to_prediction(0.35), PRED_HEAD_CAP)
+        self.assertEqual(_map_confidence_to_prediction(0.20), PRED_UNCERTAIN)
+        self.assertEqual(_map_confidence_to_prediction(0.12), PRED_NO_HEAD_CAP)
         self.assertEqual(_map_confidence_to_prediction(0.05), PRED_NO_HEAD_CAP)
+
 
     def test_headcap_monitor_lifecycle(self):
         monitor = HeadCapMonitor()

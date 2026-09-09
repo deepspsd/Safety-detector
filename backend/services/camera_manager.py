@@ -938,7 +938,7 @@ class _ManagedCamera:
                 # ── Camera-blocking check (runs on ALL cameras) ───────────────
                 # Person standing in front of camera > 1 min → alert.
                 rule_engine.check_camera_blocking(
-                    self.camera_id, frame.shape, persons, db
+                    self.camera_id, frame.shape, persons, db, zones=zones
                 )
 
                 # ── Stock zone check (ALL cameras — raw materials + items) ─────

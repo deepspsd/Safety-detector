@@ -102,7 +102,7 @@ class CashState(Enum):
 
 @dataclass
 class CashTrack:
-    """Per-cash-object tracking state."""
+    """Per-cash-object tracking state with trajectory history."""
     track_id: str
     state: CashState = CashState.PENDING
     # Timestamps
@@ -113,6 +113,9 @@ class CashTrack:
     disappeared_at:       Optional[float] = None   # when bbox was last seen
     associated_person_id: Optional[str]  = None   # person track_id it was near
     last_bbox:            Optional[List]  = None
+    trajectory:           List[Tuple[float, float, float]] = field(default_factory=list)  # [(cx, cy, ts), ...]
+    heading:              str = "unknown"  # "to_cashbox", "to_pocket", or "neutral"
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -199,6 +202,85 @@ def _build_body_zone(person_bbox: List) -> List[List[int]]:
     ]
 
 
+def _evaluate_trajectory_and_pocket(
+    cx: float,
+    cy: float,
+    track: CashTrack,
+    cashbox_polygon: Optional[List],
+    persons: List[Dict],
+    pose_observations: Optional[List[Dict]] = None,
+) -> Tuple[Optional[str], str]:
+    """
+    Evaluate:
+      1. Is cash centroid currently inside any person's pocket zone?
+         (Uses YOLO-Pose hip/pocket zone if available, otherwise falls back to lower body bbox).
+      2. Is cash trajectory heading towards cashbox or towards a person's pocket?
+
+    Returns:
+      (associated_person_id, heading) where heading is 'to_cashbox', 'to_pocket', or 'neutral'.
+    """
+    now = time.monotonic()
+    track.trajectory.append((cx, cy, now))
+    if len(track.trajectory) > 30:
+        track.trajectory = track.trajectory[-30:]
+
+    associated_person_id = None
+    persons_pockets = []
+
+    for idx, p in enumerate(persons):
+        pbbox = p.get("bbox", [])
+        if not pbbox:
+            continue
+        pid = str(p.get("track_id", f"person_{idx}"))
+
+        # Look for matching pose observation
+        pocket_poly = None
+        if pose_observations:
+            for obs in pose_observations:
+                obbox = obs.get("bbox", [])
+                if obbox and len(obbox) >= 4:
+                    if abs(obbox[0] - pbbox[0]) < 80 and abs(obbox[1] - pbbox[1]) < 80:
+                        pocket_poly = obs.get("pocket_zone")
+                        break
+
+        if not pocket_poly:
+            pocket_poly = _build_body_zone(pbbox)
+
+        persons_pockets.append((pid, pocket_poly))
+
+        if _point_in_polygon(cx, cy, pocket_poly):
+            associated_person_id = pid
+
+    heading = "neutral"
+    if len(track.trajectory) >= 3:
+        start_cx, start_cy = track.trajectory[0][:2]
+        latest_cx, latest_cy = track.trajectory[-1][:2]
+
+        # Trajectory towards cashbox
+        if cashbox_polygon and len(cashbox_polygon) >= 3:
+            cb_x = float(np.mean([pt[0] for pt in cashbox_polygon]))
+            cb_y = float(np.mean([pt[1] for pt in cashbox_polygon]))
+            d_init_cb = (start_cx - cb_x) ** 2 + (start_cy - cb_y) ** 2
+            d_curr_cb = (latest_cx - cb_x) ** 2 + (latest_cy - cb_y) ** 2
+            if d_curr_cb < d_init_cb * 0.75:
+                heading = "to_cashbox"
+
+        # Trajectory towards person pocket
+        for pid, pk_poly in persons_pockets:
+            pk_x = float(np.mean([pt[0] for pt in pk_poly]))
+            pk_y = float(np.mean([pt[1] for pt in pk_poly]))
+            d_init_pk = (start_cx - pk_x) ** 2 + (start_cy - pk_y) ** 2
+            d_curr_pk = (latest_cx - pk_x) ** 2 + (latest_cy - pk_y) ** 2
+            if d_curr_pk < d_init_pk * 0.75:
+                heading = "to_pocket"
+                if not associated_person_id:
+                    associated_person_id = pid
+                break
+
+    track.heading = heading
+    return associated_person_id, heading
+
+
 def _cash_in_body_zone(
     cash_bbox: List,
     persons: List[Dict],
@@ -216,6 +298,7 @@ def _cash_in_body_zone(
         if _point_in_polygon(cx, cy, body_zone):
             return str(person.get("track_id", "unknown"))
     return None
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -336,6 +419,15 @@ class CashEventTracker:
         with self._lock:
             active_ids: set = set()
 
+            # Optional pose estimation for hip/pocket keypoints & trajectories
+            pose_obs = None
+            if frame is not None and is_cash_floor and cash_detections:
+                try:
+                    from services.pose_layer import pose_adapter
+                    pose_obs = pose_adapter.analyse(frame, [p.get("bbox") for p in person_detections if p.get("bbox")])
+                except Exception as _pe:
+                    log.debug(f"[CashTracker] pose analysis error: {_pe}")
+
             for det in cash_detections:
                 label = str(det.get("label", ""))
                 if not _is_cash_label(label):
@@ -394,24 +486,27 @@ class CashEventTracker:
                 else:
                     track.in_cashbox_since = None
 
-                # ── Check body zone (shop / bakery cameras only) ──────────────
+                # ── Check body zone & trajectory (shop / bakery cameras only) ──────────────
                 if not is_cash_floor:
                     continue
 
-                person_tid = _cash_in_body_zone(bbox, person_detections)
+                person_tid, heading = _evaluate_trajectory_and_pocket(
+                    cx, cy, track, cashbox_polygon, person_detections, pose_obs
+                )
                 if person_tid is not None:
                     if track.in_body_zone_since is None:
                         track.in_body_zone_since = now
                         track.associated_person_id = person_tid
                         log.debug(
-                            "[CashTracker] cam=%d cash_id=%s entered body zone "
-                            "of person %s",
-                            self.camera_id, tid, person_tid,
+                            "[CashTracker] cam=%d cash_id=%s entered pocket zone "
+                            "of person %s (heading=%s)",
+                            self.camera_id, tid, person_tid, heading,
                         )
                 else:
                     # Left body zone without entering cashbox
-                    if track.in_body_zone_since is not None:
+                    if track.in_body_zone_since is not None and heading != "to_pocket":
                         track.in_body_zone_since = None
+
 
             # ── Check Vendor Payee Handover (REQ-SH-2) ────────────────────
             # Triggered when cash is active and a payee is present
@@ -577,10 +672,14 @@ class CashEventTracker:
                 pass
 
         utc_now = datetime.datetime.utcnow().strftime("%H:%M:%S")
+        traj_note = (
+            "Trajectory analysis confirmed: Cash moved toward employee pocket and away from cashbox."
+            if track.heading == "to_pocket"
+            else "Cash object entered employee pocket zone."
+        )
         msg = (
             f"[CASH THEFT ALERT] Camera {self.camera_id} — "
-            f"Cash object entered employee body zone and disappeared "
-            f"without reaching the cashbox "
+            f"{traj_note} Cash disappeared without reaching the cashbox "
             f"(employee track_id={person_id}, detected at {utc_now} UTC). "
             f"Please review CCTV footage immediately."
         )

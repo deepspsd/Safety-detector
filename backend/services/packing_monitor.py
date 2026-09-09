@@ -89,9 +89,6 @@ def process_packing_frame(
     packing_polygon : [[x,y], ...] pixel coords of packing zone.
                       If None, monitoring is skipped.
     """
-    if packing_polygon is None or frame is None:
-        return
-
     now = time.time()
     gray = None
     try:
@@ -111,7 +108,7 @@ def process_packing_frame(
         if len(bbox) < 4:
             continue
 
-        if not _in_zone(bbox, packing_polygon):
+        if packing_polygon is not None and not _in_zone(bbox, packing_polygon):
             continue
 
         key = (camera_id, tid)

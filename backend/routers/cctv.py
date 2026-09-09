@@ -830,6 +830,7 @@ def _run_combined_inference_inner(
     _cam_zone = "default"
     _cashbox_polygon = None
     _vendor_polygon = None
+    _zones_map = {}
     if camera_id is not None:
         try:
             import json
@@ -842,16 +843,22 @@ def _run_combined_inference_inner(
                     for z in cam_obj.zones:
                         zn = (z.zone_name or "").lower()
                         zt = (z.zone_type or "").lower()
+                        poly = None
+                        try:
+                            poly = json.loads(z.polygon_json)
+                        except Exception:
+                            pass
+                        if poly:
+                            _zones_map[zn] = poly
+                            if zt and zt not in _zones_map:
+                                _zones_map[zt] = poly
+
                         if "cash" in zn or "cash" in zt:
-                            try:
-                                _cashbox_polygon = json.loads(z.polygon_json)
-                            except Exception:
-                                pass
+                            if poly:
+                                _cashbox_polygon = poly
                         if "vendor" in zn or "payee" in zn or "counter" in zn or "vendor" in zt:
-                            try:
-                                _vendor_polygon = json.loads(z.polygon_json)
-                            except Exception:
-                                pass
+                            if poly:
+                                _vendor_polygon = poly
         except Exception:
             pass
 
@@ -863,6 +870,8 @@ def _run_combined_inference_inner(
             no_phone_zone,
             frame_idx,
             zone_type=_cam_zone,
+            camera_id=camera_id,
+            zones=_zones_map if _zones_map else None,
         )
         print(f"[CCTV-DEBUG] PPE detection: persons={len(ppe_result.get('persons', []))}, detections={len(ppe_result.get('detections', []))}")
     else:
@@ -874,8 +883,18 @@ def _run_combined_inference_inner(
             no_phone_zone,
             frame_idx,
             zone_type=_cam_zone,
+            camera_id=camera_id,
+            zones=_zones_map if _zones_map else None,
         )
         print(f"[CCTV-DEBUG] Home detection: persons={len(ppe_result.get('persons', []))}, detections={len(ppe_result.get('detections', []))}")
+
+    # Record worker presence for floor shift start compliance
+    if ppe_result.get("persons") and floor:
+        try:
+            from services import rule_engine
+            rule_engine.record_person_seen(floor)
+        except Exception:
+            pass
 
     # --- Cash monitoring (CashEventTracker state machine) --------------------
     # Runs when a camera_id is supplied (managed + legacy modes both work).
@@ -912,6 +931,162 @@ def _run_combined_inference_inner(
             import logging as _log_mod
             _log_mod.getLogger("cctv").debug(
                 "[cctv] cash_monitor error (cam=%s): %s", camera_id, _cm_exc
+            )
+
+        # ── Run Rule Engine & Sub-monitors for CCTV live stream ───────────────
+        try:
+            from services import idle_service, rule_engine
+            _persons = ppe_result.get("persons", [])
+            _raw_dets = ppe_result.get("detections", [])
+
+            # 1. Idle service tracking
+            idle_service.process_frame(
+                camera_id=camera_id,
+                persons=_persons,
+                zone_name=_cam_zone,
+            )
+
+            # 2. Multi-model rules (Fall, Machine Anomaly, Object Throwing)
+            rule_engine.process_multi_model_rules(
+                camera_id=camera_id,
+                detections=_raw_dets,
+                persons=_persons,
+                db=db,
+                floor=floor,
+                frame=frame,
+            )
+
+            # 3. Camera blocking / zone standing
+            rule_engine.check_camera_blocking(
+                camera_id=camera_id,
+                frame_shape=frame.shape,
+                persons=_persons,
+                db=db,
+                zones=_zones_map if _zones_map else None,
+            )
+
+            # 4. Shop absence
+            rule_engine.check_shop_absence(
+                camera_id=camera_id,
+                floor=floor,
+                persons=_persons,
+                db=db,
+            )
+
+            # 5. Cleanliness / Dirty floor
+            rule_engine.check_dirty_floor(
+                camera_id=camera_id,
+                floor=floor,
+                frame=frame,
+                db=db,
+            )
+
+            # 6. Cylinder detections
+            rule_engine.process_cylinder_detections(
+                camera_id=camera_id,
+                floor=floor,
+                raw_detections=_raw_dets,
+                db=db,
+            )
+
+            # 7. Stock zone check (exposed items)
+            if _zones_map:
+                rule_engine.check_stock_zone(
+                    camera_id=camera_id,
+                    floor=floor,
+                    raw_detections=_raw_dets,
+                    zones=_zones_map,
+                    db=db,
+                )
+
+            # 8. Machinery zone & workflow enforcement
+            active_zone_keys = set(_zones_map.keys()) if _zones_map else set()
+            active_zone_keys.add(_cam_zone.lower())
+            if active_zone_keys & {"dough", "dough_table", "dough_mixing", "biscuit_cutting", "cutting_machine", "machine"}:
+                rule_engine.check_machinery_zone(
+                    camera_id=camera_id,
+                    floor=floor,
+                    raw_detections=_raw_dets,
+                    persons=_persons,
+                    zones=_zones_map or {},
+                    db=db,
+                )
+                rule_engine.check_workflow_enforcement(
+                    camera_id=camera_id,
+                    floor=floor,
+                    raw_detections=_raw_dets,
+                    persons=_persons,
+                    zones=_zones_map or {},
+                    db=db,
+                )
+
+            # 9. Packing monitor (hand movement)
+            if active_zone_keys & {"packing"}:
+                try:
+                    from services import packing_monitor
+                    packing_monitor.process_packing_frame(
+                        db=db,
+                        camera_id=camera_id,
+                        frame=frame,
+                        persons=_persons,
+                        packing_polygon=_zones_map.get("packing") if _zones_map else None,
+                    )
+                except Exception:
+                    pass
+
+            # 10. Lift monitor
+            if active_zone_keys & {"lift", "glass_door"}:
+                try:
+                    from services import lift_monitor
+                    lift_monitor.process_lift_frame(
+                        db=db,
+                        camera_id=camera_id,
+                        floor=floor,
+                        persons=_persons,
+                        lift_polygon=(_zones_map.get("lift") or _zones_map.get("glass_door")) if _zones_map else None,
+                    )
+                except Exception:
+                    pass
+
+            # 11. Chewing & Clean-shave monitor
+            try:
+                from services import chew_monitor
+                chew_monitor.process_frame(
+                    db=db,
+                    camera_id=camera_id,
+                    frame=frame,
+                    persons=_persons,
+                )
+            except Exception:
+                pass
+
+            # 12. Window throw / theft detection
+            if active_zone_keys & {"window", "window_throw"}:
+                rule_engine.check_window_throw(
+                    camera_id=camera_id,
+                    floor=floor,
+                    raw_detections=_raw_dets,
+                    persons=_persons,
+                    frame=frame,
+                    zones=_zones_map or {},
+                    db=db,
+                )
+
+            # 13. Finished goods dispatch
+            if active_zone_keys & {"finished_goods", "loading", "vehicle"}:
+                rule_engine.check_finished_goods_dispatch(
+                    camera_id=camera_id,
+                    floor=floor,
+                    raw_detections=_raw_dets,
+                    persons=_persons,
+                    zones=_zones_map or {},
+                    db=db,
+                )
+
+        except Exception as _re_exc:
+            import logging as _log_mod
+            _log_mod.getLogger("cctv").debug(
+                "[cctv] rule_engine error (cam=%s): %s", camera_id, _re_exc
             )
 
     # --- Face recognition (numpy path - no double encode) --------------------

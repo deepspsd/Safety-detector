@@ -678,6 +678,39 @@ def startup():
     _clockout_thread.start()
     print("✅ Nightly auto clock-out scheduler started (19:00 IST)")
 
+    # ── Shift-start compliance daemon (all floors: Ground, First, Second, Shop) ──
+    # Runs every 30s to check whether workers have arrived before shift start times.
+    # Fires high-severity alert if floor is empty past grace period.
+    def _shift_start_scheduler():
+        """Background daemon: checks shift start compliance for all factory floors."""
+        import time as _time
+        from database import SessionLocal as _SessionLocal
+        from services.rule_engine import check_all_floors_shift_compliance as _casc
+
+        _log = logging.getLogger("shift_start_scheduler")
+        while True:
+            _time.sleep(30)
+            _db = None
+            try:
+                _db = _SessionLocal()
+                _casc(_db)
+            except Exception as _exc:
+                _log.debug("[ShiftScheduler] Check failed: %s", _exc)
+            finally:
+                if _db:
+                    try:
+                        _db.close()
+                    except Exception:
+                        pass
+
+    _shift_thread = threading.Thread(
+        target=_shift_start_scheduler,
+        name="shift-start-scheduler",
+        daemon=True,
+    )
+    _shift_thread.start()
+    print("✅ Floor shift-start compliance monitor started (Ground: 08:00, First: 06:00, Second: 05:00, Shop: 08:00 IST)")
+
     # ── Weekly WAL checkpoint + VACUUM (P1 fix) ───────────────────────────────
     # SQLite in WAL mode never auto-checkpoints while writers are active.
     # On Windows, the .db-shm / .db-wal files can grow unbounded and slow reads.
