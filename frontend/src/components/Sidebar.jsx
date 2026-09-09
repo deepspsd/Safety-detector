@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
-import { alertsApi } from '../api/api'
+import api, { alertsApi } from '../api/api'
 import {
   Video, Bell, LayoutDashboard, Settings, Shield,
   LogOut, UserCircle, HardHat, Sun, Moon, Menu, X,
@@ -41,6 +41,7 @@ export default function Sidebar() {
   const [open,     setOpen]     = useState(false)
   const [floorsOpen, setFloorsOpen] = useState(false)
   const [pending,  setPending]  = useState(0)
+  const [pendingDocs, setPendingDocs] = useState(0)
 
   // Auto-expand floors section when on a /floors/* route
   useEffect(() => {
@@ -54,18 +55,26 @@ export default function Sidebar() {
     return () => { document.body.style.overflow = '' }
   }, [open])
 
-  // Poll pending-review count for badge
+  // Poll pending-review count and pending documents for badges
   useEffect(() => {
     if (!user) return
-    const fetch = () =>
+    const fetchCounts = () => {
       alertsApi.pending()
         .then(r => {
           const list = Array.isArray(r.data) ? r.data : (r.data.alerts || [])
           setPending(list.length)
         })
         .catch(() => {})
-    fetch()
-    const t = setInterval(fetch, 30000)
+
+      api.get('/documents/pending-approval')
+        .then(r => {
+          const list = Array.isArray(r.data?.records) ? r.data.records : []
+          setPendingDocs(list.length)
+        })
+        .catch(() => {})
+    }
+    fetchCounts()
+    const t = setInterval(fetchCounts, 6000)
     return () => clearInterval(t)
   }, [user])
 
@@ -180,15 +189,11 @@ export default function Sidebar() {
 
         <NavLink to="/alerts" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
           <Bell size={17} />
-          Alerts
-        </NavLink>
-
-        {/* Review queue — with pending badge */}
-        <NavLink to="/alerts/review" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-          <ShieldAlert size={17} />
-          Review Queue
+          <span style={{ flex: 1 }}>Alerts</span>
           {pending > 0 && (
-            <span className="pending-badge">{pending > 99 ? '99+' : pending}</span>
+            <span className="pending-badge" style={{ background: '#ef4444', color: '#fff', fontWeight: 800 }}>
+              {pending > 99 ? '99+' : pending}
+            </span>
           )}
         </NavLink>
 
@@ -204,7 +209,29 @@ export default function Sidebar() {
 
         <NavLink to="/documents" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
           <FileText size={17} />
-          Documents
+          <span style={{ flex: 1 }}>Documents</span>
+          {pendingDocs > 0 && (
+            <span
+              className="pending-badge"
+              style={{
+                background: '#f59e0b',
+                color: '#090d16',
+                fontWeight: 900,
+                fontSize: '0.72rem',
+                minWidth: 20,
+                height: 20,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: 99,
+                padding: '0 6px',
+                boxShadow: '0 0 10px rgba(245,158,11,0.5)',
+              }}
+              title={`${pendingDocs} invoice${pendingDocs > 1 ? 's' : ''} awaiting approval`}
+            >
+              {pendingDocs > 99 ? '99+' : pendingDocs}
+            </span>
+          )}
         </NavLink>
 
         <NavLink to="/workflow" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>

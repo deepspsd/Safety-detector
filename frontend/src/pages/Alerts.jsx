@@ -26,17 +26,25 @@ const BASE_URL = import.meta.env.VITE_API_BASE_URL?.replace(/\/api$/, '') || ''
 
 export function formatAlertTimestamp(ts) {
   if (!ts) return '—'
-  const d = new Date(ts)
-  if (isNaN(d.getTime())) return ts
-  return d.toLocaleString('en-IN', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: true
-  })
+  try {
+    const raw = String(ts).trim()
+    const iso = raw.endsWith('Z') || raw.includes('+') ? raw : raw + 'Z'
+    const d = new Date(iso)
+    if (isNaN(d.getTime())) return String(ts)
+    return d.toLocaleString('en-IN', {
+      timeZone: 'Asia/Kolkata',
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+      timeZoneName: 'short',
+    })
+  } catch {
+    return String(ts)
+  }
 }
 
 export default function Alerts() {

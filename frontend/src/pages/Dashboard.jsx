@@ -58,7 +58,7 @@ function buildTypeBreakdown(alerts) {
 const FLOOR_COLORS = { ground: '#3b82f6', first: '#8b5cf6', second: '#06b6d4', shop: '#f59e0b' }
 
 function liveTime() {
-  return new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })
+  return new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' })
 }
 
 function getWsBaseURL() {
@@ -488,10 +488,20 @@ export default function Dashboard() {
                 <tr key={a.id}>
                   <td style={{ color: 'var(--text-muted)', fontSize: '0.78rem', whiteSpace: 'nowrap' }}>
                     <Clock size={11} style={{ marginRight: 4, verticalAlign: 'middle' }} />
-                    {new Date(a.timestamp).toLocaleString('en-IN', {
-                      day: '2-digit', month: 'short', year: 'numeric',
-                      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true
-                    })}
+                    {(() => {
+                      try {
+                        const raw = String(a.timestamp).trim()
+                        const iso = raw.endsWith('Z') || raw.includes('+') ? raw : raw + 'Z'
+                        return new Date(iso).toLocaleString('en-IN', {
+                          timeZone: 'Asia/Kolkata',
+                          day: '2-digit', month: 'short', year: 'numeric',
+                          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true,
+                          timeZoneName: 'short'
+                        })
+                      } catch {
+                        return String(a.timestamp)
+                      }
+                    })()}
                   </td>
                   <td>
                     {a.floor ? (

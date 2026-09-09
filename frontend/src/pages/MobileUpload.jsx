@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import {
   Camera, Upload, CheckCircle2, AlertTriangle, RefreshCw, FileText,
   Truck, Package, UserCheck, ShieldCheck, ArrowDownLeft, ArrowUpRight,
-  Scale, Hash, Building, ChevronRight, X
+  Scale, Hash, Building, ChevronRight, X, XCircle
 } from 'lucide-react'
 
 export default function MobileUpload() {
@@ -32,18 +32,40 @@ export default function MobileUpload() {
   const [result, setResult]         = useState(null)
   const [errorMsg, setErrorMsg]     = useState('')
 
-  const docInputRef = useRef(null)
+  const docCameraInputRef = useRef(null)
+  const docFileInputRef = useRef(null)
   const personInputRef = useRef(null)
 
-  // Document photo handler
+  // Document photo / file handler with strict format and size constraints
   const handleDocChange = (e) => {
     const file = e.target.files?.[0]
     if (!file) return
+
+    // Format constraints: PDF, JPEG, PNG, WEBP, DOC, DOCX
+    const allowedExtensions = ['.pdf', '.jpg', '.jpeg', '.png', '.webp', '.doc', '.docx']
+    const ext = '.' + file.name.split('.').pop().toLowerCase()
+    if (!allowedExtensions.includes(ext)) {
+      setErrorMsg(`Unsupported file type (${ext}). Allowed: PDF, JPG, PNG, WEBP, and Word (.doc, .docx).`)
+      return
+    }
+
+    // Size constraint: Max 25MB
+    if (file.size > 25 * 1024 * 1024) {
+      setErrorMsg('File size exceeds 25MB limit. Please upload a smaller file.')
+      return
+    }
+
     setDocFile(file)
     setErrorMsg('')
-    const reader = new FileReader()
-    reader.onload = ev => setDocPreview(ev.target.result)
-    reader.readAsDataURL(file)
+
+    if (file.type.startsWith('image/')) {
+      const reader = new FileReader()
+      reader.onload = ev => setDocPreview(ev.target.result)
+      reader.readAsDataURL(file)
+    } else {
+      // PDF or Word Document
+      setDocPreview(null)
+    }
   }
 
   // Person/Driver photo handler
@@ -63,6 +85,26 @@ export default function MobileUpload() {
       setErrorMsg('Please photograph or attach the document.')
       return
     }
+    if (!vendorName.trim()) {
+      setErrorMsg('Vendor / Supplier Name is compulsory.')
+      return
+    }
+    if (!vehicleNo.trim()) {
+      setErrorMsg('Vehicle Number is compulsory.')
+      return
+    }
+    if (!goodsCount || Number(goodsCount) <= 0) {
+      setErrorMsg('Goods Count / Quantity is compulsory (must be greater than 0).')
+      return
+    }
+    if (!weight.trim()) {
+      setErrorMsg('Total Weight (e.g. 50 kg) is compulsory.')
+      return
+    }
+    if (!docNumber.trim()) {
+      setErrorMsg('Invoice / Document Reference Number is compulsory.')
+      return
+    }
 
     setSubmitting(true)
     setErrorMsg('')
@@ -75,11 +117,11 @@ export default function MobileUpload() {
       if (personFile) {
         formData.append('person_file', personFile)
       }
-      if (goodsCount)  formData.append('goods_count', goodsCount)
-      if (weight)      formData.append('weight', weight)
-      if (vendorName)  formData.append('vendor_name', vendorName)
-      if (vehicleNo)   formData.append('vehicle_no', vehicleNo)
-      if (docNumber)   formData.append('doc_number', docNumber)
+      formData.append('goods_count', goodsCount.trim())
+      formData.append('weight', weight.trim())
+      formData.append('vendor_name', vendorName.trim())
+      formData.append('vehicle_no', vehicleNo.trim().toUpperCase())
+      formData.append('doc_number', docNumber.trim())
       if (notes)       formData.append('notes', notes)
 
       // Network resilient URL resolution:
@@ -263,12 +305,13 @@ export default function MobileUpload() {
             {/* Quick Vendor & Delivery Details */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
               <div>
-                <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: '#94a3b8', marginBottom: 5 }}>
+                <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: '#e2e8f0', marginBottom: 5 }}>
                   <Building size={11} style={{ display: 'inline', marginRight: 4 }} />
-                  {isInward ? 'Supplier / Vendor' : 'Client / Recipient'}
+                  {isInward ? 'Supplier / Vendor' : 'Client / Recipient'} <span style={{ color: '#ef4444' }}>*</span>
                 </label>
                 <input
                   type="text"
+                  required
                   placeholder="e.g. Flour Mills Ltd"
                   value={vendorName}
                   onChange={e => setVendorName(e.target.value)}
@@ -281,12 +324,13 @@ export default function MobileUpload() {
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: '#94a3b8', marginBottom: 5 }}>
+                <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: '#e2e8f0', marginBottom: 5 }}>
                   <Truck size={11} style={{ display: 'inline', marginRight: 4 }} />
-                  Vehicle Number
+                  Vehicle Number <span style={{ color: '#ef4444' }}>*</span>
                 </label>
                 <input
                   type="text"
+                  required
                   placeholder="e.g. MH-12-AB-1234"
                   value={vehicleNo}
                   onChange={e => setVehicleNo(e.target.value.toUpperCase())}
@@ -302,12 +346,14 @@ export default function MobileUpload() {
             {/* Goods Count & Weight */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
               <div>
-                <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: '#94a3b8', marginBottom: 5 }}>
+                <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: '#e2e8f0', marginBottom: 5 }}>
                   <Package size={11} style={{ display: 'inline', marginRight: 4 }} />
-                  Goods Count / Qty
+                  Goods Count / Qty <span style={{ color: '#ef4444' }}>*</span>
                 </label>
                 <input
                   type="number"
+                  required
+                  min="1"
                   placeholder="e.g. 50 (boxes/bags)"
                   value={goodsCount}
                   onChange={e => setGoodsCount(e.target.value)}
@@ -320,12 +366,13 @@ export default function MobileUpload() {
               </div>
 
               <div>
-                <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: '#94a3b8', marginBottom: 5 }}>
+                <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: '#e2e8f0', marginBottom: 5 }}>
                   <Scale size={11} style={{ display: 'inline', marginRight: 4 }} />
-                  Total Weight
+                  Total Weight <span style={{ color: '#ef4444' }}>*</span>
                 </label>
                 <input
                   type="text"
+                  required
                   placeholder="e.g. 250 kg"
                   value={weight}
                   onChange={e => setWeight(e.target.value)}
@@ -340,13 +387,14 @@ export default function MobileUpload() {
 
             {/* Invoice / Challan Number */}
             <div style={{ marginBottom: 16 }}>
-              <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: '#94a3b8', marginBottom: 5 }}>
+              <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: '#e2e8f0', marginBottom: 5 }}>
                 <Hash size={11} style={{ display: 'inline', marginRight: 4 }} />
-                {isInward ? 'Invoice Number' : 'Order Form / Challan #'} (Optional)
+                {isInward ? 'Invoice Number' : 'Order Form / Challan #'} <span style={{ color: '#ef4444' }}>*</span>
               </label>
               <input
                 type="text"
-                placeholder="Optional — OCR will auto-detect if left blank"
+                required
+                placeholder="e.g. INV-2026-0892 or Challan Ref"
                 value={docNumber}
                 onChange={e => setDocNumber(e.target.value)}
                 style={{
@@ -357,18 +405,45 @@ export default function MobileUpload() {
               />
             </div>
 
-            {/* Document Photo Upload Card */}
+            {/* Document Photo / File Upload Card */}
             <div style={{ marginBottom: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                 <label style={{ fontSize: '0.78rem', fontWeight: 700, color: '#e2e8f0' }}>
-                  📸 Document Photo *
+                  📄 Document (Invoice / Challan) <span style={{ color: '#ef4444' }}>*</span>
                 </label>
-                <span style={{ fontSize: '0.7rem', color: '#60a5fa', fontWeight: 600 }}>Required for Gate OCR</span>
+                <span style={{ fontSize: '0.7rem', color: '#60a5fa', fontWeight: 600 }}>PDF, Word or Camera Photo</span>
               </div>
 
-              {docPreview ? (
-                <div style={{ position: 'relative', borderRadius: 12, overflow: 'hidden', border: '2px solid #3b82f6', background: '#0a101d' }}>
-                  <img src={docPreview} alt="Document Preview" style={{ width: '100%', maxHeight: 240, objectFit: 'contain', display: 'block' }} />
+              {docFile ? (
+                <div style={{
+                  position: 'relative', borderRadius: 12, overflow: 'hidden',
+                  border: '2px solid #3b82f6', background: '#0a101d', padding: docPreview ? 0 : 16
+                }}>
+                  {docPreview ? (
+                    <img src={docPreview} alt="Document Preview" style={{ width: '100%', maxHeight: 240, objectFit: 'contain', display: 'block' }} />
+                  ) : (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                      <div style={{
+                        width: 48, height: 48, borderRadius: 10,
+                        background: docFile.name.toLowerCase().endsWith('.pdf') ? 'rgba(239, 68, 68, 0.15)' : 'rgba(59, 130, 246, 0.15)',
+                        border: docFile.name.toLowerCase().endsWith('.pdf') ? '1px solid rgba(239, 68, 68, 0.3)' : '1px solid rgba(59, 130, 246, 0.3)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0
+                      }}>
+                        <FileText size={26} color={docFile.name.toLowerCase().endsWith('.pdf') ? '#f87171' : '#60a5fa'} />
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: '0.84rem', fontWeight: 700, color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {docFile.name}
+                        </div>
+                        <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: 2 }}>
+                          {docFile.name.toLowerCase().endsWith('.pdf') ? 'PDF Document' : 'Word Document'} • {(docFile.size / 1024).toFixed(1)} KB
+                        </div>
+                        <div style={{ fontSize: '0.68rem', color: '#10b981', fontWeight: 600, marginTop: 4 }}>
+                          ✓ Ready for OCR Verification
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   <button
                     type="button"
                     onClick={() => { setDocFile(null); setDocPreview(null) }}
@@ -379,37 +454,78 @@ export default function MobileUpload() {
                       display: 'flex', alignItems: 'center', gap: 4
                     }}
                   >
-                    <X size={12} /> Retake
+                    <X size={12} /> Change
                   </button>
                 </div>
               ) : (
-                <div
-                  onClick={() => docInputRef.current?.click()}
-                  style={{
-                    border: '2px dashed #2e4465', borderRadius: 14, padding: '24px 14px',
-                    textAlign: 'center', cursor: 'pointer', background: 'rgba(15,23,42,0.6)',
-                    transition: 'border-color 0.2s',
-                  }}
-                >
-                  <div style={{
-                    width: 46, height: 46, borderRadius: '50%', background: 'rgba(59,130,246,0.12)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 10px'
-                  }}>
-                    <Camera size={24} color="#60a5fa" />
+                <div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    {/* Option 1: Take Photo */}
+                    <div
+                      onClick={() => docCameraInputRef.current?.click()}
+                      style={{
+                        border: '2px dashed #2e4465', borderRadius: 14, padding: '18px 10px',
+                        textAlign: 'center', cursor: 'pointer', background: 'rgba(15,23,42,0.6)',
+                        transition: 'all 0.2s', display: 'flex', flexDirection: 'column', alignItems: 'center'
+                      }}
+                    >
+                      <div style={{
+                        width: 42, height: 42, borderRadius: '50%', background: 'rgba(59,130,246,0.12)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 8
+                      }}>
+                        <Camera size={22} color="#60a5fa" />
+                      </div>
+                      <div style={{ fontSize: '0.84rem', fontWeight: 700, color: '#f8fafc', marginBottom: 2 }}>
+                        Take Photo
+                      </div>
+                      <div style={{ fontSize: '0.68rem', color: '#94a3b8' }}>
+                        Scan via camera
+                      </div>
+                    </div>
+
+                    {/* Option 2: Upload File / Document */}
+                    <div
+                      onClick={() => docFileInputRef.current?.click()}
+                      style={{
+                        border: '2px dashed #2e4465', borderRadius: 14, padding: '18px 10px',
+                        textAlign: 'center', cursor: 'pointer', background: 'rgba(15,23,42,0.6)',
+                        transition: 'all 0.2s', display: 'flex', flexDirection: 'column', alignItems: 'center'
+                      }}
+                    >
+                      <div style={{
+                        width: 42, height: 42, borderRadius: '50%', background: 'rgba(16,185,129,0.12)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 8
+                      }}>
+                        <Upload size={22} color="#34d399" />
+                      </div>
+                      <div style={{ fontSize: '0.84rem', fontWeight: 700, color: '#f8fafc', marginBottom: 2 }}>
+                        Upload Doc
+                      </div>
+                      <div style={{ fontSize: '0.68rem', color: '#94a3b8' }}>
+                        PDF, Word, or File
+                      </div>
+                    </div>
                   </div>
-                  <div style={{ fontSize: '0.88rem', fontWeight: 700, color: '#f8fafc', marginBottom: 3 }}>
-                    Take Photo of Document
-                  </div>
-                  <div style={{ fontSize: '0.73rem', color: '#94a3b8' }}>
-                    Capture entire invoice / form in good lighting
+                  <div style={{ fontSize: '0.69rem', color: '#64748b', textAlign: 'center', marginTop: 7 }}>
+                    Allowed: PDF, JPG, PNG, WEBP, DOCX, DOC (Max 25MB)
                   </div>
                 </div>
               )}
+
+              {/* Hidden camera capture input */}
               <input
-                ref={docInputRef}
+                ref={docCameraInputRef}
                 type="file"
                 accept="image/*"
                 capture="environment"
+                style={{ display: 'none' }}
+                onChange={handleDocChange}
+              />
+              {/* Hidden file selector input */}
+              <input
+                ref={docFileInputRef}
+                type="file"
+                accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/*"
                 style={{ display: 'none' }}
                 onChange={handleDocChange}
               />
@@ -508,6 +624,73 @@ export default function MobileUpload() {
               )}
             </button>
           </form>
+        ) : result.auto_rejected ? (
+          /* Auto-Rejected Non-Invoice / Object Screen */
+          <div style={{ animation: 'mu-pop 0.3s ease-out' }}>
+            <div style={{ textAlign: 'center', marginBottom: 18 }}>
+              <div style={{
+                width: 72, height: 72, borderRadius: '50%',
+                background: 'rgba(239,68,68,0.15)',
+                border: '2px solid #ef4444',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                margin: '0 auto 12px',
+              }}>
+                <XCircle size={42} color="#ef4444" strokeWidth={2.5} />
+              </div>
+
+              <div style={{ fontSize: '1.25rem', fontWeight: 900, color: '#ef4444', marginBottom: 6 }}>
+                GATE ENTRY AUTO-REJECTED
+              </div>
+              <div style={{ fontSize: '0.84rem', color: '#fca5a5', lineHeight: 1.5, padding: '0 10px' }}>
+                The uploaded photo was automatically rejected because it is not recognized as a valid invoice or delivery document.
+              </div>
+            </div>
+
+            {/* Rejection Details Box */}
+            <div style={{
+              background: 'rgba(239,68,68,0.08)', borderRadius: 14, border: '1px solid rgba(239,68,68,0.3)',
+              padding: '14px 16px', marginBottom: 16,
+            }}>
+              <div style={{ fontSize: '0.72rem', color: '#f87171', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 800, marginBottom: 6 }}>
+                Security Rejection Reason
+              </div>
+              <div style={{ fontSize: '0.82rem', color: '#fecaca', lineHeight: 1.4 }}>
+                {result.reject_reason || 'Non-document photo detected. No commercial billing keywords or invoice structures found.'}
+              </div>
+            </div>
+
+            {/* Detected Text preview if any */}
+            {result.raw_text && (
+              <div style={{
+                background: '#0a101d', borderRadius: 12, border: '1px solid #1e293b',
+                padding: '10px 14px', marginBottom: 18,
+              }}>
+                <div style={{ fontSize: '0.68rem', color: '#64748b', fontWeight: 700, textTransform: 'uppercase', marginBottom: 4 }}>
+                  Detected OCR Text:
+                </div>
+                <div style={{
+                  fontFamily: 'monospace', fontSize: '0.74rem', color: '#94a3b8',
+                  maxHeight: 70, overflowY: 'auto', whiteSpace: 'pre-wrap', lineHeight: 1.4,
+                }}>
+                  {result.raw_text || '(No text detected in photo)'}
+                </div>
+              </div>
+            )}
+
+            <button
+              onClick={resetForm}
+              style={{
+                width: '100%', padding: '14px 0', borderRadius: 12,
+                border: 'none', background: 'linear-gradient(135deg, #ef4444, #dc2626)',
+                color: '#ffffff', fontWeight: 800, fontSize: '0.94rem',
+                cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                boxShadow: '0 10px 25px rgba(239,68,68,0.3)',
+              }}
+            >
+              <Camera size={18} />
+              <span>Retake Photo of Valid Invoice</span>
+            </button>
+          </div>
         ) : (
           /* Result & Digital Gate Pass Receipt */
           <div style={{ animation: 'mu-pop 0.3s ease-out' }}>

@@ -23,6 +23,30 @@ const documentsApi = {
   updateFixedQrConfig:(url)        => api.post('/documents/fixed-qr-config', { public_gate_url: url }),
 }
 
+// --- Unambiguous Indian Standard Time (IST) Date/Time Formatter ---
+export function formatDocumentTimestamp(ts) {
+  if (!ts) return '—'
+  try {
+    const raw = String(ts).trim()
+    const iso = raw.endsWith('Z') || raw.includes('+') ? raw : raw + 'Z'
+    const d = new Date(iso)
+    if (isNaN(d.getTime())) return String(ts)
+    return d.toLocaleString('en-IN', {
+      timeZone: 'Asia/Kolkata',
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+      timeZoneName: 'short',
+    })
+  } catch {
+    return String(ts)
+  }
+}
+
 // --- Gentle Web Audio Chime for Gate Notifications ---
 function playNotificationSound() {
   try {
@@ -145,18 +169,47 @@ function DirBadge({ direction }) {
 }
 
 // --- Status badge ---
-function StatusBadge({ approved, ocr_available }) {
+function StatusBadge({ approved, status, reject_reason, ocr_available }) {
+  if (status === 'auto_rejected') {
+    return (
+      <span
+        title={reject_reason || 'Auto-rejected: Non-document photo'}
+        style={{
+          fontSize: '0.72rem', color: '#ef4444', fontWeight: 800,
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)',
+          padding: '3px 8px', borderRadius: 6,
+        }}
+      >
+        <XCircle size={12} /> Auto-Rejected
+      </span>
+    )
+  }
+  if (status === 'rejected') {
+    return (
+      <span
+        title={reject_reason || 'Rejected by Admin'}
+        style={{
+          fontSize: '0.72rem', color: '#ef4444', fontWeight: 700,
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          background: 'rgba(239,68,68,0.12)', padding: '3px 8px', borderRadius: 6,
+        }}
+      >
+        <XCircle size={12} /> Rejected
+      </span>
+    )
+  }
   if (!ocr_available) return (
     <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontStyle: 'italic', padding: '2px 8px', borderRadius: 6, background: 'var(--bg-secondary)' }}>
       OCR unverified
     </span>
   )
-  return approved
+  return approved || status === 'approved'
     ? <span style={{ fontSize: '0.72rem', color: 'var(--accent-green)', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4, background: 'rgba(16,185,129,0.12)', padding: '3px 8px', borderRadius: 6 }}>
         <CheckCircle2 size={12} /> Approved
       </span>
     : <span style={{ fontSize: '0.72rem', color: '#f59e0b', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4, background: 'rgba(245,158,11,0.12)', padding: '3px 8px', borderRadius: 6 }}>
-        <AlertCircle size={12} /> Review Required
+        <AlertCircle size={12} /> Pending Approval
       </span>
 }
 
@@ -546,6 +599,7 @@ function ManualScanPanel({ onScanned }) {
   const [vehicleNo, setVehicleNo] = useState('')
   const [goodsCount, setGoodsCount] = useState('')
   const [weight, setWeight] = useState('')
+  const [docNumber, setDocNumber] = useState('')
   const [scanning, setScanning] = useState(false)
   const [result, setResult] = useState(null)
   const fileRef = useRef(null)
@@ -560,24 +614,38 @@ function ManualScanPanel({ onScanned }) {
   }
 
   const runScan = async () => {
-    if (!file) return
+    if (!file) {
+      addToast('Document Photo Required', 'Please choose or photograph the document', 'warning')
+      return
+    }
+    if (!vendorName.trim() || !vehicleNo.trim() || !goodsCount || !weight.trim() || !docNumber.trim()) {
+      addToast('Mandatory Fields Required', 'Vendor Name, Vehicle No, Qty, Weight, and Invoice # are all compulsory', 'warning')
+      return
+    }
     setScanning(true); setResult(null)
     try {
       const form = new FormData()
       form.append('file', file)
       form.append('direction', direction)
-      if (vendorName) form.append('vendor_name', vendorName)
-      if (vehicleNo) form.append('vehicle_no', vehicleNo)
-      if (goodsCount) form.append('goods_count', goodsCount)
-      if (weight) form.append('weight', weight)
+      form.append('vendor_name', vendorName.trim())
+      form.append('vehicle_no', vehicleNo.trim().toUpperCase())
+      form.append('goods_count', goodsCount)
+      form.append('weight', weight.trim())
+      form.append('doc_number', docNumber.trim())
 
       const r = await api.post('/documents/scan', form, { headers: { 'Content-Type': 'multipart/form-data' } })
       setResult(r.data)
-      if (r.data.approved) addToast('Document Approved', 'OCR pattern matched successfully', 'success')
-      else addToast('Document Logged', 'Admin review recommended', 'warning')
+      if (r.data.approved) {
+        addToast('Document Approved', 'OCR pattern matched successfully', 'success')
+      } else if (r.data.auto_rejected) {
+        addToast('Document Auto-Rejected', r.data.reject_reason || 'Non-document photo detected', 'danger')
+      } else {
+        addToast('Document Logged', 'Admin review recommended', 'warning')
+      }
       onScanned?.()
-    } catch {
-      addToast('Scan failed', 'Check backend OCR service', 'danger')
+    } catch (err) {
+      const msg = err.response?.data?.detail || 'Check backend OCR service'
+      addToast('Scan failed', msg, 'danger')
     } finally {
       setScanning(false)
     }
@@ -606,10 +674,10 @@ function ManualScanPanel({ onScanned }) {
         ))}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginBottom: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10, marginBottom: 14 }}>
         <input
           type="text"
-          placeholder="Vendor / Supplier Name"
+          placeholder="Vendor / Supplier * (Compulsory)"
           value={vendorName}
           onChange={e => setVendorName(e.target.value)}
           className="form-control"
@@ -617,7 +685,7 @@ function ManualScanPanel({ onScanned }) {
         />
         <input
           type="text"
-          placeholder="Vehicle Number"
+          placeholder="Vehicle Number * (Compulsory)"
           value={vehicleNo}
           onChange={e => setVehicleNo(e.target.value.toUpperCase())}
           className="form-control"
@@ -625,7 +693,8 @@ function ManualScanPanel({ onScanned }) {
         />
         <input
           type="number"
-          placeholder="Goods Count (units)"
+          min="1"
+          placeholder="Goods Count * (Compulsory)"
           value={goodsCount}
           onChange={e => setGoodsCount(e.target.value)}
           className="form-control"
@@ -633,9 +702,17 @@ function ManualScanPanel({ onScanned }) {
         />
         <input
           type="text"
-          placeholder="Weight (e.g. 50 kg)"
+          placeholder="Weight (e.g. 50 kg) * (Compulsory)"
           value={weight}
           onChange={e => setWeight(e.target.value)}
+          className="form-control"
+          style={{ padding: '8px 12px', fontSize: '0.8rem' }}
+        />
+        <input
+          type="text"
+          placeholder="Invoice / Doc Ref # * (Compulsory)"
+          value={docNumber}
+          onChange={e => setDocNumber(e.target.value)}
           className="form-control"
           style={{ padding: '8px 12px', fontSize: '0.8rem' }}
         />
@@ -643,7 +720,7 @@ function ManualScanPanel({ onScanned }) {
 
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
         <button className="btn btn-ghost" onClick={() => fileRef.current?.click()} style={{ gap: 6, fontSize: '0.8rem' }}>
-          <Upload size={14} /> {file ? file.name : 'Choose Document Image'}
+          <Upload size={14} /> {file ? file.name : 'Choose Document Image *'}
         </button>
         <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFile} />
 
@@ -707,13 +784,21 @@ function PendingApprovalQueue({ records, onAction }) {
         padding: '14px 20px', borderBottom: '1px solid rgba(245,158,11,0.2)',
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-          <AlertCircle size={16} color="#f59e0b" />
-          <span style={{ fontWeight: 800, fontSize: '0.9rem', color: '#f59e0b' }}>
-            {records.length} Phone Submission{records.length > 1 ? 's' : ''} Awaiting Gate Approval
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{
+            width: 26, height: 26, borderRadius: '50%', background: '#f59e0b', color: '#090d16',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, fontSize: '0.82rem',
+            boxShadow: '0 0 10px rgba(245,158,11,0.5)',
+          }}>
+            {records.length}
+          </div>
+          <span style={{ fontWeight: 800, fontSize: '0.94rem', color: '#f59e0b' }}>
+            🔔 {records.length === 1 ? '1 new invoice added for approval' : `${records.length} new invoices added for approval`}
           </span>
         </div>
-        <span style={{ fontSize: '0.72rem', color: '#f59e0b', fontWeight: 600 }}>Action Required</span>
+        <span style={{ fontSize: '0.72rem', color: '#f59e0b', fontWeight: 700, padding: '3px 8px', borderRadius: 6, background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.3)' }}>
+          ACTION REQUIRED
+        </span>
       </div>
 
       {records.map((r, i) => (
@@ -742,8 +827,8 @@ function PendingApprovalQueue({ records, onAction }) {
                 Wt: {r.weight}
               </span>
             )}
-            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginLeft: 'auto' }}>
-              {new Date(r.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginLeft: 'auto', whiteSpace: 'nowrap' }}>
+              {formatDocumentTimestamp(r.timestamp)}
             </span>
 
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -857,9 +942,9 @@ export default function Documents() {
               playNotificationSound()
               const latest = fresh[0]
               addToast(
-                '📢 New Gate Document Uploaded!',
+                fresh.length === 1 ? '📢 1 New Invoice Added for Approval' : `📢 ${fresh.length} New Invoices Added for Approval`,
                 `${latest.direction === 'inward' ? 'Inward' : 'Outward'} from ${latest.vendor_name || 'Driver'} (${latest.vehicle_no || 'At Gate'})`,
-                'info'
+                'warning'
               )
             }
           }
@@ -1049,7 +1134,7 @@ export default function Documents() {
                   </span>
 
                   <DirBadge direction={r.direction} />
-                  <StatusBadge approved={r.approved} ocr_available={r.ocr_available} />
+                  <StatusBadge approved={r.approved} status={r.status} reject_reason={r.reject_reason} ocr_available={r.ocr_available} />
 
                   {r.submitted_by_phone && (
                     <span style={{
@@ -1094,8 +1179,8 @@ export default function Documents() {
                   )}
 
                   {/* Timestamp */}
-                  <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginLeft: 'auto' }}>
-                    {new Date(r.timestamp).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}
+                  <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginLeft: 'auto', whiteSpace: 'nowrap' }}>
+                    {formatDocumentTimestamp(r.timestamp)}
                   </span>
 
                   {/* Actions */}
@@ -1179,6 +1264,12 @@ export default function Documents() {
                           <div style={{ marginTop: 3 }}><strong>Document Ref:</strong> {r.doc_number || 'Auto-scanned'}</div>
                           <div style={{ marginTop: 3 }}><strong>Declared Goods:</strong> {r.goods_count ? `${r.goods_count} pcs` : 'Unspecified'}</div>
                           <div style={{ marginTop: 3 }}><strong>Weight:</strong> {r.weight || 'Unspecified'}</div>
+                          <div style={{ marginTop: 3 }}><strong>Submitted At:</strong> {formatDocumentTimestamp(r.timestamp)}</div>
+                          {r.reject_reason && (
+                            <div style={{ marginTop: 6, padding: '6px 10px', borderRadius: 6, background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.25)', color: '#ef4444', fontSize: '0.72rem' }}>
+                              <strong>⛔ Rejection Reason:</strong> {r.reject_reason}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>

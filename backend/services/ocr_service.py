@@ -32,7 +32,9 @@ Approval heuristics (deliberately lenient v1 — see inline notes):
 
 import base64
 import datetime
+import io
 import logging
+import os
 import re
 from typing import Optional, Tuple, List, Dict, Any
 
@@ -110,19 +112,92 @@ _ORDER_PATTERNS = (
 )
 
 
-def _text_looks_like_document(text: str, direction: str) -> bool:
-    """
-    Heuristic approval: True if OCR text contains at least one pattern
-    matching the expected document type.
+# Commercial & invoice keywords (lower-case tokens)
+COMMERCIAL_DOCUMENT_KEYWORDS = {
+    # Document types & titles
+    "invoice", "tax invoice", "retail invoice", "bill", "bills", "challan",
+    "delivery", "dispatch", "gate pass", "gatepass", "purchase order", "po",
+    "order", "order form", "work order", "consignment", "bilty", "lr no", "receipt",
+    "memo", "slip", "proforma", "quotation", "statement", "vessel", "unpaid", "paid",
+    # Parties & transport
+    "vendor", "supplier", "consignor", "consignee", "buyer", "customer",
+    "billed to", "shipped to", "ship to", "bill to", "sold to", "client",
+    "transporter", "transport", "vehicle", "truck", "driver", "carrier",
+    # Line items, units & quantities
+    "qty", "quantity", "pieces", "pcs", "nos", "units", "box", "boxes",
+    "bags", "packs", "cartons", "ctn", "kg", "kgs", "weight", "gross", "net wt", "tare",
+    "rate", "price", "amount", "total", "subtotal", "sub total", "grand total",
+    "taxable", "mrp", "discount", "disc", "cgst", "sgst", "igst", "gst",
+    "hsn", "sac", "item", "description", "particulars",
+    # Banking & authorization
+    "signature", "sign", "authorised", "authorized", "bank", "account",
+    "a/c", "ifsc", "rupees", "balance", "payment", "date"
+}
 
-    v1 intentionally lenient — a single number/date match passes.
-    Tighten after collecting real document samples from the client.
+# Appliance / remote control keywords that identify a non-document object
+APPLIANCE_OBJECT_KEYWORDS = {
+    "temp", "fan speed", "swing", "turbo", "sleep mode", "eco mode",
+    "cool mode", "heat mode", "dry mode", "on/off", "air conditioner",
+    "voltas", "daikin", "remote controller", "set temp", "room temp",
+    "power", "celsius"
+}
+
+_GSTIN_REGEX = re.compile(r"\b\d{2}[A-Z]{5}\d{4}[A-Z]{1}[A-Z\d]{1}[Z]{1}[A-Z\d]{1}\b", re.IGNORECASE)
+_DOC_NUM_REGEX = re.compile(r"\b(?:inv|invoice|bill|challan|ch|po|ord|ref|memo|tax|dc|lr)[\s\.\-\#:\/]*[a-z0-9\-\/]{3,20}\b", re.IGNORECASE)
+_CURRENCY_AMOUNT_REGEX = re.compile(r"(?:total|amount|amt|inr|rs\.?|₹)[\s\.\:\-]*[\d,]+(?:\.\d{2})?", re.IGNORECASE)
+
+
+def is_valid_invoice_document(text: str, direction: str = "inward") -> Tuple[bool, str]:
     """
-    patterns = _INVOICE_PATTERNS if direction == "inward" else _ORDER_PATTERNS
-    stripped = text.strip()
-    if len(stripped) < 4:  # almost certainly a bad crop / OCR failure
-        return False
-    return any(p.search(stripped) for p in patterns)
+    Validate whether OCR text represents a genuine commercial invoice or delivery document.
+    Auto-rejects non-document objects (such as AC remotes, appliances, blank photos).
+    """
+    if not text:
+        return False, "No text detected in image (blank, blurred, or non-document photo)"
+
+    clean = text.strip()
+    clean_lower = clean.lower()
+
+    # 1. Immediate rejection on appliance/remote keywords
+    appliance_matches = [k for k in APPLIANCE_OBJECT_KEYWORDS if k in clean_lower]
+    if appliance_matches and not _GSTIN_REGEX.search(clean):
+        return False, f"Non-document photo detected (appliance/remote controls found: {', '.join(appliance_matches)})"
+
+    # 2. Minimum length check: A genuine commercial document has substantial text
+    if len(clean) < 25:
+        return False, f"Insufficient text for a commercial document ({len(clean)} characters; minimum 25 required)"
+
+    # 3. Minimum word count
+    words = re.findall(r"\b[A-Za-z]{2,}\b", clean)
+    if len(words) < 3:
+        return False, f"Too few recognizable words ({len(words)} words) to be an invoice or delivery slip"
+
+    # 4. Search for high-confidence document indicators
+    has_gstin = bool(_GSTIN_REGEX.search(clean))
+    has_doc_num = bool(_DOC_NUM_REGEX.search(clean))
+    has_currency_amount = bool(_CURRENCY_AMOUNT_REGEX.search(clean))
+
+    matched_kws = [kw for kw in COMMERCIAL_DOCUMENT_KEYWORDS if kw in clean_lower]
+
+    if has_gstin:
+        return True, f"Verified invoice (GSTIN verified, {len(matched_kws)} keywords matched)"
+
+    if has_doc_num and len(matched_kws) >= 1:
+        return True, f"Verified document (Doc ref + keywords: {', '.join(matched_kws[:3])})"
+
+    if has_currency_amount and len(matched_kws) >= 1:
+        return True, f"Verified invoice (Total amount + keywords: {', '.join(matched_kws[:3])})"
+
+    if len(matched_kws) >= 2:
+        return True, f"Verified document ({len(matched_kws)} commercial keywords matched: {', '.join(matched_kws[:4])})"
+
+    return False, "Not recognized as an invoice or order document. Missing invoice keywords, document numbers, or amounts."
+
+
+def _text_looks_like_document(text: str, direction: str) -> bool:
+    """Backward compatibility wrapper."""
+    valid, _ = is_valid_invoice_document(text, direction)
+    return valid
 
 
 # Regex patterns to extract goods quantity from OCR text.
@@ -508,19 +583,23 @@ def scan_document_in_frame(
             }
         active_engine = "none"
 
-    # Step 4 — heuristic approval (always log raw_text regardless of outcome)
-    approved = _text_looks_like_document(raw_text, direction)
+    # Step 4 — strict commercial document verification (rejects AC remotes, non-documents, random objects)
+    approved, validation_reason = is_valid_invoice_document(raw_text, direction)
 
     if not approved:
         log.warning(
-            f"[OCR] Document NOT approved | engine={active_engine} | direction={direction} | "
+            f"[OCR:Auto-Reject] Document rejected | reason={validation_reason} | engine={active_engine} | direction={direction} | "
             f"raw_text={raw_text[:120]!r}"
         )
     else:
-        log.info(f"[OCR] Document approved | engine={active_engine} | direction={direction}")
+        log.info(f"[OCR:Approved] Valid document detected | reason={validation_reason} | engine={active_engine} | direction={direction}")
 
     return {
         "approved": approved,
+        "auto_rejected": not approved,
+        "status": "approved" if approved else "auto_rejected",
+        "reject_reason": None if approved else validation_reason,
+        "validation_reason": validation_reason,
         "raw_text": raw_text,
         "goods_count": _extract_goods_count(raw_text),
         "confidence": conf,
@@ -530,3 +609,224 @@ def scan_document_in_frame(
         "snapshot_b64": snapshot_b64,
         "ocr_available": True,
     }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Universal Document Processor (Images, PDFs, Word Docs)
+# ──────────────────────────────────────────────────────────────────────────────
+
+ALLOWED_DOC_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".doc", ".docx"}
+
+
+def _create_text_document_preview(title: str, text_lines: list, filename: str) -> str:
+    """Generates an 800x1000 rendered preview image for text/word documents."""
+    preview_img = np.full((1000, 800, 3), 250, dtype=np.uint8)
+    cv2.rectangle(preview_img, (0, 0), (800, 75), (30, 41, 59), -1)
+    cv2.putText(preview_img, f"DOC: {filename[:38]}", (24, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
+    y = 125
+    for line in text_lines[:25]:
+        clean = line.strip().replace('\t', ' ')
+        if clean:
+            cv2.putText(preview_img, clean[:65], (30, y), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (30, 41, 59), 1)
+            y += 32
+            if y > 950:
+                break
+    _, buf = cv2.imencode(".jpg", preview_img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    return "data:image/jpeg;base64," + base64.b64encode(buf).decode()
+
+
+def process_uploaded_document_file(
+    file_bytes: bytes,
+    filename: str,
+    direction: str = "inward",
+) -> dict:
+    """
+    Processes an uploaded document file of type PDF, Word (.docx/.doc), or Image (.jpg/.png/.webp).
+    Executes the exact same OCR flow, strict invoice heuristic validation, snapshot creation,
+    and auto-rejection rules.
+    """
+    ext = os.path.splitext(filename.lower())[1]
+    ts = datetime.datetime.utcnow().isoformat() + "Z"
+
+    if ext not in ALLOWED_DOC_EXTENSIONS:
+        return {
+            "approved": False,
+            "auto_rejected": True,
+            "status": "auto_rejected",
+            "reject_reason": f"Unsupported format '{ext}'. Allowed: PDF, JPG, PNG, WEBP, DOCX, DOC.",
+            "validation_reason": f"Unsupported format '{ext}'",
+            "raw_text": "",
+            "goods_count": None,
+            "confidence": 0.0,
+            "engine": "format_filter",
+            "timestamp": ts,
+            "direction": direction,
+            "snapshot_b64": None,
+            "ocr_available": True,
+        }
+
+    # ── CASE 1: PDF Document ──────────────────────────────────────────────────
+    if ext == ".pdf":
+        digital_text = ""
+        # 1. Extract digital text with pypdf if available
+        try:
+            import pypdf
+            reader = pypdf.PdfReader(io.BytesIO(file_bytes))
+            for page in reader.pages[:3]:
+                txt = page.extract_text() or ""
+                if txt.strip():
+                    digital_text += "\n" + txt.strip()
+        except Exception as pdf_read_err:
+            log.debug("[PDF Text Extract] Notice: %s", pdf_read_err)
+
+        # 2. Render Page 1 to BGR image with pypdfium2 for optical OCR
+        page_bgr = None
+        try:
+            import pypdfium2 as pdfium
+            pdf_doc = pdfium.PdfDocument(io.BytesIO(file_bytes))
+            if len(pdf_doc) > 0:
+                page0 = pdf_doc[0]
+                bitmap = page0.render(scale=2.0)  # 2x scale for sharp text recognition
+                pil_img = bitmap.to_pil()
+                page_bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+        except Exception as pdf_render_err:
+            log.warning("[PDF Render] pypdfium2 failed: %s", pdf_render_err)
+
+        if page_bgr is not None:
+            # Run optical OCR through standard pipeline
+            h, w = page_bgr.shape[:2]
+            res = scan_document_in_frame(page_bgr, [0, 0, w, h], direction)
+            # Merge digital text with OCR text for maximum accuracy
+            combined_text = (res["raw_text"] + "\n" + digital_text).strip()
+            # Validate combined text with commercial invoice rules
+            appr, reason = is_valid_invoice_document(combined_text, direction)
+            res["raw_text"] = combined_text
+            res["goods_count"] = _extract_goods_count(combined_text) or res["goods_count"]
+            res["approved"] = appr
+            res["auto_rejected"] = not appr
+            res["status"] = "approved" if appr else "auto_rejected"
+            res["reject_reason"] = None if appr else reason
+            res["validation_reason"] = reason
+            return res
+
+        # Fallback if rendering failed but digital text exists
+        if digital_text.strip():
+            appr, reason = is_valid_invoice_document(digital_text, direction)
+            snap_b64 = _create_text_document_preview("PDF Document", digital_text.splitlines(), filename)
+            return {
+                "approved": appr,
+                "auto_rejected": not appr,
+                "status": "approved" if appr else "auto_rejected",
+                "reject_reason": None if appr else reason,
+                "validation_reason": reason,
+                "raw_text": digital_text.strip(),
+                "goods_count": _extract_goods_count(digital_text),
+                "confidence": 0.95,
+                "engine": "pypdf_digital",
+                "timestamp": ts,
+                "direction": direction,
+                "snapshot_b64": snap_b64,
+                "ocr_available": True,
+            }
+
+        return {
+            "approved": False,
+            "auto_rejected": True,
+            "status": "auto_rejected",
+            "reject_reason": "Could not read text or render pages from uploaded PDF.",
+            "validation_reason": "Unreadable PDF document",
+            "raw_text": "",
+            "goods_count": None,
+            "confidence": 0.0,
+            "engine": "pdf_reader",
+            "timestamp": ts,
+            "direction": direction,
+            "snapshot_b64": None,
+            "ocr_available": True,
+        }
+
+    # ── CASE 2: Word Document (.docx / .doc) ──────────────────────────────────
+    if ext in {".docx", ".doc"}:
+        extracted_lines = []
+        full_text = ""
+        try:
+            import docx
+            doc = docx.Document(io.BytesIO(file_bytes))
+            for p in doc.paragraphs:
+                p_txt = p.text.strip()
+                if p_txt:
+                    extracted_lines.append(p_txt)
+            for table in doc.tables:
+                for row in table.rows:
+                    cells_txt = " | ".join(c.text.strip() for c in row.cells if c.text.strip())
+                    if cells_txt:
+                        extracted_lines.append(cells_txt)
+            full_text = "\n".join(extracted_lines).strip()
+        except Exception as docx_err:
+            log.warning("[DOCX Parse] Standard docx parse failed: %s", docx_err)
+            # Binary string extraction fallback for legacy .doc
+            try:
+                raw_matches = re.findall(r"[\x20-\x7E]{4,}", file_bytes.decode("latin-1", errors="ignore"))
+                full_text = "\n".join(m.strip() for m in raw_matches if len(m.strip()) > 3)
+                extracted_lines = full_text.splitlines()[:50]
+            except Exception:
+                pass
+
+        if full_text:
+            appr, reason = is_valid_invoice_document(full_text, direction)
+            snap_b64 = _create_text_document_preview("Word Document", extracted_lines, filename)
+            return {
+                "approved": appr,
+                "auto_rejected": not appr,
+                "status": "approved" if appr else "auto_rejected",
+                "reject_reason": None if appr else reason,
+                "validation_reason": reason,
+                "raw_text": full_text,
+                "goods_count": _extract_goods_count(full_text),
+                "confidence": 0.95,
+                "engine": "docx_parser",
+                "timestamp": ts,
+                "direction": direction,
+                "snapshot_b64": snap_b64,
+                "ocr_available": True,
+            }
+
+        return {
+            "approved": False,
+            "auto_rejected": True,
+            "status": "auto_rejected",
+            "reject_reason": "Could not extract readable text from uploaded Word document.",
+            "validation_reason": "Unreadable Word document",
+            "raw_text": "",
+            "goods_count": None,
+            "confidence": 0.0,
+            "engine": "docx_parser",
+            "timestamp": ts,
+            "direction": direction,
+            "snapshot_b64": None,
+            "ocr_available": True,
+        }
+
+    # ── CASE 3: Standard Image (.jpg, .jpeg, .png, .webp) ─────────────────────
+    nparr = np.frombuffer(file_bytes, np.uint8)
+    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if frame is None:
+        return {
+            "approved": False,
+            "auto_rejected": True,
+            "status": "auto_rejected",
+            "reject_reason": "Could not decode document image. Please upload a clear photo or document.",
+            "validation_reason": "Invalid or corrupted image format",
+            "raw_text": "",
+            "goods_count": None,
+            "confidence": 0.0,
+            "engine": "none",
+            "timestamp": ts,
+            "direction": direction,
+            "snapshot_b64": None,
+            "ocr_available": True,
+        }
+
+    h, w = frame.shape[:2]
+    return scan_document_in_frame(frame, [0, 0, w, h], direction)
+

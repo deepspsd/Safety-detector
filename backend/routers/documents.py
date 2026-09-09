@@ -123,6 +123,10 @@ def _doc_to_dict(row, table: str) -> dict:
     else:
         ts_str = datetime.datetime.utcnow().isoformat()
 
+    # Ensure UTC timezone indicator so browser parsers do not shift or treat as local naive
+    if not ts_str.endswith("Z") and "+" not in ts_str:
+        ts_str += "Z"
+
     return {
         "id": row.id,
         "table": table,
@@ -143,7 +147,78 @@ def _doc_to_dict(row, table: str) -> dict:
         "doc_number": getattr(row, "doc_number", None),
         "person_snapshot_b64": getattr(row, "person_snapshot_b64", None),
         "notes": getattr(row, "notes", None),
+        "status": getattr(row, "status", "approved" if getattr(row, "approved", False) else "pending"),
+        "reject_reason": getattr(row, "reject_reason", None),
     }
+
+
+def _notify_owner_new_document(row, table: str, gate_pass_code: Optional[str] = None):
+    """
+    Notify factory owner via FCM, ntfy.sh, and Telegram when a new invoice/document
+    is uploaded for approval.
+    """
+    try:
+        direction = getattr(row, "direction", "inward")
+        dir_title = "INWARD (Delivery)" if direction == "inward" else "OUTWARD (Dispatch)"
+        doc_type = "Invoice" if direction == "inward" else "Order Form"
+        vendor = getattr(row, "vendor_name", None) or "Unknown Vendor"
+        vehicle = getattr(row, "vehicle_no", None) or "N/A"
+        qty = getattr(row, "goods_count", None)
+        wt = getattr(row, "weight", None)
+
+        details = []
+        if vendor and vendor != "Unknown Vendor":
+            details.append(f"Vendor: {vendor}")
+        if vehicle and vehicle != "N/A":
+            details.append(f"Vehicle: {vehicle}")
+        if qty:
+            details.append(f"Qty: {qty}")
+        if wt:
+            details.append(f"Wt: {wt}")
+        if gate_pass_code:
+            details.append(f"Pass: {gate_pass_code}")
+
+        detail_str = " | ".join(details) if details else f"ID: #{row.id}"
+        message = f"📄 New {doc_type} Added for Approval: {dir_title} — {detail_str}"
+
+        # 1. FCM Web Push to Owner Devices
+        try:
+            from services.notification_service import send_push_alert
+            send_push_alert(
+                message=message,
+                severity="high",
+                detected_issue=f"New {doc_type} For Approval",
+            )
+        except Exception as fcm_err:
+            log.debug("[Documents Notify] FCM push error: %s", fcm_err)
+
+        # 2. ntfy.sh (if configured)
+        try:
+            from services.notification_service import _is_ntfy_configured, send_ntfy_alert
+            if _is_ntfy_configured():
+                send_ntfy_alert(
+                    message=message,
+                    severity="high",
+                    detected_issue=f"New {doc_type} For Approval",
+                )
+        except Exception as ntfy_err:
+            log.debug("[Documents Notify] ntfy error: %s", ntfy_err)
+
+        # 3. Telegram (if configured)
+        try:
+            from services.notification_service import _is_telegram_configured, send_telegram_alert
+            if _is_telegram_configured():
+                send_telegram_alert(
+                    message=message,
+                    severity="high",
+                    detected_issue=f"New {doc_type} For Approval",
+                )
+        except Exception as tg_err:
+            log.debug("[Documents Notify] Telegram error: %s", tg_err)
+
+        log.info("[Documents Notify] Owner notified of new %s #%s for approval", doc_type, row.id)
+    except Exception as exc:
+        log.error("[Documents Notify] Failed dispatching owner alert: %s", exc)
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -154,13 +229,13 @@ def get_stats(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    """Today's document scan counts."""
-    today = datetime.datetime.utcnow().replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
+    """Today's document scan counts, aligned to Indian Standard Time (IST) day boundaries."""
+    now_ist = datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
+    today_ist_midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_utc_start = today_ist_midnight - datetime.timedelta(hours=5, minutes=30)
 
-    inv_q = db.query(InvoiceLog).filter(InvoiceLog.timestamp >= today)
-    ord_q = db.query(OrderFormLog).filter(OrderFormLog.timestamp >= today)
+    inv_q = db.query(InvoiceLog).filter(InvoiceLog.timestamp >= today_utc_start)
+    ord_q = db.query(OrderFormLog).filter(OrderFormLog.timestamp >= today_utc_start)
 
     inv_rows = inv_q.all()
     ord_rows = ord_q.all()
@@ -223,22 +298,18 @@ async def manual_scan(
     Upload a document image → run OCR → save to invoice_logs or order_form_logs.
     Returns the OCR result immediately.
     """
-    import cv2
+    import os
+    from services.ocr_service import process_uploaded_document_file, ALLOWED_DOC_EXTENSIONS
 
-    # Read uploaded image
+    # Read uploaded document (PDF, Word, or Image)
     contents = await file.read()
-    nparr = np.frombuffer(contents, np.uint8)
-    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    if frame is None:
-        raise HTTPException(400, "Could not decode image — upload JPEG or PNG")
+    ext = os.path.splitext(file.filename.lower())[1] if file.filename else ""
+    if ext and ext not in ALLOWED_DOC_EXTENSIONS:
+        raise HTTPException(400, f"Unsupported file format '{ext}'. Allowed: PDF, JPEG, PNG, WEBP, DOCX, DOC.")
 
-    # Use the full image as the bbox
-    h, w = frame.shape[:2]
-    bbox = [0, 0, w, h]
-
-    from services.ocr_service import scan_document_in_frame
-
-    result = scan_document_in_frame(frame, bbox, direction)
+    result = process_uploaded_document_file(contents, file.filename or "upload.jpg", direction)
+    if result.get("auto_rejected") and not result.get("raw_text") and result.get("engine") == "format_filter":
+        raise HTTPException(400, result.get("reject_reason", "Could not decode or parse document file"))
 
     # Auto-extract quantity if omitted
     resolved_qty = goods_count if goods_count is not None else result.get("goods_count")
@@ -254,6 +325,11 @@ async def manual_scan(
         if dm:
             resolved_doc = dm.group(1).strip()
 
+    # Determine status & reject reason
+    is_appr = bool(result.get("approved", False))
+    doc_status = "approved" if is_appr else "auto_rejected"
+    rej_reason = result.get("reject_reason") if not is_appr else None
+
     # Save to DB
     try:
         if direction == "inward":
@@ -267,7 +343,9 @@ async def manual_scan(
                 vehicle_no=vehicle_no,
                 doc_number=resolved_doc,
                 notes=notes,
-                approved=result["approved"],
+                approved=is_appr,
+                status=doc_status,
+                reject_reason=rej_reason,
                 snapshot_b64=result["snapshot_b64"],
                 ocr_available=result["ocr_available"],
                 timestamp=datetime.datetime.utcnow(),
@@ -305,7 +383,9 @@ async def manual_scan(
                 vehicle_no=vehicle_no,
                 doc_number=resolved_doc,
                 notes=notes,
-                approved=result["approved"],
+                approved=is_appr,
+                status=doc_status,
+                reject_reason=rej_reason,
                 snapshot_b64=result["snapshot_b64"],
                 person_snapshot_b64=person_snap,
                 ocr_available=result["ocr_available"],
@@ -315,6 +395,8 @@ async def manual_scan(
         db.commit()
         db.refresh(row)
         table = "invoice" if direction == "inward" else "order_form"
+        if is_appr:
+            _notify_owner_new_document(row, table)
         return {**result, "saved": True, "record": _doc_to_dict(row, table)}
     except Exception as exc:
         log.error(f"[Documents] DB save failed: {exc}")
@@ -334,14 +416,17 @@ def approve_document(
     if not row:
         raise HTTPException(404, f"Document #{doc_id} not found in {table}")
     row.approved = True
+    row.status = "approved"
+    row.reject_reason = None
     db.commit()
-    return {"id": doc_id, "approved": True}
+    return {"id": doc_id, "approved": True, "status": "approved"}
 
 
 @router.patch("/{doc_id}/reject")
 def reject_document(
     doc_id: int,
     table: str = Query("invoice", description="invoice | order_form"),
+    reason: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
@@ -351,8 +436,10 @@ def reject_document(
     if not row:
         raise HTTPException(404, f"Document #{doc_id} not found in {table}")
     row.approved = False
+    row.status = "rejected"
+    row.reject_reason = reason or "Manually rejected by admin"
     db.commit()
-    return {"id": doc_id, "approved": False}
+    return {"id": doc_id, "approved": False, "status": "rejected"}
 
 
 @router.delete("/{doc_id}")
@@ -499,18 +586,40 @@ async def mobile_upload(
         direction = payload["dir"]
     direction = "inward" if direction == "inward" else "outward"
 
-    # 1. Read document image
+    # Enforce mandatory fields (Vendor Name, Vehicle No, Goods Count, Weight, Doc Ref)
+    missing = []
+    if not vendor_name or not vendor_name.strip():
+        missing.append("Vendor / Supplier Name")
+    if not vehicle_no or not vehicle_no.strip():
+        missing.append("Vehicle Number")
+    if goods_count is None or goods_count <= 0:
+        missing.append("Goods Count (Quantity)")
+    if not weight or not weight.strip():
+        missing.append("Total Weight")
+    if not doc_number or not doc_number.strip():
+        missing.append("Invoice / Document Number")
+
+    if missing:
+        raise HTTPException(
+            422,
+            f"All fields are mandatory. Please provide: {', '.join(missing)}."
+        )
+
+    # 1. Read and process document (PDF, Word, or Image)
     contents = await file.read()
-    nparr = np.frombuffer(contents, np.uint8)
-    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    if frame is None:
-        raise HTTPException(400, "Could not decode document image — upload JPEG or PNG")
+    import os
+    from services.ocr_service import process_uploaded_document_file, ALLOWED_DOC_EXTENSIONS
 
-    h, w = frame.shape[:2]
-    bbox = [0, 0, w, h]
+    ext = os.path.splitext(file.filename.lower())[1] if file.filename else ""
+    if ext and ext not in ALLOWED_DOC_EXTENSIONS:
+        raise HTTPException(400, f"Unsupported document format '{ext}'. Allowed: PDF, JPEG, PNG, WEBP, DOCX, DOC.")
 
-    from services.ocr_service import scan_document_in_frame
-    result = scan_document_in_frame(frame, bbox, direction)
+    result = process_uploaded_document_file(contents, file.filename or "doc.jpg", direction)
+
+    # Strict auto-reject check
+    is_valid_doc = bool(result.get("approved", False))
+    doc_status = "pending" if is_valid_doc else "auto_rejected"
+    reject_reason = result.get("reject_reason") if not is_valid_doc else None
 
     # 2. Read driver/vendor person photo if provided
     person_snap_b64 = None
@@ -531,19 +640,11 @@ async def mobile_upload(
         except Exception as p_exc:
             log.warning("[QR Mobile Upload] Failed decoding person photo: %s", p_exc)
 
-    # 3. Auto-extract fields from OCR text if omitted by vendor
-    resolved_qty = goods_count if goods_count is not None else result.get("goods_count")
-    resolved_weight = weight
-    if not resolved_weight and result.get("raw_text"):
-        wm = re.search(r"(?:net\s*wt|gross\s*wt|wt|weight)?\s*[:\-]?\s*(\d+(?:\.\d+)?\s*(?:kg|kgs|g|ton|tons|quintal))\b", result["raw_text"], re.IGNORECASE)
-        if wm:
-            resolved_weight = wm.group(1).strip()
-
-    resolved_doc = doc_number
-    if not resolved_doc and result.get("raw_text"):
-        dm = re.search(r"\b(?:inv|invoice|bill|challan|order|dc|po)[\s\.\-\#:]*([a-z0-9\-\/]{3,20})\b", result["raw_text"], re.IGNORECASE)
-        if dm:
-            resolved_doc = dm.group(1).strip()
+    resolved_qty = goods_count
+    resolved_weight = weight.strip()
+    resolved_doc = doc_number.strip()
+    clean_vendor = vendor_name.strip()
+    clean_vehicle = vehicle_no.strip().upper()
 
     try:
         if direction == "inward":
@@ -552,11 +653,13 @@ async def mobile_upload(
                 raw_ocr_text=result["raw_text"],
                 goods_count=resolved_qty,
                 weight=resolved_weight,
-                vendor_name=vendor_name,
-                vehicle_no=vehicle_no,
+                vendor_name=clean_vendor,
+                vehicle_no=clean_vehicle,
                 doc_number=resolved_doc,
                 notes=notes,
-                approved=result["approved"],
+                approved=False,
+                status=doc_status,
+                reject_reason=reject_reason,
                 snapshot_b64=result["snapshot_b64"],
                 person_snapshot_b64=person_snap_b64,
                 ocr_available=result["ocr_available"],
@@ -570,11 +673,13 @@ async def mobile_upload(
                 raw_ocr_text=result["raw_text"],
                 goods_count=resolved_qty,
                 weight=resolved_weight,
-                vendor_name=vendor_name,
-                vehicle_no=vehicle_no,
+                vendor_name=clean_vendor,
+                vehicle_no=clean_vehicle,
                 doc_number=resolved_doc,
                 notes=notes,
-                approved=result["approved"],
+                approved=False,
+                status=doc_status,
+                reject_reason=reject_reason,
                 snapshot_b64=result["snapshot_b64"],
                 person_snapshot_b64=person_snap_b64,
                 ocr_available=result["ocr_available"],
@@ -591,7 +696,12 @@ async def mobile_upload(
         dir_prefix = "INW" if direction == "inward" else "OUT"
         gate_pass_code = f"GP-{dir_prefix}-{datetime.datetime.utcnow().strftime('%m%d')}-{row.id:04d}"
 
-        log.info("[QR Mobile Upload] %s saved id=%s code=%s phone=True", table, row.id, gate_pass_code)
+        if is_valid_doc:
+            log.info("[QR Mobile Upload] Valid %s saved id=%s code=%s — notifying owner for approval", table, row.id, gate_pass_code)
+            # Notify owner across configured channels (FCM, ntfy, Telegram)
+            _notify_owner_new_document(row, table, gate_pass_code)
+        else:
+            log.warning("[QR Mobile Upload] %s AUTO-REJECTED id=%s code=%s reason=%s", table, row.id, gate_pass_code, reject_reason)
 
         return {
             **result,
@@ -599,11 +709,14 @@ async def mobile_upload(
             "submitted_by_phone": True,
             "gate_pass_code": gate_pass_code,
             "record": _doc_to_dict(row, table),
-            "vendor_name": vendor_name,
-            "vehicle_no": vehicle_no,
+            "vendor_name": clean_vendor,
+            "vehicle_no": clean_vehicle,
             "goods_count": resolved_qty,
             "weight": resolved_weight,
             "doc_number": resolved_doc,
+            "status": doc_status,
+            "auto_rejected": not is_valid_doc,
+            "reject_reason": reject_reason,
         }
     except Exception as exc:
         log.error("[QR Mobile Upload] DB save failed: %s", exc)
@@ -619,20 +732,28 @@ def pending_approval(
     current_user=Depends(get_current_user),
 ):
     """
-    Returns all records submitted via QR phone upload that have not been
-    manually approved or rejected by an admin yet (approved=False, submitted_by_phone=True).
-    Used to display the pending badge count and approval queue in the Documents page.
+    Returns all records submitted via QR phone upload that are genuine documents
+    awaiting owner review (status='pending', approved=False).
+    Auto-rejected photos and already approved/rejected records are excluded.
     """
     try:
         inv_rows = (
             db.query(InvoiceLog)
-            .filter(InvoiceLog.submitted_by_phone == True, InvoiceLog.approved == False)
+            .filter(
+                InvoiceLog.submitted_by_phone == True,
+                InvoiceLog.approved == False,
+                InvoiceLog.status == "pending"
+            )
             .order_by(InvoiceLog.timestamp.desc())
             .all()
         )
         ord_rows = (
             db.query(OrderFormLog)
-            .filter(OrderFormLog.submitted_by_phone == True, OrderFormLog.approved == False)
+            .filter(
+                OrderFormLog.submitted_by_phone == True,
+                OrderFormLog.approved == False,
+                OrderFormLog.status == "pending"
+            )
             .order_by(OrderFormLog.timestamp.desc())
             .all()
         )
@@ -642,6 +763,6 @@ def pending_approval(
         combined.sort(key=lambda x: x["timestamp"], reverse=True)
         return {"count": len(combined), "records": combined}
     except Exception as exc:
-        log.warning("[Documents] pending-approval query failed (columns may not exist yet): %s", exc)
+        log.warning("[Documents] pending-approval query failed: %s", exc)
         return {"count": 0, "records": []}
 

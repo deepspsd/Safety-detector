@@ -547,6 +547,8 @@ class InvoiceLog(Base):
     doc_number = Column(String(100), nullable=True)  # invoice or challan reference number
     person_snapshot_b64 = Column(Text, nullable=True)  # photo of vendor/driver showing document
     notes = Column(Text, nullable=True)  # driver/gate remarks
+    status = Column(String(30), nullable=False, default="pending")  # pending | approved | rejected | auto_rejected
+    reject_reason = Column(String(250), nullable=True)
 
     camera = relationship("Camera", back_populates="invoice_logs")
     employee = relationship("Employee", foreign_keys=[employee_id])
@@ -590,6 +592,8 @@ class OrderFormLog(Base):
     doc_number = Column(String(100), nullable=True)  # order form or delivery challan number
     person_snapshot_b64 = Column(Text, nullable=True)  # photo of person showing order form
     notes = Column(Text, nullable=True)  # gate remarks
+    status = Column(String(30), nullable=False, default="pending")  # pending | approved | rejected | auto_rejected
+    reject_reason = Column(String(250), nullable=True)
 
     camera = relationship("Camera", back_populates="order_logs")
     employee = relationship("Employee", foreign_keys=[employee_id])
@@ -1019,6 +1023,8 @@ def ensure_enterprise_schema() -> None:
             "doc_number": "VARCHAR(100)",
             "person_snapshot_b64": "TEXT",
             "notes": "TEXT",
+            "status": "VARCHAR(30) NOT NULL DEFAULT 'pending'",
+            "reject_reason": "VARCHAR(250)",
         },
 
         "order_form_logs": {
@@ -1031,6 +1037,8 @@ def ensure_enterprise_schema() -> None:
             "doc_number": "VARCHAR(100)",
             "person_snapshot_b64": "TEXT",
             "notes": "TEXT",
+            "status": "VARCHAR(30) NOT NULL DEFAULT 'pending'",
+            "reject_reason": "VARCHAR(250)",
         },
         "zone_configs": {
             "zone_type": "VARCHAR(100)",
