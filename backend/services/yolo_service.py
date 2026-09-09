@@ -1931,6 +1931,103 @@ def _run_pipeline(
     except Exception as _ue:
         log.debug(f"[YOLO] uniform check error: {_ue}")
 
+    # ── Head-cap fallback for detected persons (webcam & CCTV) ────────────────
+    # If the role requires Bakery-Head-Cap and neither cap nor violation was found,
+    # run inference on the upper torso/head region with contextual padding.
+    try:
+        _req_headcap = (
+            "NO-Bakery-Head-Cap" in (detection_filters or [])
+            or (detection_filters is None and "NO-Bakery-Head-Cap" in ROLE_RULES.get(role, {}).get("required_violations", []))
+        )
+        if _req_headcap and enriched:
+            from services.model_manager import ModelManager
+            _mm = ModelManager()
+            for p in enriched:
+                # If already assigned from full frame, keep it
+                has_cap = "Bakery-Head-Cap" in p.get("ppe_found", [])
+                has_no_cap = "NO-Bakery-Head-Cap" in p.get("ppe_missing", [])
+                if has_cap or has_no_cap:
+                    continue
+
+                # Contextual upper-body/head crop (top 50% + 20% horizontal margin)
+                px1, py1, px2, py2 = p["bbox"]
+                pw = max(1, px2 - px1)
+                ph = max(1, py2 - py1)
+                fh, fw = frame.shape[:2]
+                cx1 = max(0, int(px1 - 0.20 * pw))
+                cy1 = max(0, int(py1 - 0.05 * ph))
+                cx2 = min(fw, int(px2 + 0.20 * pw))
+                cy2 = min(fh, int(py1 + 0.55 * ph))
+
+                if cx2 > cx1 and cy2 > cy1:
+                    crop = frame[cy1:cy2, cx1:cx2]
+                    if crop.size > 0:
+                        crop_dets = _mm.infer("hairnet_glove_detection", crop, conf=0.18)
+                        best_cap = None
+                        best_no_cap = None
+                        for cd in crop_dets:
+                            c_lbl = getattr(cd, "class_name", "") or ""
+                            c_conf = float(getattr(cd, "confidence", 0.0))
+                            if c_lbl in ("hairnet", "Bakery-Head-Cap", "Hair_Cover"):
+                                if best_cap is None or c_conf > best_cap["confidence"]:
+                                    best_cap = {"confidence": c_conf, "bbox": cd.bbox}
+                            elif c_lbl in ("no_hairnet", "NO-Bakery-Head-Cap", "Hair"):
+                                if best_no_cap is None or c_conf > best_no_cap["confidence"]:
+                                    best_no_cap = {"confidence": c_conf, "bbox": cd.bbox}
+
+                        if best_cap and (not best_no_cap or best_cap["confidence"] >= best_no_cap["confidence"]):
+                            # Cap confirmed on crop
+                            if "Bakery-Head-Cap" not in p["ppe_found"]:
+                                p["ppe_found"].append("Bakery-Head-Cap")
+                            bx1, by1, bx2, by2 = best_cap["bbox"]
+                            mapped_box = [cx1 + bx1, cy1 + by1, cx1 + bx2, cy1 + by2]
+                            raw.append({
+                                "label": "Bakery-Head-Cap",
+                                "confidence": round(best_cap["confidence"], 3),
+                                "bbox": mapped_box,
+                                "det_type": "compliant",
+                                "raw_label": "hairnet",
+                            })
+                        elif best_no_cap:
+                            # Explicit bare hair / no hairnet on crop
+                            if "NO-Bakery-Head-Cap" not in p["ppe_missing"]:
+                                p["ppe_missing"].append("NO-Bakery-Head-Cap")
+                            if "No Head Cap" not in p["violation_labels"]:
+                                p["violation_labels"].append("No Head Cap")
+                            p["is_compliant"] = False
+                            bx1, by1, bx2, by2 = best_no_cap["bbox"]
+                            mapped_box = [cx1 + bx1, cy1 + by1, cx1 + bx2, cy1 + by2]
+                            raw.append({
+                                "label": "NO-Bakery-Head-Cap",
+                                "confidence": round(best_no_cap["confidence"], 3),
+                                "bbox": mapped_box,
+                                "det_type": "violation",
+                                "raw_label": "no_hairnet",
+                            })
+                        else:
+                            # Absence fallback: person present, role requires cap, neither seen
+                            if "NO-Bakery-Head-Cap" not in p["ppe_missing"]:
+                                p["ppe_missing"].append("NO-Bakery-Head-Cap")
+                            if "No Head Cap" not in p["violation_labels"]:
+                                p["violation_labels"].append("No Head Cap")
+                            p["is_compliant"] = False
+                            # Synthesize inner headwear box for clear visual feedback
+                            head_synth_box = [
+                                max(0, int(px1 + 0.15 * pw)),
+                                max(0, int(py1)),
+                                min(fw, int(px2 - 0.15 * pw)),
+                                min(fh, int(py1 + 0.35 * ph)),
+                            ]
+                            raw.append({
+                                "label": "NO-Bakery-Head-Cap",
+                                "confidence": round(p.get("confidence", 0.5), 2),
+                                "bbox": head_synth_box,
+                                "det_type": "violation",
+                                "raw_label": "no_hairnet",
+                            })
+    except Exception as _he:
+        log.debug(f"[YOLO] headcap check error: {_he}")
+
     # ── Traffic Police: remap already done inside dedicated/strict pipeline ──
     # (no remap needed here anymore)
 

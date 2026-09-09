@@ -10,6 +10,7 @@ Changes vs v2.0:
 
 import os
 import uuid
+from typing import Optional, Tuple
 
 import cv2
 from config import settings
@@ -32,13 +33,17 @@ def _get_annotated_path(job_id: str) -> str:
     return os.path.join(settings.UPLOAD_DIR, f"annotated_{job_id}.mp4")
 
 
-def _safe_fourcc():
-    """Return the best available MP4 codec (avc1/H.264 → mp4v fallback)."""
-    for cc in ("avc1", "mp4v", "XVID"):
-        fcc = cv2.VideoWriter_fourcc(*cc)
-        if fcc > 0:
-            return fcc
-    return cv2.VideoWriter_fourcc(*"mp4v")
+def _create_video_writer(annotated_path: str, fps: float, width: int, height: int) -> Tuple[Optional[cv2.VideoWriter], bool]:
+    """Return the best available working VideoWriter."""
+    for cc in ("mp4v", "avc1", "XVID", "MJPG"):
+        try:
+            fcc = cv2.VideoWriter_fourcc(*cc)
+            writer = cv2.VideoWriter(annotated_path, fcc, fps, (width, height))
+            if writer is not None and writer.isOpened():
+                return writer, True
+        except Exception:
+            continue
+    return None, False
 
 
 def process_video_job(job_id: str, video_path: str, role: str, user_id: int, zone_type: str = "default"):
@@ -61,13 +66,7 @@ def process_video_job(job_id: str, video_path: str, role: str, user_id: int, zon
     frame_skip = max(1, int(fps // 5))  # analyse ~5 frames/sec
 
     annotated_path = _get_annotated_path(job_id)
-    out_writer: cv2.VideoWriter = cv2.VideoWriter(
-        annotated_path,
-        _safe_fourcc(),
-        fps,  # keep original fps so timestamps stay accurate
-        (width, height),
-    )
-    writer_ok = out_writer.isOpened()
+    out_writer, writer_ok = _create_video_writer(annotated_path, fps, width, height)
 
     alerts_found: list = []
     violation_timestamps: list = []  # [{ts, items, severity, persons, thumbnail_b64}]

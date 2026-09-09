@@ -693,21 +693,14 @@ class CameraReader:
             self.cap_read_total += 1
 
             try:
-                if (
-                    _resized_cache is None
-                    or _resized_cache.shape[0] != INFER_HEIGHT
-                    or _resized_cache.shape[1] != INFER_WIDTH
-                ):
-                    _resized_cache = cv2.resize(
-                        frame, (INFER_WIDTH, INFER_HEIGHT)
-                    )
+                fh, fw = frame.shape[:2]
+                if fw > 960:
+                    target_w = 960
+                    target_h = int(fh * (960.0 / fw))
+                    target_h = target_h - (target_h % 2)
+                    frame_resized = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
                 else:
-                    cv2.resize(
-                        frame,
-                        (INFER_WIDTH, INFER_HEIGHT),
-                        dst=_resized_cache,
-                    )
-                frame_resized = _resized_cache
+                    frame_resized = frame
             except cv2.error:
                 self.decoder_error_count += 1
                 continue

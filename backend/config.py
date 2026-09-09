@@ -77,7 +77,7 @@ class Settings(BaseSettings):
             "type": "yolo",
             "enabled": True,
             "priority": 1,
-            "conf_threshold": float(os.getenv("HAIRNET_CONF_THRESHOLD", "0.40")),
+            "conf_threshold": float(os.getenv("HAIRNET_CONF_THRESHOLD", "0.45")),
             "imgsz": int(os.getenv("HAIRNET_IMGSZ", "960")),
             "target_fps": 15,
             "zones": ["*", "dough_mixing", "oven", "packing", "biscuit_cutting", "cutting_machine", "entrance", "dough_table", "gas_section", "shop", "shop_counter", "cashbox", "store", "default"],

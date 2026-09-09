@@ -561,17 +561,18 @@ class HeadCapMonitor:
                     missing_secs = now - ps.missing_since
 
                     if missing_secs >= _MISSING_SECONDS:
+                        prev_state = ps.state
                         ps.state = STATE_ALERT
                         since_last = (
                             (now - ps.last_alert_at)
                             if ps.last_alert_at is not None
                             else float("inf")
                         )
-                        # One alert per continuous violation.  Repeating after a
+                        # One alert per continuous violation. Repeating after a
                         # cooldown made a person standing all day generate
-                        # hundreds/thousands of identical alerts.  A fresh alert
+                        # hundreds/thousands of identical alerts. A fresh alert
                         # is allowed only after cap compliance resets state.
-                        if ps.state != STATE_ALERT and since_last >= _ALERT_COOLDOWN:
+                        if prev_state != STATE_ALERT and since_last >= _ALERT_COOLDOWN:
                             ps.last_alert_at = now
                             alert_fired = True
                             log.warning(

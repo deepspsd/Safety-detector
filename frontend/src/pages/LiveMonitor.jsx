@@ -313,7 +313,7 @@ export default function LiveMonitor() {
   const startWebcam = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480, facingMode: { ideal: 'environment' } }
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: { ideal: 'environment' } }
       })
       streamRef.current = stream
       if (videoRef.current) {
@@ -336,7 +336,7 @@ export default function LiveMonitor() {
         captureRef.current.height = vh
         const ctx = captureRef.current.getContext('2d')
         ctx.drawImage(videoRef.current, 0, 0, vw, vh)
-        const b64 = captureRef.current.toDataURL('image/jpeg', 0.65)
+        const b64 = captureRef.current.toDataURL('image/jpeg', 0.82)
         wsRef.current.send(JSON.stringify({
           frame: b64,
           filters: activeFiltersRef.current,
