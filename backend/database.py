@@ -540,7 +540,13 @@ class InvoiceLog(Base):
     # QR upload tracking
     upload_token = Column(String(500), nullable=True)   # JWT token used for this QR upload session
     submitted_by_phone = Column(Boolean, nullable=False, default=False)  # True = uploaded via QR on phone
-    goods_count = Column(Integer, nullable=True)  # extracted goods count from OCR
+    goods_count = Column(Integer, nullable=True)  # extracted goods count from OCR or vendor input
+    weight = Column(String(50), nullable=True)  # goods weight (e.g. "50 kg", "120 kg")
+    vendor_name = Column(String(200), nullable=True)  # supplier or transporter name
+    vehicle_no = Column(String(50), nullable=True)  # truck or delivery vehicle number
+    doc_number = Column(String(100), nullable=True)  # invoice or challan reference number
+    person_snapshot_b64 = Column(Text, nullable=True)  # photo of vendor/driver showing document
+    notes = Column(Text, nullable=True)  # driver/gate remarks
 
     camera = relationship("Camera", back_populates="invoice_logs")
     employee = relationship("Employee", foreign_keys=[employee_id])
@@ -577,6 +583,13 @@ class OrderFormLog(Base):
     # QR upload tracking
     upload_token = Column(String(500), nullable=True)   # JWT token used for this QR upload session
     submitted_by_phone = Column(Boolean, nullable=False, default=False)  # True = uploaded via QR on phone
+    goods_count = Column(Integer, nullable=True)  # extracted goods count from OCR or vendor input
+    weight = Column(String(50), nullable=True)  # goods weight (e.g. "50 kg", "120 kg")
+    vendor_name = Column(String(200), nullable=True)  # client or transporter name
+    vehicle_no = Column(String(50), nullable=True)  # dispatch vehicle number
+    doc_number = Column(String(100), nullable=True)  # order form or delivery challan number
+    person_snapshot_b64 = Column(Text, nullable=True)  # photo of person showing order form
+    notes = Column(Text, nullable=True)  # gate remarks
 
     camera = relationship("Camera", back_populates="order_logs")
     employee = relationship("Employee", foreign_keys=[employee_id])
@@ -1000,11 +1013,24 @@ def ensure_enterprise_schema() -> None:
             "upload_token": "VARCHAR(500)",
             "submitted_by_phone": "BOOLEAN NOT NULL DEFAULT 0",
             "goods_count": "INTEGER",
+            "weight": "VARCHAR(50)",
+            "vendor_name": "VARCHAR(200)",
+            "vehicle_no": "VARCHAR(50)",
+            "doc_number": "VARCHAR(100)",
+            "person_snapshot_b64": "TEXT",
+            "notes": "TEXT",
         },
 
         "order_form_logs": {
             "upload_token": "VARCHAR(500)",
             "submitted_by_phone": "BOOLEAN NOT NULL DEFAULT 0",
+            "goods_count": "INTEGER",
+            "weight": "VARCHAR(50)",
+            "vendor_name": "VARCHAR(200)",
+            "vehicle_no": "VARCHAR(50)",
+            "doc_number": "VARCHAR(100)",
+            "person_snapshot_b64": "TEXT",
+            "notes": "TEXT",
         },
         "zone_configs": {
             "zone_type": "VARCHAR(100)",

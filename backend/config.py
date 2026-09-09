@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "uploads"
     FACE_ENCODINGS_DIR: str = "face_data"
 
+    # ── Document scan & fixed QR gate portal ─────────────────────────────────
+    PUBLIC_GATE_URL: str = os.getenv("PUBLIC_GATE_URL", os.getenv("PUBLIC_URL", ""))
+    FIXED_QR_ACCESS_KEY: str = "occusafe-gate-fixed"
+
+
     # ── YOLO model chain ────────────────────────────────────────────────────
     # Primary YOLO detection model
     # yolov8x.pt          → High-accuracy COCO model (person, cell phone, objects)
