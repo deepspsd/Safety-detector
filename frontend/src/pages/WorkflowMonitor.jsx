@@ -44,15 +44,16 @@ function SummaryCard({ label, value, icon, color }) {
   return (
     <div style={{
       background: 'var(--bg-card)', border: '1px solid var(--border)',
-      borderRadius: 'var(--radius-lg)', padding: '14px 20px',
-      display: 'flex', alignItems: 'center', gap: 12, flex: 1, minWidth: 140,
+      borderRadius: 'var(--radius-lg)', padding: '12px 16px',
+      display: 'flex', alignItems: 'center', gap: 12, minWidth: 0,
+      boxSizing: 'border-box', overflow: 'hidden'
     }}>
-      <div style={{ width: 40, height: 40, borderRadius: 10, background: `${color}18`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+      <div style={{ width: 38, height: 38, borderRadius: 10, background: `${color}18`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
         <Ic size={18} color={color} />
       </div>
-      <div>
-        <div style={{ fontSize: '1.4rem', fontWeight: 800, color, lineHeight: 1 }}>{value ?? '—'}</div>
-        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: 2, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
+      <div style={{ minWidth: 0, overflow: 'hidden' }}>
+        <div style={{ fontSize: '1.3rem', fontWeight: 800, color, lineHeight: 1 }}>{value ?? '—'}</div>
+        <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: 3, textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</div>
       </div>
     </div>
   )
@@ -261,7 +262,7 @@ export default function WorkflowMonitor() {
 
       {/* Summary cards */}
       {summary && (
-        <div style={{ display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
+        <div className="workflow-summary-grid">
           {summaryItems.map(s => (
             <SummaryCard key={s.label} label={s.label} value={s.value} icon={s.icon} color={s.color} />
           ))}
@@ -269,15 +270,13 @@ export default function WorkflowMonitor() {
       )}
 
       {/* Tabs */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 16, flexWrap: 'wrap' }}>
+      <div className="workflow-tabs-container">
         {TABS.map(t => (
           <button
             key={t.id}
             onClick={() => setActiveTab(t.id)}
-            className={`btn ${activeTab === t.id ? 'btn-primary' : 'btn-ghost'}`}
-            style={{ gap: 6, fontSize: '0.82rem',
-              ...(activeTab === t.id ? {} : { color: t.color, borderColor: `${t.color}30` })
-            }}
+            className={`workflow-tab-btn ${activeTab === t.id ? 'active' : ''}`}
+            style={activeTab === t.id ? {} : { color: t.color, borderColor: `${t.color}35` }}
           >
             <t.icon size={14} color={activeTab === t.id ? '#fff' : t.color} />
             {t.label}

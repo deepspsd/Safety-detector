@@ -95,28 +95,41 @@
   display: none;
   position: fixed;
   bottom: 0; left: 0; right: 0;
-  height: 60px;
-  background: var(--bg-glass);
-  border-top: 1px solid var(--border);
-  backdrop-filter: blur(20px);
+  height: 64px;
+  background: rgba(8, 13, 23, 0.90);
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
   z-index: 150;
-  padding: 0 8px;
+  padding: 0 10px;
   padding-bottom: env(safe-area-inset-bottom);
   align-items: center;
   justify-content: space-around;
+  box-shadow: 0 -4px 25px rgba(0, 0, 0, 0.45);
 }
 .bottom-nav-item {
-  display: flex; flex-direction: column; align-items: center; gap: 2px;
-  flex: 1; padding: 8px 4px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  flex: 1; height: 100%; padding: 6px 4px;
   color: var(--text-muted);
-  font-size: 0.62rem; font-weight: 600;
+  font-size: 0.65rem; font-weight: 700;
   text-decoration: none;
-  border-radius: var(--radius-sm);
-  transition: color var(--transition);
-  text-transform: uppercase; letter-spacing: 0.3px;
+  border-radius: var(--radius-md);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  text-transform: uppercase; letter-spacing: 0.4px;
+  position: relative;
 }
-.bottom-nav-item.active { color: var(--accent-construction); }
-.bottom-nav-item:hover  { color: var(--text-primary); }
+.bottom-nav-item svg {
+  transition: transform 0.2s ease, stroke 0.2s ease;
+}
+.bottom-nav-item.active {
+  color: #f97316;
+}
+.bottom-nav-item.active svg {
+  transform: translateY(-2px);
+  stroke: #f97316;
+  filter: drop-shadow(0 0 8px rgba(249, 115, 22, 0.6));
+}
+.bottom-nav-item:hover { color: var(--text-primary); }
 
 /* ══════════════════════════════════════════════════════
    RESPONSIVE BREAKPOINTS
@@ -265,4 +278,71 @@
   .main-content  { padding-top: 44px; }
   .stat-card     { padding: 12px; }
   .card-p        { padding: 12px; }
+}
+
+/* ── Diagnostics Grid ── */
+.diagnostics-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 450px) 1fr;
+  gap: 24px;
+}
+@media (max-width: 900px) {
+  .diagnostics-grid {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+}
+
+/* ── Workflow Summary Grid ── */
+.workflow-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+  width: 100%;
+}
+@media (max-width: 1200px) {
+  .workflow-summary-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  }
+}
+@media (max-width: 640px) {
+  .workflow-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+}
+
+/* ── Workflow Category Tabs ── */
+.workflow-tabs-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 18px;
+  width: 100%;
+}
+.workflow-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all var(--transition);
+}
+.workflow-tab-btn:hover {
+  background: var(--bg-card-hover);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.workflow-tab-btn.active {
+  background: linear-gradient(135deg, var(--accent-blue), #2563eb);
+  color: #fff !important;
+  border-color: transparent;
+  font-weight: 600;
+  box-shadow: 0 2px 10px rgba(59, 130, 246, 0.35);
 }

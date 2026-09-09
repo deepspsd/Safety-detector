@@ -278,7 +278,10 @@ export default function Attendance() {
 
       {/* Stats */}
       {stats && (
-        <div style={{ display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
+        <div style={{
+          display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+          gap: 12, marginBottom: 24
+        }}>
           <StatCard label="Present Today"   value={stats.present_count}   icon={UserCheck} color="var(--accent-green)" sub={`of ${stats.total_employees} employees`} />
           <StatCard label="Absent"          value={stats.absent_count}    icon={UserX}     color="#ef4444" />
           <StatCard label="Late Arrivals"   value={stats.late_count}      icon={Clock}     color="#f97316" sub="clocked in after 09:00" />
@@ -306,7 +309,7 @@ export default function Attendance() {
             No attendance records for this date.
           </div>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
+          <div className="table-scroll-wrapper" style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ background: 'var(--bg-secondary)' }}>

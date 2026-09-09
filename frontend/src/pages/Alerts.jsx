@@ -121,12 +121,15 @@ export default function Alerts() {
   return (
     <div className="page-container">
       {/* ── Header ─────────────────────────────────────────── */}
-      <div className="page-header">
+      <div className="page-header" style={{ marginBottom: 16 }}>
         <div>
-          <h1 className="page-title">Alert History</h1>
-          <p className="page-subtitle">{total} violation alerts recorded</p>
+          <h1 className="page-title" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <Bell size={24} color="#ef4444" />
+            Alert History
+          </h1>
+          <p className="page-subtitle">{total} safety & compliance alerts recorded</p>
         </div>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           {/* View toggle */}
           <div style={{
             display: 'flex', background: 'var(--bg-tertiary)',
@@ -147,9 +150,49 @@ export default function Alerts() {
         </div>
       </div>
 
-      {/* ── Filters ─────────────────────────────────────────── */}
-      <div className="filters-bar">
-        <Filter size={14} style={{ color: 'var(--text-muted)' }} />
+      {/* ── Quick Severity Metric Pills ─────────────────────── */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+        {[
+          { key: '', label: 'All Alerts', count: total, color: 'var(--text-primary)', bg: 'var(--bg-card)' },
+          { key: 'critical', label: 'Critical', color: '#f87171', bg: 'rgba(239,68,68,0.12)' },
+          { key: 'high', label: 'High', color: '#fbbf24', bg: 'rgba(245,158,11,0.12)' },
+          { key: 'medium', label: 'Medium', color: '#60a5fa', bg: 'rgba(59,130,246,0.12)' },
+          { key: 'low', label: 'Low', color: '#34d399', bg: 'rgba(16,185,129,0.12)' },
+        ].map(pill => {
+          const active = filters.severity === pill.key
+          return (
+            <button
+              key={pill.label}
+              onClick={() => setFilter('severity', pill.key)}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: '5px 12px', borderRadius: 99,
+                fontSize: '0.74rem', fontWeight: 700,
+                border: active ? `1px solid ${pill.color}` : '1px solid var(--border)',
+                background: active ? pill.bg : 'var(--bg-card)',
+                color: pill.color, cursor: 'pointer',
+                transition: 'all 0.15s ease',
+              }}
+            >
+              <span>{pill.label}</span>
+              {pill.count !== undefined && (
+                <span style={{
+                  fontSize: '0.66rem', opacity: 0.8,
+                  padding: '1px 5px', borderRadius: 99, background: 'rgba(0,0,0,0.2)'
+                }}>
+                  {pill.count}
+                </span>
+              )}
+            </button>
+          )
+        })}
+      </div>
+
+      {/* ── Filters Bar ─────────────────────────────────────── */}
+      <div className="filters-bar" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-muted)', fontSize: '0.78rem' }}>
+          <Filter size={14} /> Filter:
+        </div>
         <select className="filter-select" value={filters.floor} onChange={e => setFilter('floor', e.target.value)}>
           <option value="">All Floors</option>
           {FLOORS_LIST.filter(Boolean).map(f => <option key={f} value={f}>{FLOOR_LABELS[f]}</option>)}

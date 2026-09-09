@@ -147,7 +147,7 @@ export default function Diagnostics() {
       </div>
 
       {/* Main Diagnostic Content */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 450px) 1fr', gap: 24 }}>
+      <div className="diagnostics-grid" style={{ gap: 24 }}>
         {/* Left Column: Stream Health & Video Preview */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
           {/* Video Preview Card */}

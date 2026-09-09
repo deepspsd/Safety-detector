@@ -217,7 +217,7 @@ export default function Employees() {
             {faces.length} registered · {loading ? '…' : faces.length + ' face profiles'}
           </p>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <button className="btn btn-ghost btn-icon" onClick={loadFaces} title="Refresh"><RefreshCw size={15} /></button>
           {/* CSV bulk import — triggers hidden file input */}
           <label

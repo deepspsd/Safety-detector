@@ -208,7 +208,7 @@ export default function Dashboard() {
             <span style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>{now}</span>
           </p>
         </div>
-        <div style={{ display: 'flex', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <button className="btn btn-ghost btn-sm" onClick={handleRefresh} disabled={refreshing}>
             <RefreshCw size={14} style={{ animation: refreshing ? 'spin 1s linear infinite' : 'none' }} />
             Refresh
@@ -473,56 +473,58 @@ export default function Dashboard() {
             </Link>
           </div>
         ) : (
-          <table className="alerts-table">
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>Floor</th>
-                <th>Violation</th>
-                <th>Severity</th>
-                <th>Confidence</th>
-              </tr>
-            </thead>
-            <tbody>
-              {stats.recent_alerts.slice(0, 10).map(a => (
-                <tr key={a.id}>
-                  <td style={{ color: 'var(--text-muted)', fontSize: '0.78rem', whiteSpace: 'nowrap' }}>
-                    <Clock size={11} style={{ marginRight: 4, verticalAlign: 'middle' }} />
-                    {(() => {
-                      try {
-                        const raw = String(a.timestamp).trim()
-                        const iso = raw.endsWith('Z') || raw.includes('+') ? raw : raw + 'Z'
-                        return new Date(iso).toLocaleString('en-IN', {
-                          timeZone: 'Asia/Kolkata',
-                          day: '2-digit', month: 'short', year: 'numeric',
-                          hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true,
-                          timeZoneName: 'short'
-                        })
-                      } catch {
-                        return String(a.timestamp)
-                      }
-                    })()}
-                  </td>
-                  <td>
-                    {a.floor ? (
-                      <span style={{
-                        fontSize: '0.7rem', fontWeight: 700, padding: '2px 7px', borderRadius: 99,
-                        background: `${FLOOR_COLORS[a.floor] || '#64748b'}18`,
-                        color: FLOOR_COLORS[a.floor] || 'var(--text-muted)',
-                      }}>
-                        {FLOORS.find(f => f.id === a.floor)?.icon || ''} {a.floor}
-                      </span>
-                    ) : <span style={{ color: 'var(--text-muted)' }}>—</span>}
-                  </td>
-                  <td style={{ color: 'var(--text-primary)', maxWidth: 220 }}>{a.detected_issue || a.message}</td>
-                  <td><span className={`badge badge-${a.severity}`}>{a.severity}</span></td>
-                  <td style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-                    {a.confidence ? `${(a.confidence * 100).toFixed(0)}%` : '—'}
-                  </td>
+          <div className="table-scroll-wrapper">
+            <table className="alerts-table" style={{ minWidth: 540 }}>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Floor</th>
+                  <th>Violation</th>
+                  <th>Severity</th>
+                  <th>Confidence</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {stats.recent_alerts.slice(0, 10).map(a => (
+                  <tr key={a.id}>
+                    <td style={{ color: 'var(--text-muted)', fontSize: '0.78rem', whiteSpace: 'nowrap' }}>
+                      <Clock size={11} style={{ marginRight: 4, verticalAlign: 'middle' }} />
+                      {(() => {
+                        try {
+                          const raw = String(a.timestamp).trim()
+                          const iso = raw.endsWith('Z') || raw.includes('+') ? raw : raw + 'Z'
+                          return new Date(iso).toLocaleString('en-IN', {
+                            timeZone: 'Asia/Kolkata',
+                            day: '2-digit', month: 'short', year: 'numeric',
+                            hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true,
+                            timeZoneName: 'short'
+                          })
+                        } catch {
+                          return String(a.timestamp)
+                        }
+                      })()}
+                    </td>
+                    <td>
+                      {a.floor ? (
+                        <span style={{
+                          fontSize: '0.7rem', fontWeight: 700, padding: '2px 7px', borderRadius: 99,
+                          background: `${FLOOR_COLORS[a.floor] || '#64748b'}18`,
+                          color: FLOOR_COLORS[a.floor] || 'var(--text-muted)',
+                        }}>
+                          {FLOORS.find(f => f.id === a.floor)?.icon || ''} {a.floor}
+                        </span>
+                      ) : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                    </td>
+                    <td style={{ color: 'var(--text-primary)', maxWidth: 220 }}>{a.detected_issue || a.message}</td>
+                    <td><span className={`badge badge-${a.severity}`}>{a.severity}</span></td>
+                    <td style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+                      {a.confidence ? `${(a.confidence * 100).toFixed(0)}%` : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </div>

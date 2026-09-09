@@ -7,12 +7,12 @@
 
 /* ── CSS Variables ── */
 :root {
-  --bg-primary: #080c14;
-  --bg-secondary: #0d1421;
-  --bg-tertiary: #111827;
-  --bg-card: rgba(255,255,255,0.04);
-  --bg-card-hover: rgba(255,255,255,0.07);
-  --bg-glass: rgba(13,20,33,0.8);
+  --bg-primary: #060a12;
+  --bg-secondary: #0b111e;
+  --bg-tertiary: #101828;
+  --bg-card: rgba(14, 22, 38, 0.75);
+  --bg-card-hover: rgba(20, 31, 52, 0.85);
+  --bg-glass: rgba(10, 16, 28, 0.82);
 
   --accent-blue: #3b82f6;
   --accent-cyan: #06b6d4;
@@ -22,19 +22,21 @@
   --accent-purple: #8b5cf6;
   --accent-construction: #f97316;  /* Manufacturing / Construction brand colour */
 
-  --text-primary: #f1f5f9;
+  --text-primary: #f8fafc;
   --text-secondary: #94a3b8;
-  --text-muted: #475569;
+  --text-muted: #64748b;
 
   --border: rgba(255,255,255,0.08);
-  --border-active: rgba(59,130,246,0.4);
+  --border-active: rgba(59,130,246,0.45);
+  --border-glow: rgba(59,130,246,0.25);
 
-  --shadow-sm: 0 2px 8px rgba(0,0,0,0.3);
-  --shadow-md: 0 8px 32px rgba(0,0,0,0.4);
-  --shadow-lg: 0 20px 60px rgba(0,0,0,0.5);
-  --shadow-neon-blue: 0 0 20px rgba(59,130,246,0.3);
-  --shadow-neon-red: 0 0 20px rgba(239,68,68,0.3);
-  --shadow-neon-green: 0 0 20px rgba(16,185,129,0.3);
+  --shadow-sm: 0 2px 8px rgba(0,0,0,0.35);
+  --shadow-md: 0 8px 32px rgba(0,0,0,0.45);
+  --shadow-lg: 0 20px 60px rgba(0,0,0,0.6);
+  --shadow-neon-blue: 0 0 24px rgba(59,130,246,0.35);
+  --shadow-neon-orange: 0 0 24px rgba(249,115,22,0.35);
+  --shadow-neon-red: 0 0 24px rgba(239,68,68,0.35);
+  --shadow-neon-green: 0 0 24px rgba(16,185,129,0.35);
 
   --radius-sm: 8px;
   --radius-md: 12px;
@@ -44,7 +46,7 @@
   --transition: 0.2s cubic-bezier(0.4,0,0.2,1);
   --transition-slow: 0.4s cubic-bezier(0.4,0,0.2,1);
 
-  --sidebar-w: 240px;
+  --sidebar-w: 244px;
   --header-h: 64px;
 }
 
@@ -183,6 +185,8 @@ a:hover { color: var(--accent-cyan); }
 .main-content {
   margin-left: var(--sidebar-w);
   flex: 1;
+  min-width: 0;
+  max-width: 100%;
   min-height: 100vh;
   display: flex;
   flex-direction: column;
@@ -191,6 +195,9 @@ a:hover { color: var(--accent-cyan); }
 .page-container {
   padding: 28px 32px;
   flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 /* ── Glass Card ── */

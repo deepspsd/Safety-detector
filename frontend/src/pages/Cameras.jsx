@@ -352,16 +352,17 @@ export default function Cameras() {
               <span style={{ fontSize: '0.72rem', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 99, padding: '1px 8px', color: 'var(--text-secondary)' }}>{cams.length}</span>
             </div>
             <div className="card" style={{ overflow: 'hidden', padding: 0 }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead>
-                  <tr style={{ background: 'rgba(255,255,255,0.02)' }}>
-                    {['Name', 'Status', 'Zone', 'RTSP URL', 'AI', 'Actions'].map(h => (
-                      <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontSize: '0.72rem', fontWeight: 700,
-                        textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)',
-                        borderBottom: '1px solid var(--border)' }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
+              <div className="table-scroll-wrapper">
+                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 540 }}>
+                  <thead>
+                    <tr style={{ background: 'rgba(255,255,255,0.02)' }}>
+                      {['Name', 'Status', 'Zone', 'RTSP URL', 'AI', 'Actions'].map(h => (
+                        <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontSize: '0.72rem', fontWeight: 700,
+                          textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)',
+                          borderBottom: '1px solid var(--border)' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
                 <tbody>
                   {cams.map((cam, i) => {
                     const sc = STATUS_CFG[cam.status] || STATUS_CFG.offline
@@ -420,6 +421,7 @@ export default function Cameras() {
               </table>
             </div>
           </div>
+        </div>
         ))
       )}
 
