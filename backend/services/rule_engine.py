@@ -1814,6 +1814,7 @@ def _fire_workflow_alert(
 # ═════════════════════════════════════════════════════════════════════════════
 
 _fall_consecutive_frames: Dict[int, int] = {}
+_fight_consecutive_frames: Dict[int, int] = {}
 _multi_model_last_alert: Dict[Tuple[int, str, Optional[int]], float] = {}
 _FALL_CONFIRMATION_FRAMES = 3
 _ALERT_COOLDOWN_SEC = 60.0
@@ -1830,7 +1831,8 @@ def process_multi_model_rules(
 ) -> None:
     """
     Evaluate multi-model detections with temporal debouncing and cooldowns:
-    - Worker Fall: must be observed for >= 3 frames before triggering critical alert.
+    - Worker Fall: verified against pose kinematics to suppress sitting false positives.
+    - Physical Altercation / Fight: debounced over consecutive frames across all zones.
     - Machine Anomaly / Object Throwing: debounced by 60s cooldown per camera.
     """
     now = time.time()
@@ -1844,11 +1846,27 @@ def process_multi_model_rules(
         except Exception:
             snapshot_b64 = None
 
-    # 1. Fall Detection Temporal Debouncing
+    # 1. Fall Detection Temporal Debouncing & Sitting Suppression
     fall_dets = [
         d for d in detections
         if d.get("label") == "Worker Fall" or "fall" in str(d.get("label", "")).lower()
     ]
+    if fall_dets:
+        # Cross-verify with pose kinematics to eliminate sitting false positives
+        try:
+            from services.pose_layer import fall_analyzer
+            verified_falls, suppressed_cnt = fall_analyzer.filter_fall_false_positives(
+                camera_id=camera_id,
+                raw_fall_detections=fall_dets,
+                tracked_persons=persons or [],
+                frame_shape=frame.shape[:2] if frame is not None else (720, 1280),
+            )
+            if suppressed_cnt > 0:
+                log.info(f"[rule_engine] Suppressed {suppressed_cnt} sitting false positive(s) for cam={camera_id}")
+            fall_dets = verified_falls
+        except Exception as _fe:
+            log.debug(f"[rule_engine] Fall kinematics check note: {_fe}")
+
     if fall_dets:
         _fall_consecutive_frames[camera_id] = _fall_consecutive_frames.get(camera_id, 0) + 1
         consecutive = _fall_consecutive_frames[camera_id]
@@ -1883,6 +1901,45 @@ def process_multi_model_rules(
         # Decay fall counter if frame clear
         if camera_id in _fall_consecutive_frames:
             _fall_consecutive_frames[camera_id] = max(0, _fall_consecutive_frames[camera_id] - 1)
+
+    # 2. Fight / Physical Altercation Temporal Debouncing (active everywhere)
+    fight_dets = [
+        d for d in detections
+        if d.get("label") == "Physical Altercation"
+        or "fight" in str(d.get("label", "")).lower()
+        or "altercation" in str(d.get("label", "")).lower()
+    ]
+    if fight_dets:
+        _fight_consecutive_frames[camera_id] = _fight_consecutive_frames.get(camera_id, 0) + 1
+        if _fight_consecutive_frames[camera_id] >= 2:
+            cooldown_key = (camera_id, "Physical Altercation", None)
+            last_alert = _multi_model_last_alert.get(cooldown_key, 0.0)
+            if (now - last_alert) >= _ALERT_COOLDOWN_SEC:
+                _multi_model_last_alert[cooldown_key] = now
+                best_fight = max(fight_dets, key=lambda x: x.get("confidence", 0.0))
+                try:
+                    save_alert(
+                        db=db,
+                        user_id=_get_rule_engine_user_id(db),
+                        message=f"🚨 CRITICAL SAFETY ALERT: Physical altercation / fighting detected on Camera {camera_id} ({floor} floor)!",
+                        role="Worker",
+                        severity="critical",
+                        detected_issue="Physical Altercation Detected",
+                        confidence=best_fight.get("confidence", 0.90),
+                        snapshot_b64=snapshot_b64,
+                        camera_id=camera_id,
+                        floor=floor,
+                        confidence_tier="high",
+                        model_name="action_recognition",
+                        capability="fight_detection",
+                        violation_type="fight_aggression",
+                    )
+                    log.warning(f"[rule_engine] Confirmed Physical Altercation alert fired for cam={camera_id}")
+                except Exception as exc:
+                    log.error(f"[rule_engine] Failed to save fight alert: {exc}")
+    else:
+        if camera_id in _fight_consecutive_frames:
+            _fight_consecutive_frames[camera_id] = max(0, _fight_consecutive_frames[camera_id] - 1)
 
     # 2. Machine Sensor / Visual Anomaly & Object Throwing Debouncing
     for det in detections:

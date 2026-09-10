@@ -99,6 +99,14 @@ LABEL_NORMALIZATION: Dict[str, Tuple[Optional[str], str]] = {
     # Object Throwing
     "Object_Throwing": ("Object Throwing", "violation"),
     "Object Throwing": ("Object Throwing", "violation"),
+    # Fight / Physical Altercation / Rage
+    "fight": ("Physical Altercation", "violation"),
+    "fighting": ("Physical Altercation", "violation"),
+    "Fight": ("Physical Altercation", "violation"),
+    "Fighting": ("Physical Altercation", "violation"),
+    "Physical Altercation": ("Physical Altercation", "violation"),
+    "fight_aggression": ("Physical Altercation", "violation"),
+    "aggression": ("Physical Altercation", "violation"),
 }
 
 
@@ -110,11 +118,20 @@ def normalize_class_label(raw_label: str) -> Tuple[Optional[str], str]:
     if raw_label in LABEL_NORMALIZATION:
         return LABEL_NORMALIZATION[raw_label]
 
-    # Cash banknotes pattern (e.g. "10 BGN", "50 EUR")
-    lbl_lower = raw_label.lower()
+    lbl_lower = raw_label.lower().strip()
+
+    # Fight / Altercation check
+    if "fight" in lbl_lower or "altercation" in lbl_lower or "aggression" in lbl_lower:
+        return "Physical Altercation", "violation"
+
+    # Cash banknotes pattern (e.g. "10 BGN", "50 EUR", "100 INR", "₹500")
     if (
         "cash" in lbl_lower
         or "banknote" in lbl_lower
+        or "rupee" in lbl_lower
+        or "inr" in lbl_lower
+        or "₹" in raw_label
+        or lbl_lower.startswith("rs")
         or raw_label.endswith(" BGN")
         or raw_label.endswith(" EUR")
         or raw_label.endswith(" INR")

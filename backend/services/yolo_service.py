@@ -781,8 +781,8 @@ def _run_inference_with(frame: np.ndarray, model, is_ppe: bool) -> List[Dict]:
         imgsz=480,
         conf=max(0.40, getattr(settings, "DETECTION_CONF", 0.50)),
         iou=settings.NMS_IOU,
-        half=_use_half,
         stream=True,
+        **({"half": True} if _use_half else {}),
     ))
     detections = []
     _raw_box_count = sum(len(r.boxes) for r in results)
@@ -1198,16 +1198,16 @@ def _draw_results(
 
             if lbl.lower() == "cash":
                 box_color = _COLOR_CASH
-                prefix = "💵 "
+                prefix = "[CASH] "
             elif "cylinder" in lbl.lower():
                 box_color = _COLOR_CYLINDER
-                prefix = "🛢️ "
+                prefix = "[CYLINDER] "
             elif "document" in lbl.lower():
                 box_color = _COLOR_DOC
-                prefix = "📄 "
+                prefix = "[DOC] "
             else:
                 box_color = COLOR_NEUTRAL
-                prefix = "📦 "
+                prefix = ""
 
             # Draw box
             cv2.rectangle(annotated, (x1, y1), (x2, y2), box_color, 2)
@@ -1259,41 +1259,44 @@ def _draw_results(
         if _matches_person:
             continue
 
-        # Pick color + emoji based on label
-        if "fall" in _lbl_lower:
+        # Pick color + indicator based on label (ASCII only — OpenCV cv2.putText cannot render Unicode emoji)
+        if "fight" in _lbl_lower or "altercation" in _lbl_lower:
+            box_color = (0, 0, 255)            # Bright Red (BGR)
+            prefix = "[FIGHT] "
+        elif "fall" in _lbl_lower:
             box_color = _COLOR_FALL
-            prefix = "🚨 "
+            prefix = "[FALL] "
         elif "anomaly" in _lbl_lower:
             box_color = _COLOR_ANOMALY
-            prefix = "⚠️ "
+            prefix = "[ANOMALY] "
         elif "throw" in _lbl_lower:
             box_color = _COLOR_THROWING
-            prefix = "🏃 "
+            prefix = "[THROW] "
         elif "bangle" in _lbl_lower:
             box_color = _COLOR_BANGLES
-            prefix = "🚫 "
+            prefix = "[BANGLE] "
         elif "hair" in _lbl_lower or "head-cap" in _lbl_lower or "head cap" in _lbl_lower:
             raw_n = det.get("raw_label", "")
             lbl = raw_n if raw_n in ("hairnet", "no_hairnet") else lbl
             if _dt == "compliant":
                 box_color = _COLOR_HAIRNET_OK
-                prefix = "🧢 "
+                prefix = "[OK] "
             else:
                 box_color = COLOR_VIOLATION
-                prefix = "❌ "
+                prefix = "[!] "
         elif "glove" in _lbl_lower:
             if _dt == "compliant":
                 box_color = _COLOR_GLOVES_OK
-                prefix = "🧤 "
+                prefix = "[OK] "
             else:
                 box_color = COLOR_VIOLATION
-                prefix = "❌ "
+                prefix = "[!] "
         elif _dt == "compliant":
             box_color = COLOR_COMPLIANT
-            prefix = "✅ "
+            prefix = "[OK] "
         else:
             box_color = COLOR_VIOLATION
-            prefix = "❗ "
+            prefix = "[!] "
 
         thickness = 3 if _dt == "violation" else 2
         cv2.rectangle(annotated, (x1, y1), (x2, y2), box_color, thickness)
@@ -1368,6 +1371,20 @@ def _draw_results(
                     )
 
         else:
+            # If an altercation is detected in the frame, suppress green 'Compliant' box
+            # for individuals caught inside the altercation box.
+            _in_fight = False
+            for _d in raw_detections:
+                if any(w in str(_d.get("label", "")).lower() for w in ("fight", "altercation")) or _d.get("raw_label") == "fight_aggression":
+                    _fx1, _fy1, _fx2, _fy2 = _d["bbox"]
+                    _cx = (x1 + x2) / 2.0
+                    _cy = (y1 + y2) / 2.0
+                    if _fx1 <= _cx <= _fx2 and _fy1 <= _cy <= _fy2:
+                        _in_fight = True
+                        break
+            if _in_fight:
+                continue
+
             color = COLOR_COMPLIANT
             cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
             # Role-specific compliant label
@@ -1830,6 +1847,44 @@ def _run_pipeline(
             if "mask" in _lbl_lower and "no_mask" not in _lbl_lower:
                 continue
 
+            # Cash validation: NEVER accept floating banknote boxes on walls or background.
+            # Cash MUST overlap with cashbox polygon OR be within proximity of a person's wrist/hand.
+            if _lbl_lower == "cash" or _ed.raw_label == "cash":
+                _cash_valid = False
+                _cx = (_ed.bbox[0] + _ed.bbox[2]) / 2.0
+                _cy = (_ed.bbox[1] + _ed.bbox[3]) / 2.0
+
+                # 1. Check if inside configured cashbox / cash zone polygon
+                if zones and isinstance(zones, dict):
+                    for _zk, _zd in zones.items():
+                        if any(_w in _zk.lower() for _w in ("cash", "counter", "drawer")):
+                            _poly = _zd.get("polygon") if isinstance(_zd, dict) else _zd
+                            if _poly and len(_poly) >= 3:
+                                from services.zone_service import point_in_zone
+                                if point_in_zone(_cx, _cy, _poly):
+                                    _cash_valid = True
+                                    break
+
+                # 2. Check hand / wrist proximity from pose keypoints
+                if not _cash_valid and frame is not None:
+                    try:
+                        from services.pose_layer import pose_adapter
+                        _poses = pose_adapter.analyse(frame)
+                        for _p in _poses:
+                            for _wpos in _p.get("wrists", []):
+                                _dist = ((_cx - _wpos[0]) ** 2 + (_cy - _wpos[1]) ** 2) ** 0.5
+                                if _dist < 150.0:  # Hand within 150px
+                                    _cash_valid = True
+                                    break
+                            if _cash_valid:
+                                break
+                    except Exception as _pe:
+                        log.debug(f"[Pose] Proximity check failed: {_pe}")
+
+                if not _cash_valid:
+                    # Floating detection on wall/sign/background — discard false positive!
+                    continue
+
             raw.append({
                 "label": _lbl,
                 "confidence": _ed.confidence,
@@ -1862,6 +1917,7 @@ def _run_pipeline(
     # CRITICAL: safety-critical anomalies must NEVER be suppressed by client-side PPE checkboxes!
     CRITICAL_SAFETY_LABELS = {
         "Worker Fall", "fall", "Fall",
+        "Physical Altercation", "fight", "fighting", "aggression",
         "Machine Anomaly", "anomaly", "Anomaly",
         "Object Throwing", "throw", "Throw",
         "Bangles", "bangles",
@@ -1917,6 +1973,48 @@ def _run_pipeline(
                         p["employee_id"] = ident.get("employee_id")
         except Exception as _ident_exc:
             log.debug(f"Worker identity attach error: {_ident_exc}")
+
+    # ── Fall vs. Sitting Pose Kinematics & Fight / Aggression Detection ─────────────
+    # Runs everywhere (all default and production zones).
+    if persons:
+        try:
+            from services.pose_layer import pose_adapter, fall_analyzer
+            # 1. Update pose keypoints & kinematics per tracked person
+            _poses = pose_adapter.analyse(frame, [p.get("bbox") for p in persons if p.get("bbox")])
+            for i, p in enumerate(persons):
+                _tid = p.get("track_id")
+                if _tid is not None and _tid != -1:
+                    _kps = _poses[i].get("keypoints", {}) if i < len(_poses) else {}
+                    fall_analyzer.update_track(camera_id or 1, _tid, p.get("bbox", []), _kps)
+
+            # 2. Filter fall false-positives (sitting/bending)
+            _raw_falls = [d for d in raw if "fall" in d.get("label", "").lower()]
+            if _raw_falls:
+                _verified_falls, _supp_cnt = fall_analyzer.filter_fall_false_positives(
+                    camera_id=camera_id or 1,
+                    raw_fall_detections=_raw_falls,
+                    tracked_persons=persons,
+                    frame_shape=frame.shape[:2],
+                )
+                raw = [d for d in raw if "fall" not in d.get("label", "").lower()] + _verified_falls
+                ppe_dets = [d for d in ppe_dets if "fall" not in d.get("label", "").lower()] + _verified_falls
+        except Exception as _kin_exc:
+            log.debug(f"[YOLO] Fall kinematics check error: {_kin_exc}")
+
+        # 3. Fight & physical altercation detection (active everywhere)
+        try:
+            from services.action_recognition import aggression_detector
+            _fight_dets = aggression_detector.detect_aggression(
+                frame=frame,
+                persons=persons,
+                camera_id=camera_id or 1,
+                poses=_poses if '_poses' in locals() else None,
+            )
+            for _fd in _fight_dets:
+                raw.append(_fd)
+                ppe_dets.append(_fd)
+        except Exception as _fight_exc:
+            log.debug(f"[YOLO] Fight detection error: {_fight_exc}")
 
     # Only synthesize a person if wearable PPE items (headcap, vest, hardhat, bangles) are detected
     WEARABLE_PPE_CLASSES = {
@@ -2108,6 +2206,21 @@ def _run_pipeline(
     # (no remap needed here anymore)
 
     is_compliant, missing, alert_msg, severity = _compliance_summary(enriched, role)
+
+    # Critical frame-level anomalies (Fight / Altercation / Fall)
+    crit_anomalies = [
+        d["label"] for d in raw
+        if any(w in str(d.get("label", "")).lower() for w in ("fight", "altercation", "fall", "anomaly", "throwing"))
+        or str(d.get("raw_label", "")) in ("fight_aggression", "worker_fall")
+    ]
+    if crit_anomalies:
+        is_compliant = False
+        severity = "critical"
+        for ca in crit_anomalies:
+            if ca not in missing:
+                missing.insert(0, ca)
+        crit_str = ", ".join(dict.fromkeys(crit_anomalies))
+        alert_msg = f"[CRITICAL EVENT] {crit_str}" if not alert_msg else f"[CRITICAL EVENT] {crit_str} | {alert_msg}"
 
     annotated = _draw_results(frame, enriched, raw, role)
     ann_b64 = encode_frame(annotated)

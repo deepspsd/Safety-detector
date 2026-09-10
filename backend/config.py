@@ -110,7 +110,7 @@ class Settings(BaseSettings):
             "type": "yolo",
             "enabled": True,
             "priority": 2,
-            "conf_threshold": 0.50,
+            "conf_threshold": 0.70,
             "target_fps": 3,
             "zones": ["shop_counter", "shop", "cashbox", "cash"],
             "description": "Cash monitoring - banknote detection (EUR/BGN/currency)",
@@ -215,29 +215,32 @@ class Settings(BaseSettings):
         "person_action_monitoring": ["person_action_recognition"],
         "wrist_accessory_detection": ["hand_landmarks"],
         "bangles_compliance": ["hand_landmarks"],
+        "fight_detection": ["person_action_recognition", "yolov8x_coco"],
+        "violence_detection": ["person_action_recognition"],
     }
 
     # ── Zone-to-Capability Mapping ─────────────────────────────────────────
     # Default required capabilities for standard zone types.
+    # Fall detection and fight detection are safety-critical and active EVERYWHERE.
     ZONE_CAPABILITY_MAP: dict = {
-        "entrance":         ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "vehicle_detection"],
-        "dough_mixing":     ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "machine_anomaly_prediction"],
-        "dough_table":      ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection"],
-        "oven":             ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection"],
-        "biscuit_cutting":  ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "machine_anomaly_prediction"],
-        "cutting_machine":  ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "machine_anomaly_prediction"],
-        "packing":          ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "hand_motion_tracking"],
-        "shop":             ["person_detection", "cash_monitoring", "head_cover_compliance", "worker_fall_detection"],
-        "shop_counter":     ["person_detection", "cash_monitoring", "head_cover_compliance", "worker_fall_detection"],
-        "cashbox":          ["person_detection", "cash_monitoring", "head_cover_compliance"],
-        "lift":             ["person_detection", "worker_fall_detection"],
-        "gas_section":      ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection"],
-        "passage":          ["person_detection", "wrist_accessory_detection", "worker_fall_detection"],
-        "store":            ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection"],
-        "raw_material":     ["person_detection", "wrist_accessory_detection", "worker_fall_detection"],
-        "window":           ["person_detection", "object_throwing_detection"],
-        "loading":          ["person_detection", "hardhat_compliance", "vehicle_detection"],
-        "default":          ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection"],
+        "entrance":         ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection", "vehicle_detection"],
+        "dough_mixing":     ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection", "machine_anomaly_prediction"],
+        "dough_table":      ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection"],
+        "oven":             ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection"],
+        "biscuit_cutting":  ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection", "machine_anomaly_prediction"],
+        "cutting_machine":  ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection", "machine_anomaly_prediction"],
+        "packing":          ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection", "hand_motion_tracking"],
+        "shop":             ["person_detection", "cash_monitoring", "head_cover_compliance", "worker_fall_detection", "fight_detection"],
+        "shop_counter":     ["person_detection", "cash_monitoring", "head_cover_compliance", "worker_fall_detection", "fight_detection"],
+        "cashbox":          ["person_detection", "cash_monitoring", "head_cover_compliance", "worker_fall_detection", "fight_detection"],
+        "lift":             ["person_detection", "worker_fall_detection", "fight_detection"],
+        "gas_section":      ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection"],
+        "passage":          ["person_detection", "wrist_accessory_detection", "worker_fall_detection", "fight_detection"],
+        "store":            ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection"],
+        "raw_material":     ["person_detection", "wrist_accessory_detection", "worker_fall_detection", "fight_detection"],
+        "window":           ["person_detection", "object_throwing_detection", "worker_fall_detection", "fight_detection"],
+        "loading":          ["person_detection", "hardhat_compliance", "vehicle_detection", "worker_fall_detection", "fight_detection"],
+        "default":          ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection"],
     }
 
     # ── Zone-to-Model Mapping (derived helper) ─────────────────────────────
@@ -252,14 +255,14 @@ class Settings(BaseSettings):
         "packing":          ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
         "shop":             ["yolov8x_coco", "hairnet_glove_detection", "fall_detection", "cash_detection"],
         "shop_counter":     ["yolov8x_coco", "hairnet_glove_detection", "fall_detection", "cash_detection"],
-        "cashbox":          ["yolov8x_coco", "cash_detection", "hairnet_glove_detection"],
+        "cashbox":          ["yolov8x_coco", "cash_detection", "hairnet_glove_detection", "fall_detection"],
         "lift":             ["yolov8x_coco", "fall_detection"],
         "gas_section":      ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
         "passage":          ["yolov8x_coco", "fall_detection"],
         "store":            ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
         "raw_material":     ["yolov8x_coco", "fall_detection"],
-        "window":           ["yolov8x_coco", "object_throwing"],
-        "loading":          ["yolov8x_coco", "helmet_model"],
+        "window":           ["yolov8x_coco", "fall_detection", "object_throwing"],
+        "loading":          ["yolov8x_coco", "fall_detection", "helmet_model"],
         "default":          ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
     }
 
@@ -331,11 +334,20 @@ class Settings(BaseSettings):
         "cash": "cash",
         "5 BGN": "cash", "10 BGN": "cash", "20 BGN": "cash", "50 BGN": "cash", "100 BGN": "cash",
         "5 EUR": "cash", "10 EUR": "cash", "20 EUR": "cash", "50 EUR": "cash", "100 EUR": "cash",
+        "10 inr": "cash", "20 inr": "cash", "50 inr": "cash", "100 inr": "cash", "200 inr": "cash", "500 inr": "cash", "2000 inr": "cash",
+        "₹10": "cash", "₹20": "cash", "₹50": "cash", "₹100": "cash", "₹200": "cash", "₹500": "cash", "₹2000": "cash",
 
         # Action / Throwing / Motion
         "Object Throwing": "object_throwing",
         "object_throwing": "object_throwing",
         "Object_Throwing": "object_throwing",
+
+        # Fight / Rage / Physical Altercation
+        "Physical Altercation": "fight_aggression",
+        "fight": "fight_aggression",
+        "fighting": "fight_aggression",
+        "fight_aggression": "fight_aggression",
+        "aggression": "fight_aggression",
 
         # Hand landmarks
         "Hand-0": "hand",

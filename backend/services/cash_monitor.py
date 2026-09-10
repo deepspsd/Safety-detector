@@ -68,19 +68,29 @@ _BODY_ZONE_X_EXPAND: float = 1.15
 _ALERT_COOLDOWN_SECS: float = 90.0
 
 # Cash class label strings — includes exact model output + common lowercase variants
-_CASH_LABELS = {"Cash", "cash", "banknote", "money", "note", "currency", "rupee", "bill"}
+_CASH_LABELS = {
+    "cash", "banknote", "money", "note", "currency", "rupee", "rupees", "bill",
+    "indian rupee", "rs", "rs.", "inr"
+}
 _CASH_LABELS.update({f"{v} bgn" for v in (5, 10, 20, 50, 100)})
 _CASH_LABELS.update({f"{v} eur" for v in (5, 10, 20, 50, 100)})
 _CASH_LABELS.update({f"{v} inr" for v in (10, 20, 50, 100, 200, 500, 2000)})
+_CASH_LABELS.update({f"inr {v}" for v in (10, 20, 50, 100, 200, 500, 2000)})
+_CASH_LABELS.update({f"₹{v}" for v in (10, 20, 50, 100, 200, 500, 2000)})
+_CASH_LABELS.update({f"rs {v}" for v in (10, 20, 50, 100, 200, 500, 2000)})
+_CASH_LABELS.update({f"rs.{v}" for v in (10, 20, 50, 100, 200, 500, 2000)})
+_CASH_LABELS.update({f"rupee {v}" for v in (10, 20, 50, 100, 200, 500, 2000)})
 
 
 def _is_cash_label(label: str) -> bool:
     if not label:
         return False
-    lbl = label.lower()
+    lbl = label.lower().strip()
     if lbl in _CASH_LABELS:
         return True
-    return any(lbl.endswith(suf) for suf in (" bgn", " eur", " inr", " usd", " gbp", " aed", " pkr", " bdt"))
+    return any(lbl.endswith(suf) or lbl.startswith(suf) for suf in (
+        " bgn", " eur", " inr", " usd", " gbp", " aed", " pkr", " bdt", "rs", "₹", "rupee"
+    ))
 
 
 # Minimum confidence to treat a detection as real Cash.
@@ -732,6 +742,21 @@ def check_cash_zone(
 
     Returns dict containing status, theft_alert, and payee snapshot.
     """
+    # Guard: only run cash handling monitoring for cash zones (shop floor or cashbox/vendor polygon)
+    is_cash_zone = (
+        floor in ("shop", "bakery")
+        or (cashbox_polygon is not None and len(cashbox_polygon) >= 3)
+        or (vendor_polygon is not None and len(vendor_polygon) >= 3)
+    )
+    if not is_cash_zone:
+        return {
+            "cash_detected": False,
+            "theft_alert": None,
+            "payee_detected": False,
+            "payee_snapshot_b64": None,
+            "payee_id": None,
+        }
+
     # Extract Cash detections
     cash_dets = [
         d for d in detections

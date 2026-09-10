@@ -388,20 +388,15 @@ def detect_phone_usage(
             "annotated_frame": frame,
         }
 
-    # ── If persons detected but no phones → all green ─────────
+    # ── If persons detected but no phones → return original frame without green hijacking ─
     if not phones and persons:
-        annotated = frame.copy()
-        for person in persons:
-            px1, py1, px2, py2 = person["bbox"]
-            cv2.rectangle(annotated, (px1, py1), (px2, py2), COLOR_GREEN, 2)
-            _put_label(annotated, "SAFE - No Phone", px1, py1, COLOR_GREEN)
         return {
             "phone_detected": False,
             "phone_status": "safe",
             "phone_alert": None,
             "phone_severity": None,
             "phone_detections": [],
-            "annotated_frame": annotated,
+            "annotated_frame": frame,
         }
 
     # ── If phones but no persons → use frame-position heuristic ─

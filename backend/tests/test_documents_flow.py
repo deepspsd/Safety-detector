@@ -11,6 +11,10 @@ from database import get_db, Base, engine, InvoiceLog, OrderFormLog
 client = TestClient(app)
 
 class TestDocumentsWorkflow(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        Base.metadata.create_all(bind=engine)
+
     def test_fixed_qr_config_endpoint(self):
         """Verify GET /documents/fixed-qr-config returns portal URL and fixed key."""
         res = client.get("/documents/fixed-qr-config")

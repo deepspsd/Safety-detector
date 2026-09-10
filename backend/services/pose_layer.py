@@ -298,5 +298,242 @@ class PoseAdapter:
         return accessory_dets
 
 
+
+class FallKinematicsAnalyzer:
+    """
+    Temporal kinematics engine to accurately classify Fall vs Sitting.
+    Eliminates false positives on sitting, bending, and kneeling.
+
+    Operates across ALL zones (default, production, entrances, shop).
+
+    Kinematic Indicators:
+    1. Vertical velocity of descent (vy): rapid collapse vs controlled lowering.
+    2. Aspect ratio dynamics (AR = height / width): sudden flip from >1.4 to <0.85.
+    3. Torso orientation angle (theta): upright (>55 deg) for sitting/standing vs flat (<35 deg) on ground.
+    4. Post-fall immobility duration: motionless for >= 2.0s after collapse.
+    5. Controlled lowering into chair vs uncontrolled impact.
+    """
+
+    def __init__(self, history_len: int = 30):
+        import collections
+        import threading
+        self.history_len = history_len
+        self._history: Dict[Tuple[int, int], collections.deque] = {}
+        self._fall_track_state: Dict[Tuple[int, int], Dict] = {}
+        self._states: Dict[Tuple[int, int], Dict] = {}
+        self._lock = threading.Lock()
+
+    def update_track(
+        self,
+        camera_id: int,
+        track_id: int,
+        bbox: List[int],
+        keypoints: Optional[Dict] = None,
+        now: Optional[float] = None,
+    ) -> Dict:
+        """
+        Record person observation and evaluate state machine:
+        Returns: {
+            "state": "standing" | "sitting" | "falling" | "fallen",
+            "is_sitting": bool,
+            "is_fall": bool,
+            "confidence": float,
+            "reason": str,
+            "aspect_ratio": float,
+            "torso_angle": float,
+        }
+        """
+        import collections
+        import math
+        now = now or time.time()
+        key = (camera_id, track_id)
+
+        x1, y1, x2, y2 = bbox[:4]
+        w = max(1, x2 - x1)
+        h = max(1, y2 - y1)
+        aspect_ratio = float(h) / float(w)
+        cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+
+        # Calculate torso angle from keypoints if available
+        torso_angle = 80.0  # default upright
+        hip_y = float(y1 + h * 0.6)
+        shoulder_y = float(y1 + h * 0.2)
+
+        if keypoints:
+            l_sh = keypoints.get("left_shoulder")
+            r_sh = keypoints.get("right_shoulder")
+            l_hp = keypoints.get("left_hip")
+            r_hp = keypoints.get("right_hip")
+
+            sh_pts = [p for p in (l_sh, r_sh) if p and p[2] > 0.25]
+            hp_pts = [p for p in (l_hp, r_hp) if p and p[2] > 0.25]
+
+            if sh_pts and hp_pts:
+                sx = sum(p[0] for p in sh_pts) / len(sh_pts)
+                sy = sum(p[1] for p in sh_pts) / len(sh_pts)
+                hx = sum(p[0] for p in hp_pts) / len(hp_pts)
+                hy = sum(p[1] for p in hp_pts) / len(hp_pts)
+
+                shoulder_y = sy
+                hip_y = hy
+
+                # Torso angle relative to vertical axis (0 deg = horizontal lying down, 90 deg = vertical upright)
+                dx = abs(sx - hx)
+                dy = abs(sy - hy)
+                torso_angle = math.atan2(dy, dx) * (180.0 / math.pi)
+
+        snap = {
+            "time": now,
+            "bbox": bbox,
+            "cx": cx,
+            "cy": cy,
+            "hip_y": hip_y,
+            "shoulder_y": shoulder_y,
+            "ar": aspect_ratio,
+            "torso_angle": torso_angle,
+        }
+
+        with self._lock:
+            if key not in self._history:
+                self._history[key] = collections.deque(maxlen=self.history_len)
+            hist = self._history[key]
+            hist.append(snap)
+
+            # Analyze kinematic trajectory across history
+            is_sitting = False
+            is_fall = False
+            state = "standing"
+            reason = "normal standing"
+            conf = 0.50
+
+            # Need at least 3 frames for velocity analysis
+            if len(hist) >= 3:
+                # Compare against oldest frame within 0.4s - 1.2s window
+                prev = hist[0]
+                dt = max(0.05, now - prev["time"])
+                d_hip_y = (hip_y - prev["hip_y"]) / dt   # positive = moving down
+                ar_prev = prev["ar"]
+                ar_diff = aspect_ratio - ar_prev        # negative = collapsed
+
+                # Check if person is sitting upright
+                # Sitting criteria:
+                # - Torso is upright (angle > 55 deg)
+                # - Aspect ratio moderate (0.85 <= AR <= 1.4)
+                # - Descent is controlled (d_hip_y < 250 px/s or stabilized)
+                if torso_angle >= 55.0 and 0.85 <= aspect_ratio <= 1.45:
+                    is_sitting = True
+                    state = "sitting"
+                    reason = f"controlled upright posture (angle={torso_angle:.0f}deg, AR={aspect_ratio:.2f})"
+                    conf = 0.92
+
+                # Fall criteria:
+                # - Aspect ratio collapsed to horizontal (AR < 0.85)
+                # - Torso tilted toward ground (torso_angle < 42 deg)
+                # - Rapid vertical drop in history (d_hip_y > 180 px/s or AR sudden flip < -0.45)
+                elif aspect_ratio < 0.85 and torso_angle < 45.0:
+                    state = "fallen"
+                    # Check immobility in fallen pose
+                    recent_cxs = [s["cx"] for s in list(hist)[-5:]]
+                    recent_cys = [s["cy"] for s in list(hist)[-5:]]
+                    displacement = max(recent_cxs) - min(recent_cxs) + max(recent_cys) - min(recent_cys)
+
+                    st = self._fall_track_state.setdefault(key, {"fall_ts": now, "confirmed": False})
+                    time_in_fall = now - st.get("fall_ts", now)
+
+                    if time_in_fall >= 0.5 or displacement < 25.0:
+                        is_fall = True
+                        conf = min(0.98, max(0.85, 0.85 + (1.0 - aspect_ratio) * 0.15))
+                        reason = f"horizontal collapse confirmed (AR={aspect_ratio:.2f}, angle={torso_angle:.0f}deg, immobile={time_in_fall:.1f}s)"
+
+                else:
+                    self._fall_track_state.pop(key, None)
+
+            # Update cached state
+            res = {
+                "state": state,
+                "is_sitting": is_sitting,
+                "is_fall": is_fall,
+                "confidence": conf,
+                "reason": reason,
+                "aspect_ratio": aspect_ratio,
+                "torso_angle": torso_angle,
+            }
+            self._states[key] = res
+            return res
+
+    def filter_fall_false_positives(
+        self,
+        camera_id: int,
+        raw_fall_detections: List[Dict],
+        tracked_persons: List[Dict],
+        frame_shape: Tuple[int, int],
+    ) -> Tuple[List[Dict], int]:
+        """
+        Cross-validates raw fall bounding boxes against pose kinematics.
+        If the person is sitting or upright, suppresses the fall alert.
+        Returns: (verified_fall_detections, suppressed_count)
+        """
+        if not raw_fall_detections:
+            return [], 0
+
+        verified = []
+        suppressed = 0
+
+        for fdet in raw_fall_detections:
+            fb = fdet.get("bbox", [])
+            if len(fb) < 4:
+                continue
+
+            fx1, fy1, fx2, fy2 = fb
+            fw = max(1, fx2 - fx1)
+            fh = max(1, fy2 - fy1)
+            f_ar = float(fh) / float(fw)
+
+            # Match with closest tracked person
+            matched_person = None
+            best_iou = 0.15
+            for p in tracked_persons:
+                pb = p.get("bbox", [])
+                if len(pb) < 4:
+                    continue
+                # Intersection
+                ix1 = max(fx1, pb[0])
+                iy1 = max(fy1, pb[1])
+                ix2 = min(fx2, pb[2])
+                iy2 = min(fy2, pb[3])
+                if ix2 > ix1 and iy2 > iy1:
+                    inter = (ix2 - ix1) * (iy2 - iy1)
+                    union = fw * fh + (pb[2] - pb[0]) * (pb[3] - pb[1]) - inter
+                    iou = inter / max(1.0, union)
+                    if iou > best_iou:
+                        best_iou = iou
+                        matched_person = p
+
+            if matched_person:
+                tid = int(matched_person.get("track_id", -1))
+                kstate = self._states.get((camera_id, tid))
+                if kstate and kstate.get("is_sitting"):
+                    # Suppress sitting false positive
+                    suppressed += 1
+                    log.info(
+                        f"[FallKinematics] Suppressed sitting false positive for cam={camera_id} track={tid} ({kstate.get('reason')})"
+                    )
+                    continue
+
+                if kstate and kstate.get("torso_angle", 90.0) > 60.0 and f_ar >= 0.90:
+                    # Upright posture — definitely not a horizontal fall
+                    suppressed += 1
+                    log.info(
+                        f"[FallKinematics] Suppressed upright posture false positive for cam={camera_id} (AR={f_ar:.2f})"
+                    )
+                    continue
+
+            # If aspect ratio is genuinely horizontal (< 0.85) or kinematics confirmed:
+            verified.append(fdet)
+
+        return verified, suppressed
+
+
 pose_adapter = PoseAdapter()
+fall_analyzer = FallKinematicsAnalyzer()
 

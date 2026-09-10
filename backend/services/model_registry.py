@@ -524,7 +524,10 @@ class OpenVINOAdapter(BaseModelAdapter):
 
     def load(self) -> None:
         try:
-            from openvino.runtime import Core
+            try:
+                from openvino.runtime import Core
+            except ImportError:
+                from openvino import Core
 
             path = _resolve_model_path(self.config["path"])
             precision = self.config.get("precision", "FP16")

@@ -612,6 +612,22 @@ class _ManagedCamera:
                     self._stream_result = shared_payload
                     self._stream_result_ts = now_publish
                     self._stream_frame_count = local_frame_idx
+
+                # ── Multi-model rules: Fall, Altercation / Fight, Machine Anomaly ──
+                if db is not None:
+                    try:
+                        from services import rule_engine
+                        rule_engine.process_multi_model_rules(
+                            camera_id=self.camera_id,
+                            detections=ppe_result.get("detections", []),
+                            persons=ppe_result.get("persons", []),
+                            db=db,
+                            floor=self.floor,
+                            frame=frame,
+                        )
+                    except Exception as _re_exc:
+                        log.debug(f"[CamMgr] rule_engine error (cam={self.camera_id}): {_re_exc}")
+
                 last_sent_ts = now_publish
                 last_frame_capture_ts = capture_ts
 
@@ -874,6 +890,26 @@ class _ManagedCamera:
                     persons=persons,
                     zone_name=camera_zone_type,
                 )
+
+                # ── Action recognition — sitting idle check ──────────────────
+                # Uses Intel OpenVINO person-detection-action-recognition-0006
+                # to detect if tracked persons are sitting/passive (idle) for
+                # > 5 min.  Complements the bbox-movement idle_service check.
+                # Only run every ~3 det-loop ticks (~1s) to save CPU.
+                if persons and getattr(self, "_action_tick", 0) % 3 == 0:
+                    try:
+                        from services.action_recognition import check_sitting_idle
+                        check_sitting_idle(
+                            db=db,
+                            camera_id=self.camera_id,
+                            frame=frame,
+                            persons_tracked=persons,
+                        )
+                    except Exception as _ar_exc:
+                        log.debug(
+                            f"[CamMgr] action_recognition error (cam={self.camera_id}): {_ar_exc}"
+                        )
+                self._action_tick = getattr(self, "_action_tick", 0) + 1
 
                 # ── Rule engine — person seen recording (shift-start) ────────
                 if persons:

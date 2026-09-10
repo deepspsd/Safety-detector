@@ -88,3 +88,4 @@ occusafe-4f0c8-firebase-adminsdk-*.json
 uniform_detector_training.ipynb
 uploads
 hairnet_detector_training.ipynb
+*safety.db*

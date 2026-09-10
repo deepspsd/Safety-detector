@@ -784,7 +784,7 @@ def _run_combined_inference(
     frame_idx: int,
     enable_face: bool,
     camera_id: Optional[int] = None,
-    floor: str = "shop",
+    floor: str = "default",
 ) -> Dict:
     """
     Run PPE detection and optional face recognition simultaneously.
@@ -818,7 +818,7 @@ def _run_combined_inference_inner(
     frame_idx: int,
     enable_face: bool,
     camera_id: Optional[int] = None,
-    floor: str = "shop",
+    floor: str = "default",
 ) -> Dict:
     """
     Inner implementation — always receives a fresh thread-local DB session.
