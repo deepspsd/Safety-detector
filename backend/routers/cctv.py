@@ -48,8 +48,10 @@ os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
     "rtsp_transport;tcp|"
     "fflags;nobuffer|"
     "flags;low_delay|"
+    "buffer_size;2097152|"
+    "reorder_queue_size;100|"
     "stimeout;5000000|"
-    "max_delay;0"
+    "max_delay;500000"
 )
 
 import ssl
@@ -220,6 +222,7 @@ class CameraReader:
         self._is_shot = any(
             k in u for k in ("shot.jpg", "photo.jpg", "snap", "capture")
         )
+        self._is_video_file = any(u.endswith(ext) for ext in (".mp4", ".avi", ".mkv", ".mov", ".m4v")) or os.path.isfile(url)
         self._is_http = u.startswith("http://") or u.startswith("https://")
         self._is_rtsp = u.startswith("rtsp://") or u.startswith("rtsps://")
 
@@ -365,6 +368,33 @@ class CameraReader:
             self._last_frame_hash = fhash
         return self._consecutive_frozen >= _FROZEN_CONSECUTIVE_MAX
 
+    def _is_grey_smeared_frame(self, frame: np.ndarray) -> bool:
+        """
+        Detect H.264/H.265 decoder packet-loss artifacts (grey smears / missing macroblocks).
+        When FFmpeg or OpenCV drops RTSP packets mid-frame, missing macroblocks are decoded
+        as neutral grey (YUV [128,128,128] -> exact BGR [128,128,128] with zero texture variance).
+        If more than 15% of the frame consists of exact decoder grey macroblocks, reject frame.
+        """
+        if frame is None or frame.ndim != 3 or frame.size == 0:
+            return False
+        try:
+            small = cv2.resize(frame, (80, 45), interpolation=cv2.INTER_NEAREST)
+            b = small[:, :, 0].astype(np.int16)
+            g = small[:, :, 1].astype(np.int16)
+            r = small[:, :, 2].astype(np.int16)
+            # Decoder fill has exact neutral grey: b==g==r around 128 (+/- 4) with 0 texture
+            is_decoder_grey = (
+                (b >= 123) & (b <= 133) &
+                (g >= 123) & (g <= 133) &
+                (r >= 123) & (r <= 133) &
+                (np.abs(b - g) <= 3) &
+                (np.abs(g - r) <= 3)
+            )
+            grey_ratio = np.count_nonzero(is_decoder_grey) / float(small.shape[0] * small.shape[1])
+            return grey_ratio > 0.15
+        except Exception:
+            return False
+
     def _accept_frame(self, frame: np.ndarray, source: str = "") -> bool:
         """
         Central frame validity gate.  Returns True if frame should be stored
@@ -379,6 +409,11 @@ class CameraReader:
             self.bad_frame_count += 1
             self._consecutive_bad += 1
             logger.debug("[CamReader] %s green frame #%d (decoder artifact)", source, self.bad_frame_count)
+            return False
+        if self._is_grey_smeared_frame(frame):
+            self.bad_frame_count += 1
+            self._consecutive_bad += 1
+            logger.debug("[CamReader] %s grey smeared macroblock frame #%d (decoder packet drop)", source, self.bad_frame_count)
             return False
         if self._is_frozen_frame(frame):
             self.bad_frame_count += 1
@@ -395,8 +430,8 @@ class CameraReader:
         try:
             if self._is_shot:
                 self._poll_jpeg_loop()
-            elif self._is_webcam or self._is_rtsp:
-                self._opencv_loop()  # OpenCV/FFmpeg handles RTSP + webcam
+            elif self._is_webcam or self._is_rtsp or self._is_video_file:
+                self._opencv_loop()
             else:
                 self._mjpeg_http_loop()  # urllib handles HTTP MJPEG reliably
         except Exception as e:
@@ -610,8 +645,10 @@ class CameraReader:
                 "rtsp_transport;tcp|"
                 "fflags;nobuffer|"
                 "flags;low_delay|"
+                "buffer_size;2097152|"
+                "reorder_queue_size;100|"
                 "stimeout;5000000|"  # 5 seconds socket timeout
-                "max_delay;0"
+                "max_delay;500000"
             )
 
         # Support webcam index passed as string "0", "1", …
@@ -1320,6 +1357,7 @@ async def cctv_detection_websocket(websocket: WebSocket):
             "filters": handshake_filters,
             "no_phone_zone": bool(auth_data.get("no_phone_zone", True)),
             "enable_face": bool(auth_data.get("enable_face", True)),
+            "floor": str(auth_data.get("floor") or auth_data.get("zone") or "ground").lower(),
             "frame_count": 0,
             "alive": True,
             "cam_fps": 0.0,
@@ -1414,6 +1452,8 @@ async def cctv_detection_websocket(websocket: WebSocket):
                         state["no_phone_zone"] = bool(msg["no_phone_zone"])
                     if "enable_face" in msg:
                         state["enable_face"] = bool(msg["enable_face"])
+                    if "floor" in msg:
+                        state["floor"] = str(msg["floor"]).lower()
                     if msg.get("stop"):
                         state["alive"] = False
                 except asyncio.TimeoutError:
@@ -1707,7 +1747,7 @@ async def cctv_detection_websocket(websocket: WebSocket):
                                     fi,
                                     efa,
                                     camera_id=None,
-                                    floor="shop",
+                                    floor=state.get("floor", "ground"),
                                 )
                             ),
                         )

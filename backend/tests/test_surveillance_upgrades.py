@@ -137,6 +137,24 @@ class TestFightAggressionDetection(unittest.TestCase):
         self.assertEqual(dets[0]["label"], "Physical Altercation")
         self.assertEqual(dets[0]["det_type"], "violation")
 
+    def test_peaceful_persons_standing_together_not_altercation(self):
+        """Two individuals standing side-by-side or overlapping in camera perspective must NOT trigger altercation."""
+        dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        t0 = 300.0
+
+        # Simulate 10 consecutive frames of two coworkers standing close together (overlapping bboxes)
+        for f in range(10):
+            dets = self.detector.detect_aggression(
+                dummy_frame,
+                [
+                    {"track_id": 101, "bbox": [200, 100, 300, 380]},
+                    {"track_id": 102, "bbox": [240, 110, 340, 390]}  # heavy 2D overlap (IoU > 0.35)
+                ],
+                camera_id=self.cam_id,
+                now=t0 + (f * 0.1)
+            )
+            self.assertEqual(len(dets), 0, f"False positive altercation detected on frame {f} while standing calmly!")
+
 
 class TestIndianCashIntegrity(unittest.TestCase):
     def test_indian_rupee_labels(self):

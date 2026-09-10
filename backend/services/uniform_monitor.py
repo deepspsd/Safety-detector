@@ -114,62 +114,233 @@ class _PersonState:
     diagnostic_flag: str = "OK"
 
 
+_uniform_yolo = None
+
+
+def _get_yolo_model():
+    global _uniform_yolo
+    if _uniform_yolo is None:
+        try:
+            import os
+            from ultralytics import YOLO
+            from config import _resolve_model_path
+
+            model_path = _resolve_model_path(
+                "UNIFORM_MODEL_PATH",
+                "portable_models_package/uniform_detector/best_uniform_detector.pt",
+            )
+            _uniform_yolo = YOLO(model_path)
+            log.info(f"[Uniform] Loaded YOLO uniform detector from {model_path}")
+        except Exception as err:
+            log.error(f"[Uniform] Failed to load YOLO uniform detector: {err}")
+            _uniform_yolo = None
+    return _uniform_yolo
+
+
+def crop_upper_body(
+    frame: np.ndarray,
+    person_bbox: List[int],
+    horizontal_margin: float = 0.05,
+    height_ratio: float = 0.75,
+) -> Tuple[Optional[np.ndarray], Tuple[int, int, int, int]]:
+    """
+    Extract upper body crop starting from head/collar down to hips/waist.
+    Returns (crop, (cx1, cy1, cx2, cy2)).
+    """
+    if frame is None or person_bbox is None or len(person_bbox) != 4:
+        return None, (0, 0, 0, 0)
+    px1, py1, px2, py2 = person_bbox
+    pw = max(1, px2 - px1)
+    ph = max(1, py2 - py1)
+    fh, fw = frame.shape[:2]
+    cx1 = max(0, int(px1 - horizontal_margin * pw))
+    cy1 = max(0, int(py1))
+    cx2 = min(fw, int(px2 + horizontal_margin * pw))
+    cy2 = min(fh, int(py1 + height_ratio * ph))
+    if cx2 <= cx1 or cy2 <= cy1:
+        return None, (0, 0, 0, 0)
+    crop = frame[cy1:cy2, cx1:cx2]
+    if crop.size == 0:
+        return None, (0, 0, 0, 0)
+    return crop, (cx1, cy1, cx2, cy2)
+
+
 class UniformMonitor:
     """Stateful uniform monitor managing compliance across all cameras and tracks."""
 
     def __init__(self):
         self._state: Dict[Tuple[int, str], _PersonState] = {}
         self._lock = threading.Lock()
-        self._classifier = None
-
-    def _get_clf(self):
-        if self._classifier is None:
-            self._classifier = get_classifier("uniform")
-        return self._classifier
-
-    def classify_crop(self, crop: np.ndarray) -> ClassificationResult:
-        """Directly run inference on an image crop."""
-        clf = self._get_clf()
-        return clf.predict(crop)
 
     def classify_person_box(
         self,
         frame: np.ndarray,
         person_bbox: List[int],
+        conf_threshold: float = 0.45,
     ) -> Tuple[ClassificationResult, Optional[np.ndarray]]:
-        """Extract upper-body crop from frame and run uniform classifier."""
-        if frame is None or not person_bbox or len(person_bbox) != 4:
-            return (
-                ClassificationResult(
-                    predicted_class=PRED_UNCERTAIN,
-                    confidence=0.0,
-                    classifier_name="uniform",
-                    model_loaded=False,
-                ),
-                None,
-            )
-
-        crop = crop_person(
-            frame=frame,
-            bbox=person_bbox,
-            crop_mode=CropMode.UPPER_BODY,
-            padding=_PADDING,
-            upper_body_ratio=_UPPER_BODY_RATIO,
-            target_size=(224, 224),
-        )
+        """Extract upper-body crop from frame and run uniform YOLO detector."""
+        crop, (cx1, cy1, cx2, cy2) = crop_upper_body(frame, person_bbox)
         if crop is None or crop.shape[0] < _MIN_CROP_PX or crop.shape[1] < _MIN_CROP_PX:
             return (
                 ClassificationResult(
                     predicted_class=PRED_UNCERTAIN,
                     confidence=0.0,
-                    classifier_name="uniform",
+                    classifier_name="uniform_detector",
                     model_loaded=False,
                 ),
                 crop,
             )
 
-        res = self.classify_crop(crop)
-        return res, crop
+        model = _get_yolo_model()
+        if model is None:
+            return (
+                ClassificationResult(
+                    predicted_class=PRED_UNCERTAIN,
+                    confidence=0.0,
+                    classifier_name="uniform_detector",
+                    model_loaded=False,
+                ),
+                crop,
+            )
+
+        try:
+            conf_th = float(getattr(settings, "UNIFORM_CONF_THRESHOLD", conf_threshold))
+            results = model(crop, conf=conf_th, verbose=False)
+
+            best_uniform_conf = 0.0
+            best_uniform_box = None
+            best_uniform_name = None
+
+            best_no_uniform_conf = 0.0
+            best_no_uniform_box = None
+            best_no_uniform_name = None
+
+            for r in results:
+                for b in r.boxes:
+                    cls_id = int(b.cls[0])
+                    c_name = model.names.get(cls_id, "")
+                    conf = float(b.conf[0])
+                    bx1, by1, bx2, by2 = [int(v) for v in b.xyxy[0]]
+
+                    if c_name in ("uniform_1", "Uniform_2", "Uniform", "uniform"):
+                        if conf > best_uniform_conf:
+                            best_uniform_conf = conf
+                            best_uniform_box = [bx1, by1, bx2, by2]
+                            best_uniform_name = c_name
+                    elif c_name in ("No_uniform", "no_uniform", "NO-Uniform"):
+                        if conf > best_no_uniform_conf:
+                            best_no_uniform_conf = conf
+                            best_no_uniform_box = [bx1, by1, bx2, by2]
+                            best_no_uniform_name = c_name
+
+            if best_uniform_box and (not best_no_uniform_box or best_uniform_conf >= best_no_uniform_conf):
+                # Ensure minimum bounding box size for visual clarity
+                bw = best_uniform_box[2] - best_uniform_box[0]
+                bh = best_uniform_box[3] - best_uniform_box[1]
+                if bw < 25:
+                    pad_w = (25 - bw) // 2
+                    best_uniform_box[0] = max(0, best_uniform_box[0] - pad_w)
+                    best_uniform_box[2] = min(crop.shape[1], best_uniform_box[2] + pad_w)
+                if bh < 25:
+                    pad_h = (25 - bh) // 2
+                    best_uniform_box[1] = max(0, best_uniform_box[1] - pad_h)
+                    best_uniform_box[3] = min(crop.shape[0], best_uniform_box[3] + pad_h)
+                mapped = [
+                    cx1 + best_uniform_box[0],
+                    cy1 + best_uniform_box[1],
+                    cx1 + best_uniform_box[2],
+                    cy1 + best_uniform_box[3],
+                ]
+                return (
+                    ClassificationResult(
+                        predicted_class=PRED_UNIFORM,
+                        confidence=best_uniform_conf,
+                        classifier_name="uniform_detector",
+                        model_loaded=True,
+                        mapped_box=mapped,
+                        raw_class=best_uniform_name or "uniform_1",
+                    ),
+                    crop,
+                )
+            elif best_no_uniform_box:
+                bw = best_no_uniform_box[2] - best_no_uniform_box[0]
+                bh = best_no_uniform_box[3] - best_no_uniform_box[1]
+                if bw < 25:
+                    pad_w = (25 - bw) // 2
+                    best_no_uniform_box[0] = max(0, best_no_uniform_box[0] - pad_w)
+                    best_no_uniform_box[2] = min(crop.shape[1], best_no_uniform_box[2] + pad_w)
+                if bh < 25:
+                    pad_h = (25 - bh) // 2
+                    best_no_uniform_box[1] = max(0, best_no_uniform_box[1] - pad_h)
+                    best_no_uniform_box[3] = min(crop.shape[0], best_no_uniform_box[3] + pad_h)
+                mapped = [
+                    cx1 + best_no_uniform_box[0],
+                    cy1 + best_no_uniform_box[1],
+                    cx1 + best_no_uniform_box[2],
+                    cy1 + best_no_uniform_box[3],
+                ]
+                return (
+                    ClassificationResult(
+                        predicted_class=PRED_NO_UNIFORM,
+                        confidence=best_no_uniform_conf,
+                        classifier_name="uniform_detector",
+                        model_loaded=True,
+                        mapped_box=mapped,
+                        raw_class=best_no_uniform_name or "No_uniform",
+                    ),
+                    crop,
+                )
+            else:
+                # Absence fallback on person
+                px1, py1, px2, py2 = person_bbox
+                pw = max(1, px2 - px1)
+                ph = max(1, py2 - py1)
+                fh, fw = frame.shape[:2]
+                synth_box = [
+                    max(0, int(px1 + 0.08 * pw)),
+                    max(0, int(py1 + 0.20 * ph)),
+                    min(fw, int(px2 - 0.08 * pw)),
+                    min(fh, int(py1 + 0.70 * ph)),
+                ]
+                return (
+                    ClassificationResult(
+                        predicted_class=PRED_NO_UNIFORM,
+                        confidence=0.50,
+                        classifier_name="uniform_detector",
+                        model_loaded=True,
+                        mapped_box=synth_box,
+                        raw_class="No_uniform",
+                    ),
+                    crop,
+                )
+        except Exception as exc:
+            log.warning(f"[Uniform] YOLO inference error: {exc}")
+            return (
+                ClassificationResult(
+                    predicted_class=PRED_UNCERTAIN,
+                    confidence=0.0,
+                    classifier_name="uniform_detector",
+                    model_loaded=False,
+                ),
+                crop,
+            )
+
+    def detect_person_uniform(
+        self,
+        frame: np.ndarray,
+        person_bbox: List[int],
+        conf_threshold: float = 0.45,
+    ) -> Dict[str, Any]:
+        """Convenience method returning structured uniform detection on person."""
+        res, crop = self.classify_person_box(frame, person_bbox, conf_threshold=conf_threshold)
+        return {
+            "has_uniform": res.predicted_class == PRED_UNIFORM,
+            "prediction": res.predicted_class,
+            "confidence": res.confidence,
+            "mapped_bbox": res.mapped_box,
+            "raw_label": res.raw_class,
+            "crop": crop,
+        }
 
     def update_camera(
         self,
@@ -235,6 +406,8 @@ class UniformMonitor:
                     ps.confidence = conf
                     ps.raw_prediction = raw_pred
                     ps.diagnostic_flag = diag
+                    if clf_res.mapped_box:
+                        ps.crop_bbox = clf_res.mapped_box
                     if crop is not None:
                         ps.crop_width = crop.shape[1]
                         ps.crop_height = crop.shape[0]
@@ -296,6 +469,7 @@ class UniformMonitor:
                                 camera_id, track_id, missing_secs,
                             )
 
+                crop_bbox_snap = list(ps.crop_bbox) if ps.crop_bbox else None
                 missing_seconds = (now - ps.missing_since) if ps.missing_since else 0.0
                 state_snap = ps.state
                 diag_snap = ps.diagnostic_flag
@@ -313,6 +487,7 @@ class UniformMonitor:
                 raw_prediction=raw_pred,
                 smoothed_prediction=smoothed,
                 person_bbox=p_box,
+                crop_bbox=crop_bbox_snap,
                 crop_width=cw_snap,
                 crop_height=ch_snap,
                 diagnostic_flag=diag_snap,

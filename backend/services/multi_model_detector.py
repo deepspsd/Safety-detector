@@ -105,8 +105,17 @@ LABEL_NORMALIZATION: Dict[str, Tuple[Optional[str], str]] = {
     "Fight": ("Physical Altercation", "violation"),
     "Fighting": ("Physical Altercation", "violation"),
     "Physical Altercation": ("Physical Altercation", "violation"),
-    "fight_aggression": ("Physical Altercation", "violation"),
-    "aggression": ("Physical Altercation", "violation"),
+    # Uniform compliance
+    "uniform_1": ("Uniform", "compliant"),
+    "Uniform_1": ("Uniform", "compliant"),
+    "Uniform_2": ("Uniform", "compliant"),
+    "uniform_2": ("Uniform", "compliant"),
+    "Uniform": ("Uniform", "compliant"),
+    "uniform": ("Uniform", "compliant"),
+    "No_uniform": ("NO-Uniform", "violation"),
+    "no_uniform": ("NO-Uniform", "violation"),
+    "NO-Uniform": ("NO-Uniform", "violation"),
+    "non_uniform": ("NO-Uniform", "violation"),
 }
 
 

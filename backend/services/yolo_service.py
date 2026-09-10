@@ -56,14 +56,18 @@ VIOLATION_CLASSES = {
     "NO-Safety Vest",
     # Phase 1 new violations
     "NO-Bakery-Head-Cap",  # cap absent / incorrectly worn
+    "NO-Uniform",  # uniform absent / non-compliant
     "Bangles",  # always a violation in food production
     "Exposed-Item",  # stock kept openly
+    "Worker Fall",
+    "Physical Altercation",
 }
 COMPLIANT_CLASSES = {
     "Hardhat",
     "Mask",
     "Safety Vest",
     "Bakery-Head-Cap",  # cloth cap worn correctly
+    "Uniform",          # bakery/factory uniform worn correctly
 }
 PERSON_CLASSES = {"Person"}
 NEUTRAL_CLASSES = {
@@ -88,6 +92,8 @@ VIOLATION_LABEL_MAP = {
     "no_hairnet": "No Hairnet",
     "Bangles": "Hand Item / Bangles Worn (Violation)",
     "Exposed-Item": "Stock Kept Openly",
+    "Worker Fall": "Worker Fall Detected",
+    "Physical Altercation": "Physical Altercation / Fight",
     # Simulated classes (not detected by model natively)
     "NO-Gloves": "No Gloves",
     "NO-Goggles": "No Goggles",
@@ -172,12 +178,14 @@ ROLE_RULES: Dict[str, Dict] = {
     "Bakery Worker": {
         "required_violations": [
             "NO-Bakery-Head-Cap",  # cap absent / loose hair
+            "NO-Uniform",          # uniform absent / non-compliant
             "Bangles",             # jewellery — always flagged in food production
         ],
         "required_compliant": [
             "Bakery-Head-Cap",  # hair covered
+            "Uniform",          # uniform worn
         ],
-        "required_sim": ["NO-Uniform"],
+        "required_sim": [],
         "severity": "critical",
         "alert_prefix": "🧁 Bakery safety violation",
     },
@@ -185,12 +193,14 @@ ROLE_RULES: Dict[str, Dict] = {
     "Factory Worker": {
         "required_violations": [
             "NO-Bakery-Head-Cap",
+            "NO-Uniform",
             "Bangles",
         ],
         "required_compliant": [
             "Bakery-Head-Cap",
+            "Uniform",
         ],
-        "required_sim": ["NO-Uniform"],
+        "required_sim": [],
         "severity": "critical",
         "alert_prefix": "🏭 Factory safety violation",
     },
@@ -920,6 +930,22 @@ def _associate_to_persons(
             if bangle_lbl not in violation_labels:
                 violation_labels.append(bangle_lbl)
 
+        # Worker Fall detection check
+        if any("fall" in str(v).lower() for v in assigned_violations):
+            if "Worker Fall" not in ppe_missing:
+                ppe_missing.append("Worker Fall")
+            fall_lbl = VIOLATION_LABEL_MAP.get("Worker Fall", "Worker Fall Detected")
+            if fall_lbl not in violation_labels:
+                violation_labels.append(fall_lbl)
+
+        # Physical Altercation / Fight detection check
+        if any("fight" in str(v).lower() or "altercation" in str(v).lower() for v in assigned_violations):
+            if "Physical Altercation" not in ppe_missing:
+                ppe_missing.append("Physical Altercation")
+            fight_lbl = VIOLATION_LABEL_MAP.get("Physical Altercation", "Physical Altercation / Fight")
+            if fight_lbl not in violation_labels:
+                violation_labels.append(fight_lbl)
+
         # ── Native ppe.pt violations ───────────────────────────────
         # Two detection modes:
         #   1. ACTIVE violation: model detects "NO-Bakery-Head-Cap" → definitely missing
@@ -1284,6 +1310,13 @@ def _draw_results(
             else:
                 box_color = COLOR_VIOLATION
                 prefix = "[!] "
+        elif "uniform" in _lbl_lower:
+            if _dt == "compliant":
+                box_color = (40, 200, 50)  # Green
+                prefix = "[OK] "
+            else:
+                box_color = COLOR_VIOLATION
+                prefix = "[!] "
         elif "glove" in _lbl_lower:
             if _dt == "compliant":
                 box_color = _COLOR_GLOVES_OK
@@ -1324,11 +1357,11 @@ def _draw_results(
         is_compliant = person["is_compliant"]
 
         if not is_compliant:
-            # If the only violation is headcap (No Head Cap / No Hairnet), omit the giant outer person box
-            # so the focused inner headwear box is prominent and uncluttered.
+            # If the only violations are focused inner items (headcap, uniform), omit giant outer person box
+            # so the focused inner torso/headwear boxes are prominent and uncluttered.
             other_violations = [
                 v for v in person.get("violation_labels", [])
-                if v not in ("No Head Cap", "No Hairnet")
+                if v not in ("No Head Cap", "No Hairnet", "No Uniform")
             ]
             if other_violations:
                 color = COLOR_VIOLATION
@@ -1906,7 +1939,6 @@ def _run_pipeline(
         except Exception as _wr_err:
             log.debug(f"[Pose] Wrist accessory check error: {_wr_err}")
     else:
-        # Shop floor: exclude any bangle / hand item detections
         raw = [
             d for d in raw
             if d.get("label") not in ("Bangles", "bangles")
@@ -1925,6 +1957,7 @@ def _run_pipeline(
         "Cylinder", "gas_cylinder",
         "Bakery-Head-Cap", "NO-Bakery-Head-Cap",
         "hairnet", "no_hairnet", "Hairnet", "NO-Hairnet",
+        "Uniform", "NO-Uniform", "No Uniform",
     }
 
     before_filter = [d["label"] for d in raw]
@@ -1983,9 +2016,21 @@ def _run_pipeline(
             _poses = pose_adapter.analyse(frame, [p.get("bbox") for p in persons if p.get("bbox")])
             for i, p in enumerate(persons):
                 _tid = p.get("track_id")
-                if _tid is not None and _tid != -1:
-                    _kps = _poses[i].get("keypoints", {}) if i < len(_poses) else {}
-                    fall_analyzer.update_track(camera_id or 1, _tid, p.get("bbox", []), _kps)
+                fall_tid = _tid if (_tid is not None and _tid != -1) else (i + 1)
+                _kps = _poses[i].get("keypoints", {}) if i < len(_poses) else {}
+                fall_res = fall_analyzer.update_track(camera_id or 1, fall_tid, p.get("bbox", []), _kps)
+                if fall_res and fall_res.get("is_fall"):
+                    fall_det = {
+                        "label": "Worker Fall",
+                        "confidence": round(float(fall_res.get("confidence", 0.90)), 2),
+                        "bbox": p.get("bbox", []),
+                        "track_id": fall_tid,
+                        "det_type": "violation",
+                        "raw_label": "worker_fall",
+                        "description": f"Worker fall detected: {fall_res.get('reason', 'collapse')}",
+                    }
+                    raw.append(fall_det)
+                    ppe_dets.append(fall_det)
 
             # 2. Filter fall false-positives (sitting/bending)
             _raw_falls = [d for d in raw if "fall" in d.get("label", "").lower()]
@@ -2077,19 +2122,19 @@ def _run_pipeline(
         persons, ppe_dets, role, detection_filters=detection_filters, is_shop=is_shop_floor
     )
 
-    # ── Uniform classifier check on detected persons ──────────────────────────
+    # ── Uniform YOLO detector check on detected persons (torso crop) ───────────
     try:
         from services.uniform_monitor import uniform_monitor
         _req_uniform = (
             "NO-Uniform" in (detection_filters or [])
-            or (detection_filters is None and "NO-Uniform" in ROLE_RULES.get(role, {}).get("required_sim", []))
             or (detection_filters is None and "NO-Uniform" in ROLE_RULES.get(role, {}).get("required_violations", []))
+            or (detection_filters is None and "NO-Uniform" in ROLE_RULES.get(role, {}).get("required_sim", []))
         )
         for p in enriched:
-            res, _ = uniform_monitor.classify_person_box(frame, p["bbox"])
-            is_uniform = (res.predicted_class in ("UNIFORM", "Uniform", "Uniform_1", "Uniform_2"))
-            p["uniform_prediction"] = res.predicted_class
-            p["uniform_confidence"] = res.confidence
+            u_info = uniform_monitor.detect_person_uniform(frame, p["bbox"], conf_threshold=0.45)
+            is_uniform = u_info["has_uniform"]
+            p["uniform_prediction"] = u_info["prediction"]
+            p["uniform_confidence"] = u_info["confidence"]
             p["has_uniform"] = is_uniform
 
             if _req_uniform:
@@ -2099,9 +2144,29 @@ def _run_pipeline(
                     if "No Uniform" not in p["violation_labels"]:
                         p["violation_labels"].append("No Uniform")
                     p["is_compliant"] = False
+
+                    # Inject violation box to raw detections for visual overlay
+                    if u_info.get("mapped_bbox"):
+                        raw.append({
+                            "label": "NO-Uniform",
+                            "confidence": round(u_info["confidence"] if u_info["confidence"] > 0 else 0.50, 3),
+                            "bbox": u_info["mapped_bbox"],
+                            "det_type": "violation",
+                            "raw_label": u_info.get("raw_label") or "No_uniform",
+                        })
                 else:
                     if "Uniform" not in p["ppe_found"]:
                         p["ppe_found"].append("Uniform")
+
+                    # Inject compliant box to raw detections for visual overlay
+                    if u_info.get("mapped_bbox"):
+                        raw.append({
+                            "label": "Uniform",
+                            "confidence": round(u_info["confidence"], 3),
+                            "bbox": u_info["mapped_bbox"],
+                            "det_type": "compliant",
+                            "raw_label": u_info.get("raw_label") or "uniform_1",
+                        })
     except Exception as _ue:
         log.debug(f"[YOLO] uniform check error: {_ue}")
 

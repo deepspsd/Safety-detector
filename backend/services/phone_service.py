@@ -32,12 +32,16 @@ PERSON_CLASS_ID = 0
 PHONE_PROXY_CLASS_IDS = [67, 65, 73, 32]  # cell phone (67), remote (65), book (73), sports ball (32)
 
 # ── Detection thresholds ──────────────────────────────────────────
-CONF_THRESHOLD = 0.60  # 60% confidence threshold for phone detection
+try:
+    from config import settings
+    CONF_THRESHOLD = getattr(settings, "PHONE_CONF_THRESHOLD", 0.75)
+except Exception:
+    CONF_THRESHOLD = 0.45  # 75% confidence threshold for phone detection (increased from 0.60)
 IMG_SIZE = 960  # higher resolution = much better small-object detection
 
 # ── Ear / head region thresholds ─────────────────────────────────
-NEAR_EAR_FRACTION = 0.50  # upper 50% of PERSON bbox = ear/head region
-FRAME_EAR_FRACTION = 0.55  # fallback: upper 55% of frame height = near head
+NEAR_EAR_FRACTION = 0.30  # upper 30% of PERSON bbox = actual ear/head region (was 0.50 which treated chest/lap as calling)
+FRAME_EAR_FRACTION = 0.35  # fallback: upper 35% of frame height = near head (was 0.55)
 
 # ── Colors (BGR) — NO emoji, cv2.putText cannot render them ──────
 COLOR_GREEN = (50, 200, 50)  # safe — no phone

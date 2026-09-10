@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     HAIRNET_CONF_THRESHOLD: float = float(os.getenv("HAIRNET_CONF_THRESHOLD", "0.45"))
     HAIRNET_IMGSZ: int = int(os.getenv("HAIRNET_IMGSZ", "960"))
     DEBUG_HAIRNET_RAW: bool = os.getenv("DEBUG_HAIRNET_RAW", "false").lower() in ("true", "1", "yes")
+    UNIFORM_CONF_THRESHOLD: float = float(os.getenv("UNIFORM_CONF_THRESHOLD", "0.45"))
+    UNIFORM_IMGSZ: int = int(os.getenv("UNIFORM_IMGSZ", "640"))
+    PHONE_CONF_THRESHOLD: float = float(os.getenv("PHONE_CONF_THRESHOLD", "0.45"))
 
     # ── Face Recognition Tuning ──────────────────────────────────────────────
     FACE_RECOGNITION_TOLERANCE: float = 0.52  # 0.52 = balanced (0.60 = dlib loose, 0.42 = overly strict)
@@ -120,10 +123,27 @@ class Settings(BaseSettings):
                 5: "5 EUR", 6: "10 EUR", 7: "20 EUR", 8: "50 EUR", 9: "100 EUR"
             }
         },
+        "uniform_detector": {
+            "path": _resolve_model_path("UNIFORM_MODEL_PATH", "portable_models_package/uniform_detector/best_uniform_detector.pt"),
+            "type": "yolo",
+            "enabled": True,
+            "priority": 1,
+            "conf_threshold": float(os.getenv("UNIFORM_CONF_THRESHOLD", "0.45")),
+            "imgsz": int(os.getenv("UNIFORM_IMGSZ", "640")),
+            "target_fps": 10,
+            "zones": ["*", "entrance", "dough_mixing", "dough_table", "oven", "biscuit_cutting", "cutting_machine", "packing", "store", "passage", "raw_material", "gas_section", "default"],
+            "description": "Bakery/Factory - Worker uniform detector (uniform_1, Uniform_2, No_uniform)",
+            "capabilities": ["uniform_compliance"],
+            "classes": {
+                0: "uniform_1",
+                1: "Uniform_2",
+                2: "No_uniform",
+            },
+        },
         "helmet_model": {
             "path": _resolve_model_path("HELMET_MODEL_PATH", "helmet_model.pt"),
             "type": "yolo",
-            "enabled": True,
+            "enabled": False,
             "priority": 2,
             "conf_threshold": 0.40,
             "target_fps": 5,
@@ -217,53 +237,54 @@ class Settings(BaseSettings):
         "bangles_compliance": ["hand_landmarks"],
         "fight_detection": ["person_action_recognition", "yolov8x_coco"],
         "violence_detection": ["person_action_recognition"],
+        "uniform_compliance": ["uniform_detector"],
     }
 
     # ── Zone-to-Capability Mapping ─────────────────────────────────────────
     # Default required capabilities for standard zone types.
     # Fall detection and fight detection are safety-critical and active EVERYWHERE.
     ZONE_CAPABILITY_MAP: dict = {
-        "entrance":         ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection", "vehicle_detection"],
-        "dough_mixing":     ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection", "machine_anomaly_prediction"],
-        "dough_table":      ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection"],
-        "oven":             ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection"],
-        "biscuit_cutting":  ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection", "machine_anomaly_prediction"],
-        "cutting_machine":  ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection", "machine_anomaly_prediction"],
-        "packing":          ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection", "hand_motion_tracking"],
+        "entrance":         ["person_detection", "head_cover_compliance", "uniform_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection", "vehicle_detection"],
+        "dough_mixing":     ["person_detection", "head_cover_compliance", "uniform_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection", "machine_anomaly_prediction"],
+        "dough_table":      ["person_detection", "head_cover_compliance", "uniform_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection"],
+        "oven":             ["person_detection", "head_cover_compliance", "uniform_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection"],
+        "biscuit_cutting":  ["person_detection", "head_cover_compliance", "uniform_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection", "machine_anomaly_prediction"],
+        "cutting_machine":  ["person_detection", "head_cover_compliance", "uniform_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection", "machine_anomaly_prediction"],
+        "packing":          ["person_detection", "head_cover_compliance", "uniform_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection", "hand_motion_tracking"],
         "shop":             ["person_detection", "cash_monitoring", "head_cover_compliance", "worker_fall_detection", "fight_detection"],
         "shop_counter":     ["person_detection", "cash_monitoring", "head_cover_compliance", "worker_fall_detection", "fight_detection"],
         "cashbox":          ["person_detection", "cash_monitoring", "head_cover_compliance", "worker_fall_detection", "fight_detection"],
         "lift":             ["person_detection", "worker_fall_detection", "fight_detection"],
-        "gas_section":      ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection"],
-        "passage":          ["person_detection", "wrist_accessory_detection", "worker_fall_detection", "fight_detection"],
-        "store":            ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection"],
-        "raw_material":     ["person_detection", "wrist_accessory_detection", "worker_fall_detection", "fight_detection"],
+        "gas_section":      ["person_detection", "head_cover_compliance", "uniform_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection"],
+        "passage":          ["person_detection", "uniform_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection"],
+        "store":            ["person_detection", "head_cover_compliance", "uniform_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection"],
+        "raw_material":     ["person_detection", "uniform_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection"],
         "window":           ["person_detection", "object_throwing_detection", "worker_fall_detection", "fight_detection"],
         "loading":          ["person_detection", "hardhat_compliance", "vehicle_detection", "worker_fall_detection", "fight_detection"],
-        "default":          ["person_detection", "head_cover_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection"],
+        "default":          ["person_detection", "head_cover_compliance", "uniform_compliance", "wrist_accessory_detection", "worker_fall_detection", "fight_detection"],
     }
 
     # ── Zone-to-Model Mapping (derived helper) ─────────────────────────────
     # Defines fallback models for each zone type.
     ZONE_MODEL_MAP: dict = {
-        "entrance":         ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
-        "dough_mixing":     ["yolov8x_coco", "hairnet_glove_detection", "fall_detection", "machine_sensor_anomaly"],
-        "dough_table":      ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
-        "oven":             ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
-        "biscuit_cutting":  ["yolov8x_coco", "hairnet_glove_detection", "fall_detection", "machine_sensor_anomaly"],
-        "cutting_machine":  ["yolov8x_coco", "hairnet_glove_detection", "fall_detection", "machine_sensor_anomaly"],
-        "packing":          ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
+        "entrance":         ["yolov8x_coco", "hairnet_glove_detection", "uniform_detector", "fall_detection"],
+        "dough_mixing":     ["yolov8x_coco", "hairnet_glove_detection", "uniform_detector", "fall_detection", "machine_sensor_anomaly"],
+        "dough_table":      ["yolov8x_coco", "hairnet_glove_detection", "uniform_detector", "fall_detection"],
+        "oven":             ["yolov8x_coco", "hairnet_glove_detection", "uniform_detector", "fall_detection"],
+        "biscuit_cutting":  ["yolov8x_coco", "hairnet_glove_detection", "uniform_detector", "fall_detection", "machine_sensor_anomaly"],
+        "cutting_machine":  ["yolov8x_coco", "hairnet_glove_detection", "uniform_detector", "fall_detection", "machine_sensor_anomaly"],
+        "packing":          ["yolov8x_coco", "hairnet_glove_detection", "uniform_detector", "fall_detection"],
         "shop":             ["yolov8x_coco", "hairnet_glove_detection", "fall_detection", "cash_detection"],
         "shop_counter":     ["yolov8x_coco", "hairnet_glove_detection", "fall_detection", "cash_detection"],
         "cashbox":          ["yolov8x_coco", "cash_detection", "hairnet_glove_detection", "fall_detection"],
         "lift":             ["yolov8x_coco", "fall_detection"],
-        "gas_section":      ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
-        "passage":          ["yolov8x_coco", "fall_detection"],
-        "store":            ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
-        "raw_material":     ["yolov8x_coco", "fall_detection"],
+        "gas_section":      ["yolov8x_coco", "hairnet_glove_detection", "uniform_detector", "fall_detection"],
+        "passage":          ["yolov8x_coco", "uniform_detector", "fall_detection"],
+        "store":            ["yolov8x_coco", "hairnet_glove_detection", "uniform_detector", "fall_detection"],
+        "raw_material":     ["yolov8x_coco", "uniform_detector", "fall_detection"],
         "window":           ["yolov8x_coco", "fall_detection", "object_throwing"],
         "loading":          ["yolov8x_coco", "fall_detection", "helmet_model"],
-        "default":          ["yolov8x_coco", "hairnet_glove_detection", "fall_detection"],
+        "default":          ["yolov8x_coco", "hairnet_glove_detection", "uniform_detector", "fall_detection"],
     }
 
     # ── Model Performance Tuning ────────────────────────────────────────────
@@ -271,6 +292,7 @@ class Settings(BaseSettings):
     MODEL_FPS_LIMITS: dict = {
         "yolov8x_coco": 10,             # Primary: 10 FPS
         "hairnet_glove_detection": 5,   # Secondary: 5 FPS
+        "uniform_detector": 10,         # Secondary: 10 FPS
         "fall_detection": 10,           # Safety-critical: 10 FPS
         "cash_detection": 3,            # Shop only: 3 FPS
         "machine_sensor_anomaly": 2,    # Machine IoT: 2 FPS
@@ -310,6 +332,12 @@ class Settings(BaseSettings):
         "bangles": "bangles",
 
         # Uniform violations & compliant
+        "uniform_1": "uniform_ok",
+        "Uniform_1": "uniform_ok",
+        "Uniform_2": "uniform_ok",
+        "uniform_2": "uniform_ok",
+        "No_uniform": "no_uniform",
+        "no_uniform": "no_uniform",
         "NO-Uniform": "no_uniform",
         "NON_UNIFORM": "no_uniform",
         "Uniform": "uniform_ok",
@@ -429,7 +457,7 @@ class Settings(BaseSettings):
     UNIFORM_MODEL_DIR: str = "../training/models"
     UNIFORM_MISSING_SECONDS: float = 3.0
     UNIFORM_ALERT_COOLDOWN: float = 30.0
-    UNIFORM_CONF_THRESHOLD: float = 0.75
+    UNIFORM_CONF_THRESHOLD: float = float(os.getenv("UNIFORM_CONF_THRESHOLD", "0.45"))
 
     # ── Shift schedules (floor → required_start_time HH:MM) ─────────────────
     SHIFT_SCHEDULES: dict = {

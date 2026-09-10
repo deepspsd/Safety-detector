@@ -915,6 +915,55 @@ class _ManagedCamera:
                 if persons:
                     rule_engine.record_person_seen(self.floor)
 
+                # ── Wrist accessory / Bangle detection (non-shop floors) ────────
+                if self.floor != "shop" and camera_zone_type not in ("shop", "shop_counter", "cashbox", "cash"):
+                    try:
+                        from services.pose_layer import pose_adapter
+                        _wrist_dets = pose_adapter.detect_wrist_accessories(frame, is_shop=False)
+                        for _wd in _wrist_dets:
+                            raw_dets.append(_wd)
+                    except Exception as _w_err:
+                        log.debug(f"[CamMgr] Wrist accessory detection error (cam={self.camera_id}): {_w_err}")
+
+                # ── Fall detection kinematics ─────────────────────────────────
+                _poses = []
+                if persons:
+                    try:
+                        from services.pose_layer import pose_adapter, fall_analyzer
+                        _poses = pose_adapter.analyse(frame, [p.get("bbox") for p in persons if p.get("bbox")])
+                        for i, p in enumerate(persons):
+                            _tid = p.get("track_id")
+                            fall_tid = _tid if (_tid is not None and _tid != -1) else (i + 1)
+                            _kps = _poses[i].get("keypoints", {}) if i < len(_poses) else {}
+                            fall_res = fall_analyzer.update_track(self.camera_id, fall_tid, p.get("bbox", []), _kps)
+                            if fall_res and fall_res.get("is_fall"):
+                                raw_dets.append({
+                                    "label": "Worker Fall",
+                                    "confidence": round(float(fall_res.get("confidence", 0.90)), 2),
+                                    "bbox": p.get("bbox", []),
+                                    "track_id": fall_tid,
+                                    "det_type": "violation",
+                                    "raw_label": "worker_fall",
+                                    "description": f"Worker fall detected: {fall_res.get('reason', 'collapse')}",
+                                })
+                    except Exception as _fall_err:
+                        log.debug(f"[CamMgr] Fall detection error (cam={self.camera_id}): {_fall_err}")
+
+                # ── Fight / Altercation detection (active everywhere) ─────────
+                if len(persons) >= 2:
+                    try:
+                        from services.action_recognition import aggression_detector
+                        _fight_dets = aggression_detector.detect_aggression(
+                            frame=frame,
+                            persons=persons,
+                            camera_id=self.camera_id,
+                            poses=_poses if _poses else None,
+                        )
+                        for _fd in _fight_dets:
+                            raw_dets.append(_fd)
+                    except Exception as _fight_err:
+                        log.debug(f"[CamMgr] Fight detection error (cam={self.camera_id}): {_fight_err}")
+
                 # ── Multi-Model rule evaluation (Fall debouncing + Anomaly cooldown) ─
                 try:
                     rule_engine.process_multi_model_rules(

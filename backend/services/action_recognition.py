@@ -448,7 +448,21 @@ class FightAggressionDetector:
                         ay = (vy - prev["vy"]) / dt
                         accel = math.sqrt(ax * ax + ay * ay)
 
-                pose_data = poses[idx] if poses and idx < len(poses) else {}
+                pose_data = {}
+                if poses:
+                    best_pose_iou = 0.0
+                    bx1, by1, bx2, by2 = bbox
+                    b_area = max(1, (bx2 - bx1) * (by2 - by1))
+                    for _p in poses:
+                        px1, py1, px2, py2 = _p.get("bbox", [0, 0, 0, 0])
+                        ix1, iy1 = max(bx1, px1), max(by1, py1)
+                        ix2, iy2 = min(bx2, px2), min(by2, py2)
+                        inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+                        p_area = max(1, (px2 - px1) * (py2 - py1))
+                        _iou = inter / float(b_area + p_area - inter)
+                        if _iou > best_pose_iou:
+                            best_pose_iou = _iou
+                            pose_data = _p
 
                 snap = {
                     "time": now,
@@ -508,47 +522,71 @@ class FightAggressionDetector:
                     dvy = p1["vy"] - p2["vy"]
                     rel_speed = math.sqrt(dvx * dvx + dvy * dvy)
                     max_accel = max(p1["accel"], p2["accel"])
-
-                    # Reversal / grapple struggle (opposing velocities under high speed)
                     dot_v = (p1["vx"] * p2["vx"] + p1["vy"] * p2["vy"])
-                    is_turbulent = (dot_v < 0 and rel_speed > 100.0) or (rel_speed > 180.0)
+                    speed1 = p1.get("speed", 0.0)
+                    speed2 = p2.get("speed", 0.0)
+                    max_speed = max(speed1, speed2)
 
-                    # Strike detection: high acceleration spike during close proximity
-                    is_strike = (rel_speed > 140.0 and max_accel > 220.0) or (is_turbulent and rel_speed > 120.0)
-
-                    # Close-Quarters Grapple / Clinch Detection:
-                    # e.g. two persons pushing, pinning against wall, holding collar/shoulders
-                    is_grapple = False
-                    # Check wrist engagement from pose keypoints
+                    # 1. Wrist Engagement & Hand-to-Torso Keypoint Check
                     w1 = p1.get("pose", {}).get("wrists", [])
                     w2 = p2.get("pose", {}).get("wrists", [])
                     b1 = p1["bbox"]
                     b2 = p2["bbox"]
 
-                    # Wrists of person 1 inside person 2's upper body / chest region
+                    # Wrists penetrating upper body region of the other person
                     w1_in_p2 = any(
-                        (b2[0] <= wx <= b2[2]) and (b2[1] <= wy <= b2[1] + (b2[3] - b2[1]) * 0.75)
+                        (b2[0] <= wx <= b2[2]) and (b2[1] <= wy <= b2[1] + (b2[3] - b2[1]) * 0.70)
                         for wx, wy in w1
                     )
-                    # Wrists of person 2 inside person 1's upper body / chest region
                     w2_in_p1 = any(
-                        (b1[0] <= wx <= b1[2]) and (b1[1] <= wy <= b1[1] + (b1[3] - b1[1]) * 0.75)
+                        (b1[0] <= wx <= b1[2]) and (b1[1] <= wy <= b1[1] + (b1[3] - b1[1]) * 0.70)
                         for wx, wy in w2
                     )
 
-                    # If wrists are holding/interlocking with partner's upper body and IoU > 0.10
-                    if (w1_in_p2 or w2_in_p1) and (iou > 0.10 or inter > 0):
+                    # Check whether wrists extend towards partner's centroid
+                    dx_center = p2["cx"] - p1["cx"]
+                    p1_reaches_p2 = any((wx - p1["cx"]) * dx_center > 0 for wx, wy in w1) if dx_center != 0 else False
+                    p2_reaches_p1 = any((wx - p2["cx"]) * (-dx_center) > 0 for wx, wy in w2) if dx_center != 0 else False
+                    mutual_reach = (p1_reaches_p2 and p2_reaches_p1)
+
+                    # 2. PEACEFUL CO-PRESENCE SUPPRESSION
+                    # A: Both individuals are essentially stationary (standing together, conveyor work, queue)
+                    is_static = (speed1 < 25.0 and speed2 < 25.0 and rel_speed < 30.0)
+                    # B: Both individuals are smoothly moving in the same direction (co-walking)
+                    is_co_walking = (dot_v > 0 and rel_speed < 30.0 and max_accel < 55.0)
+
+                    # If stationary and not a mutual physical struggle with high overlap, suppress
+                    if is_static and not (w1_in_p2 and w2_in_p1 and mutual_reach and iou >= 0.20):
+                        self._pair_altercation_count[pair_key] = max(0, self._pair_altercation_count.get(pair_key, 0) - 2)
+                        continue
+
+                    if (not w1_in_p2 and not w2_in_p1) and (is_static or is_co_walking):
+                        # Definitely peaceful: rapidly decay and suppress
+                        self._pair_altercation_count[pair_key] = max(0, self._pair_altercation_count.get(pair_key, 0) - 2)
+                        continue
+
+                    # 3. ACTIVE INTERPERSONAL FIGHT / AGGRESSION TRIGGERS
+                    is_grapple = False
+                    # A: Mutual collar/chest lock or heavy grapple clinch (like cctv_factory_altercation.jpg)
+                    if (w1_in_p2 and w2_in_p1 and mutual_reach) and (iou >= 0.20):
                         is_grapple = True
-                    elif iou > 0.22 and dist < avg_w * 0.85:
-                        # Heavy physical body-to-body clinch (pushing against wall/floor)
+                    # B: One-sided grab/pin with active motion
+                    elif (w1_in_p2 or w2_in_p1) and (max_speed > 20.0 or rel_speed > 22.0) and iou > 0.15:
                         is_grapple = True
+                    # C: Body-to-body clinch with motion
+                    elif (iou > 0.20 or dist < avg_w * 0.85) and (max_speed > 25.0 or rel_speed > 28.0):
+                        is_grapple = True
+                    # D: Opposing struggle motion
+                    elif dot_v < 0 and rel_speed > 35.0:
+                        is_grapple = True
+
+                    # E: Dynamic strike / sudden rapid collision
+                    is_strike = (rel_speed > 48.0 and max_accel > 55.0) or (rel_speed > 80.0)
 
                     is_aggressive = is_strike or is_grapple
 
                     if is_aggressive:
-                        # Grapples with strong wrist interaction or high IoU trigger immediately
-                        increment = 2 if is_grapple else 1
-                        self._pair_altercation_count[pair_key] = self._pair_altercation_count.get(pair_key, 0) + increment
+                        self._pair_altercation_count[pair_key] = self._pair_altercation_count.get(pair_key, 0) + 1
                     else:
                         self._pair_altercation_count[pair_key] = max(0, self._pair_altercation_count.get(pair_key, 0) - 1)
 
@@ -560,8 +598,8 @@ class FightAggressionDetector:
                         ux2 = max(p1["bbox"][2], p2["bbox"][2])
                         uy2 = max(p1["bbox"][3], p2["bbox"][3])
 
-                        base_conf = 0.88 if is_grapple else 0.80
-                        conf = min(0.98, max(base_conf, 0.82 + (rel_speed / 400.0) * 0.15))
+                        base_conf = 0.86 if is_grapple else 0.82
+                        conf = min(0.98, max(base_conf, 0.80 + (rel_speed / 300.0) * 0.15))
                         fight_mode = "Grapple/Clinch" if is_grapple else "Aggressive Movement"
                         fight_detections.append({
                             "label": "Physical Altercation",

@@ -26,7 +26,12 @@ venv/
 !.env.production.example
 
 # ── Database ─────────────────────────────────────────────────────────
+*.db
+*.db-wal
+*.db-shm
 backend/*.db
+backend/*.db-wal
+backend/*.db-shm
 backend/*.sqlite
 backend/*.sqlite3
 

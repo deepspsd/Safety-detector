@@ -1,0 +1,12 @@
+Model Key,Verdict,Status,Weight Path,Type,Task,Classes Count,Latency (ms),FPS,Warnings / Issues
+yolov8x_coco,PASS,READY,E:\dasari\safety-detection-tool\yolov8x.pt,yolo,detect,80,1506.2,0.7,
+hairnet_glove_detection,PASS,READY,E:\dasari\safety-detection-tool\portable_models_package\hairnet_glove_detection\best.pt,yolo,detect,2,877.1,1.1,
+fall_detection,PASS,READY,E:\dasari\safety-detection-tool\portable_models_package\fall_detection\best.pt,yolo,detect,2,N/A,N/A,
+cash_detection,WARNING,READY,E:\dasari\safety-detection-tool\portable_models_package\cash_detection\yolo11m_finetuned.pt,yolo,detect,10,N/A,N/A,Weights contain BGN/EUR banknotes only (No native INR classes in weights)
+helmet_model,PASS,READY,E:\dasari\safety-detection-tool\helmet_model.pt,yolo,detect,2,N/A,N/A,
+pose_estimation,PASS,READY,E:\dasari\safety-detection-tool\yolov8n-pose.pt,pose,pose,1,142.6,7.0,
+hand_landmarks,WARNING (STANDBY),STANDBY (PHASE 2),E:\dasari\safety-detection-tool\portable_models_package\hand_landmarks\hand_landmarker.task,mediapipe,hand_landmarks,1,N/A,N/A,
+machine_sensor_anomaly,PASS,READY,E:\dasari\safety-detection-tool\portable_models_package\machine_sensor_anomaly\rf_forecast_model.joblib,sklearn,regression_anomaly,1,N/A,N/A,
+object_throwing,WARNING (STANDBY),STANDBY (PHASE 2),E:\dasari\safety-detection-tool\portable_models_package\object_throwing\TRN_somethingv2_RGB_BNInception_TRNmultiscale_segment8_best.pth.tar,pytorch_trn,temporal_action,0,N/A,N/A,
+person_action_recognition,WARNING (STANDBY),STANDBY,E:\dasari\safety-detection-tool\portable_models_package\person_action,openvino,action_recognition,0,N/A,N/A,
+unregistered_best_uniform_detector.pt,N/A,UNREGISTERED PHYSICAL WEIGHT,E:\dasari\safety-detection-tool\portable_models_package\uniform_detector\best_uniform_detector.pt,yolo,detect,3,N/A,N/A,

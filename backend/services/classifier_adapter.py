@@ -62,6 +62,8 @@ class ClassificationResult:
     timestamp: datetime = field(default_factory=datetime.utcnow)
     classifier_name: str = ""
     model_loaded: bool = True
+    mapped_box: Optional[List[int]] = None
+    raw_class: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {

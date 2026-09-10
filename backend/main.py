@@ -3,7 +3,7 @@ import os
 
 # Force TCP transport for all OpenCV RTSP streams to prevent UDP packet drop and H.264/H.265 bitstream corruption
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-    "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|stimeout;10000000|max_delay;500000"
+    "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|buffer_size;2097152|reorder_queue_size;100|stimeout;10000000|max_delay;500000"
 )
 
 from config import settings

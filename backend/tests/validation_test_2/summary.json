@@ -1,0 +1,809 @@
+{
+  "timestamp": "2026-09-10 14:36:09 IST",
+  "models": {
+    "yolov8x_coco": {
+      "key": "yolov8x_coco",
+      "weight_path": "E:\\dasari\\safety-detection-tool\\yolov8x.pt",
+      "model_type": "yolo",
+      "task": "detect",
+      "enabled": true,
+      "status": "READY",
+      "declared_classes": {
+        "0": "person",
+        "2": "car",
+        "3": "motorcycle",
+        "5": "bus",
+        "7": "truck",
+        "24": "backpack",
+        "26": "handbag",
+        "28": "suitcase",
+        "39": "bottle",
+        "41": "cup",
+        "67": "cell phone"
+      },
+      "actual_classes": {
+        "0": "person",
+        "1": "bicycle",
+        "2": "car",
+        "3": "motorcycle",
+        "4": "airplane",
+        "5": "bus",
+        "6": "train",
+        "7": "truck",
+        "8": "boat",
+        "9": "traffic light",
+        "10": "fire hydrant",
+        "11": "stop sign",
+        "12": "parking meter",
+        "13": "bench",
+        "14": "bird",
+        "15": "cat",
+        "16": "dog",
+        "17": "horse",
+        "18": "sheep",
+        "19": "cow",
+        "20": "elephant",
+        "21": "bear",
+        "22": "zebra",
+        "23": "giraffe",
+        "24": "backpack",
+        "25": "umbrella",
+        "26": "handbag",
+        "27": "tie",
+        "28": "suitcase",
+        "29": "frisbee",
+        "30": "skis",
+        "31": "snowboard",
+        "32": "sports ball",
+        "33": "kite",
+        "34": "baseball bat",
+        "35": "baseball glove",
+        "36": "skateboard",
+        "37": "surfboard",
+        "38": "tennis racket",
+        "39": "bottle",
+        "40": "wine glass",
+        "41": "cup",
+        "42": "fork",
+        "43": "knife",
+        "44": "spoon",
+        "45": "bowl",
+        "46": "banana",
+        "47": "apple",
+        "48": "sandwich",
+        "49": "orange",
+        "50": "broccoli",
+        "51": "carrot",
+        "52": "hot dog",
+        "53": "pizza",
+        "54": "donut",
+        "55": "cake",
+        "56": "chair",
+        "57": "couch",
+        "58": "potted plant",
+        "59": "bed",
+        "60": "dining table",
+        "61": "toilet",
+        "62": "tv",
+        "63": "laptop",
+        "64": "mouse",
+        "65": "remote",
+        "66": "keyboard",
+        "67": "cell phone",
+        "68": "microwave",
+        "69": "oven",
+        "70": "toaster",
+        "71": "sink",
+        "72": "refrigerator",
+        "73": "book",
+        "74": "clock",
+        "75": "vase",
+        "76": "scissors",
+        "77": "teddy bear",
+        "78": "hair drier",
+        "79": "toothbrush"
+      },
+      "zones": [
+        "*"
+      ],
+      "error_msg": null,
+      "mapping_warnings": [],
+      "verdict": "PASS"
+    },
+    "hairnet_glove_detection": {
+      "key": "hairnet_glove_detection",
+      "weight_path": "E:\\dasari\\safety-detection-tool\\portable_models_package\\hairnet_glove_detection\\best.pt",
+      "model_type": "yolo",
+      "task": "detect",
+      "enabled": true,
+      "status": "READY",
+      "declared_classes": {
+        "0": "hairnet",
+        "1": "no_hairnet"
+      },
+      "actual_classes": {
+        "0": "hairnet",
+        "1": "no_hairnet"
+      },
+      "zones": [
+        "*",
+        "dough_mixing",
+        "oven",
+        "packing",
+        "biscuit_cutting",
+        "cutting_machine",
+        "entrance",
+        "dough_table",
+        "gas_section",
+        "shop",
+        "shop_counter",
+        "cashbox",
+        "store",
+        "default"
+      ],
+      "error_msg": null,
+      "mapping_warnings": [],
+      "verdict": "PASS"
+    },
+    "fall_detection": {
+      "key": "fall_detection",
+      "weight_path": "E:\\dasari\\safety-detection-tool\\portable_models_package\\fall_detection\\best.pt",
+      "model_type": "yolo",
+      "task": "detect",
+      "enabled": true,
+      "status": "READY",
+      "declared_classes": {
+        "1": "fall"
+      },
+      "actual_classes": {
+        "0": "non-fall",
+        "1": "fall"
+      },
+      "zones": [
+        "*"
+      ],
+      "error_msg": null,
+      "mapping_warnings": [],
+      "verdict": "PASS"
+    },
+    "cash_detection": {
+      "key": "cash_detection",
+      "weight_path": "E:\\dasari\\safety-detection-tool\\portable_models_package\\cash_detection\\yolo11m_finetuned.pt",
+      "model_type": "yolo",
+      "task": "detect",
+      "enabled": true,
+      "status": "READY",
+      "declared_classes": {
+        "0": "5 BGN",
+        "1": "10 BGN",
+        "2": "20 BGN",
+        "3": "50 BGN",
+        "4": "100 BGN",
+        "5": "5 EUR",
+        "6": "10 EUR",
+        "7": "20 EUR",
+        "8": "50 EUR",
+        "9": "100 EUR"
+      },
+      "actual_classes": {
+        "0": "5 BGN",
+        "1": "10 BGN",
+        "2": "20 BGN",
+        "3": "50 BGN",
+        "4": "100 BGN",
+        "5": "5 EUR",
+        "6": "10 EUR",
+        "7": "20 EUR",
+        "8": "50 EUR",
+        "9": "100 EUR"
+      },
+      "zones": [
+        "shop_counter",
+        "shop",
+        "cashbox",
+        "cash"
+      ],
+      "error_msg": null,
+      "mapping_warnings": [
+        "Weights contain BGN/EUR banknotes only (No native INR classes in weights)"
+      ],
+      "verdict": "WARNING"
+    },
+    "helmet_model": {
+      "key": "helmet_model",
+      "weight_path": "E:\\dasari\\safety-detection-tool\\helmet_model.pt",
+      "model_type": "yolo",
+      "task": "detect",
+      "enabled": true,
+      "status": "READY",
+      "declared_classes": {
+        "0": "Hardhat",
+        "1": "NO-Hardhat"
+      },
+      "actual_classes": {
+        "0": "Hardhat",
+        "1": "NO-Hardhat"
+      },
+      "zones": [
+        "loading",
+        "construction",
+        "entrance"
+      ],
+      "error_msg": null,
+      "mapping_warnings": [],
+      "verdict": "PASS"
+    },
+    "pose_estimation": {
+      "key": "pose_estimation",
+      "weight_path": "E:\\dasari\\safety-detection-tool\\yolov8n-pose.pt",
+      "model_type": "pose",
+      "task": "pose",
+      "enabled": true,
+      "status": "READY",
+      "declared_classes": {},
+      "actual_classes": {
+        "0": "person"
+      },
+      "zones": [
+        "shop",
+        "shop_counter",
+        "cashbox",
+        "cash"
+      ],
+      "error_msg": null,
+      "mapping_warnings": [],
+      "verdict": "PASS"
+    },
+    "hand_landmarks": {
+      "key": "hand_landmarks",
+      "weight_path": "E:\\dasari\\safety-detection-tool\\portable_models_package\\hand_landmarks\\hand_landmarker.task",
+      "model_type": "mediapipe",
+      "task": "hand_landmarks",
+      "enabled": false,
+      "status": "STANDBY (PHASE 2)",
+      "declared_classes": {},
+      "actual_classes": {
+        "0": "hand_landmarks"
+      },
+      "zones": [
+        "packing",
+        "shop_counter",
+        "shop"
+      ],
+      "error_msg": null,
+      "mapping_warnings": [],
+      "verdict": "WARNING (STANDBY)"
+    },
+    "machine_sensor_anomaly": {
+      "key": "machine_sensor_anomaly",
+      "weight_path": "E:\\dasari\\safety-detection-tool\\portable_models_package\\machine_sensor_anomaly\\rf_forecast_model.joblib",
+      "model_type": "sklearn",
+      "task": "regression_anomaly",
+      "enabled": true,
+      "status": "READY",
+      "declared_classes": {},
+      "actual_classes": {
+        "0": "anomaly_score"
+      },
+      "zones": [
+        "dough_mixing",
+        "biscuit_cutting",
+        "cutting_machine"
+      ],
+      "error_msg": null,
+      "mapping_warnings": [],
+      "verdict": "PASS"
+    },
+    "object_throwing": {
+      "key": "object_throwing",
+      "weight_path": "E:\\dasari\\safety-detection-tool\\portable_models_package\\object_throwing\\TRN_somethingv2_RGB_BNInception_TRNmultiscale_segment8_best.pth.tar",
+      "model_type": "pytorch_trn",
+      "task": "temporal_action",
+      "enabled": false,
+      "status": "STANDBY (PHASE 2)",
+      "declared_classes": {},
+      "actual_classes": {},
+      "zones": [
+        "entrance",
+        "shop_counter",
+        "shop",
+        "cashbox",
+        "lift",
+        "window"
+      ],
+      "error_msg": null,
+      "mapping_warnings": [],
+      "verdict": "WARNING (STANDBY)"
+    },
+    "person_action_recognition": {
+      "key": "person_action_recognition",
+      "weight_path": "E:\\dasari\\safety-detection-tool\\portable_models_package\\person_action",
+      "model_type": "openvino",
+      "task": "action_recognition",
+      "enabled": false,
+      "status": "STANDBY",
+      "declared_classes": {},
+      "actual_classes": {},
+      "zones": [
+        "entrance",
+        "shop_counter",
+        "shop",
+        "packing",
+        "lift"
+      ],
+      "error_msg": null,
+      "mapping_warnings": [],
+      "verdict": "WARNING (STANDBY)"
+    },
+    "unregistered_best_uniform_detector.pt": {
+      "key": "unregistered_best_uniform_detector.pt",
+      "weight_path": "E:\\dasari\\safety-detection-tool\\portable_models_package\\uniform_detector\\best_uniform_detector.pt",
+      "model_type": "yolo",
+      "task": "detect",
+      "enabled": false,
+      "status": "UNREGISTERED PHYSICAL WEIGHT",
+      "actual_classes": {
+        "0": "uniform_1",
+        "1": "Uniform_2",
+        "2": "No_uniform"
+      },
+      "zones": []
+    }
+  },
+  "zones": {},
+  "obsolete_references": [
+    {
+      "file": "backend\\download_ppe_model.py",
+      "line_number": 26,
+      "pattern": "backend/ppe.pt",
+      "line_content": "backend/ppe.pt   \u2190 the detection service loads it from here",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\download_ppe_model.py",
+      "line_number": 84,
+      "pattern": "backend/ppe.pt",
+      "line_content": "print(\"   DETECTION MODEL/backend/ppe.pt\")",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\services\\rule_engine.py",
+      "line_number": 1495,
+      "pattern": "ppe_factory_v0_cash.pt",
+      "line_content": "#   \u2022 Requires a trained Cash detector (ppe_factory_v0_cash.pt, class ID 14)",
+      "is_active_code": false
+    },
+    {
+      "file": "backend\\services\\yolo_service.py",
+      "line_number": 6,
+      "pattern": "ppe_factory_v0.pt",
+      "line_content": "Legacy ppe_factory_v0.pt: DISABLED / REMOVED",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\services\\yolo_service.py",
+      "line_number": 30,
+      "pattern": "ppe_factory_v0.pt",
+      "line_content": "# ppe_factory_v0.pt adds classes 10-16 on top of the base ppe.pt set",
+      "is_active_code": false
+    },
+    {
+      "file": "backend\\services\\yolo_service.py",
+      "line_number": 43,
+      "pattern": "ppe_factory_v0_cash.pt",
+      "line_content": "# \u2500\u2500 Phase 1 new classes (ppe_factory_v0_cash.pt) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+      "is_active_code": false
+    },
+    {
+      "file": "backend\\services\\yolo_service.py",
+      "line_number": 170,
+      "pattern": "ppe_factory_v0.pt",
+      "line_content": "# Violations that ppe_factory_v0.pt detects natively for this role.",
+      "is_active_code": false
+    },
+    {
+      "file": "backend\\services\\yolo_service.py",
+      "line_number": 532,
+      "pattern": "yolov8l.pt",
+      "line_content": "#                 \u2192 yolov8l.pt (~87 MB, auto-downloads)",
+      "is_active_code": false
+    },
+    {
+      "file": "backend\\services\\yolo_service.py",
+      "line_number": 536,
+      "pattern": "yolov8l.pt",
+      "line_content": "_phone_candidates = [\"yolov8x.pt\", \"yolov8l.pt\", \"yolov8m.pt\"]",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validate_models.py",
+      "line_number": 203,
+      "pattern": "model_metal_nut_64.pt",
+      "line_content": "os.path.join(ROOT_DIR, \"portable_models_package\", \"machine_visual_anomaly\", \"model_metal_nut_64.pt\"),",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validate_models.py",
+      "line_number": 237,
+      "pattern": "ppe_factory_v0.pt",
+      "line_content": "\"ppe_factory_v0.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validate_models.py",
+      "line_number": 238,
+      "pattern": "ppe_factory_v0_cash.pt",
+      "line_content": "\"ppe_factory_v0_cash.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validate_models.py",
+      "line_number": 239,
+      "pattern": "backend/ppe.pt",
+      "line_content": "\"backend/ppe.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validate_models.py",
+      "line_number": 240,
+      "pattern": "model_metal_nut_64.pt",
+      "line_content": "\"model_metal_nut_64.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validate_models.py",
+      "line_number": 241,
+      "pattern": "yolov8l.pt",
+      "line_content": "\"yolov8l.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validate_models.py",
+      "line_number": 703,
+      "pattern": "ppe_factory_v0.pt",
+      "line_content": "<p style=\"color:#94a3b8; font-size:13px;\">Scanned for references to legacy weights (<code>ppe_factory_v0.pt</code>, <code>ppe_factory_v0_cash.pt</code>, <code>ppe.pt</code>, <code>model_metal_nut_64.pt</code>). Verified whether live monitor can accidentally invoke them.</p>",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validate_models.py",
+      "line_number": 703,
+      "pattern": "ppe_factory_v0_cash.pt",
+      "line_content": "<p style=\"color:#94a3b8; font-size:13px;\">Scanned for references to legacy weights (<code>ppe_factory_v0.pt</code>, <code>ppe_factory_v0_cash.pt</code>, <code>ppe.pt</code>, <code>model_metal_nut_64.pt</code>). Verified whether live monitor can accidentally invoke them.</p>",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validate_models.py",
+      "line_number": 703,
+      "pattern": "model_metal_nut_64.pt",
+      "line_content": "<p style=\"color:#94a3b8; font-size:13px;\">Scanned for references to legacy weights (<code>ppe_factory_v0.pt</code>, <code>ppe_factory_v0_cash.pt</code>, <code>ppe.pt</code>, <code>model_metal_nut_64.pt</code>). Verified whether live monitor can accidentally invoke them.</p>",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 358,
+      "pattern": "backend/ppe.pt",
+      "line_content": "\"pattern\": \"backend/ppe.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 359,
+      "pattern": "backend/ppe.pt",
+      "line_content": "\"line_content\": \"backend/ppe.pt   \\u2190 the detection service loads it from here\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 365,
+      "pattern": "backend/ppe.pt",
+      "line_content": "\"pattern\": \"backend/ppe.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 366,
+      "pattern": "backend/ppe.pt",
+      "line_content": "\"line_content\": \"print(\\\"   DETECTION MODEL/backend/ppe.pt\\\")\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 372,
+      "pattern": "ppe_factory_v0_cash.pt",
+      "line_content": "\"pattern\": \"ppe_factory_v0_cash.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 373,
+      "pattern": "ppe_factory_v0_cash.pt",
+      "line_content": "\"line_content\": \"#   \\u2022 Requires a trained Cash detector (ppe_factory_v0_cash.pt, class ID 14)\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 379,
+      "pattern": "ppe_factory_v0.pt",
+      "line_content": "\"pattern\": \"ppe_factory_v0.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 380,
+      "pattern": "ppe_factory_v0.pt",
+      "line_content": "\"line_content\": \"Legacy ppe_factory_v0.pt: DISABLED / REMOVED\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 386,
+      "pattern": "ppe_factory_v0.pt",
+      "line_content": "\"pattern\": \"ppe_factory_v0.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 387,
+      "pattern": "ppe_factory_v0.pt",
+      "line_content": "\"line_content\": \"# ppe_factory_v0.pt adds classes 10-16 on top of the base ppe.pt set\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 393,
+      "pattern": "ppe_factory_v0_cash.pt",
+      "line_content": "\"pattern\": \"ppe_factory_v0_cash.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 394,
+      "pattern": "ppe_factory_v0_cash.pt",
+      "line_content": "\"line_content\": \"# \\u2500\\u2500 Phase 1 new classes (ppe_factory_v0_cash.pt) \\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 400,
+      "pattern": "ppe_factory_v0.pt",
+      "line_content": "\"pattern\": \"ppe_factory_v0.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 401,
+      "pattern": "ppe_factory_v0.pt",
+      "line_content": "\"line_content\": \"# Violations that ppe_factory_v0.pt detects natively for this role.\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 407,
+      "pattern": "yolov8l.pt",
+      "line_content": "\"pattern\": \"yolov8l.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 408,
+      "pattern": "yolov8l.pt",
+      "line_content": "\"line_content\": \"#                 \\u2192 yolov8l.pt (~87 MB, auto-downloads)\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 414,
+      "pattern": "yolov8l.pt",
+      "line_content": "\"pattern\": \"yolov8l.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 415,
+      "pattern": "yolov8l.pt",
+      "line_content": "\"line_content\": \"_phone_candidates = [\\\"yolov8x.pt\\\", \\\"yolov8l.pt\\\", \\\"yolov8m.pt\\\"]\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 421,
+      "pattern": "model_metal_nut_64.pt",
+      "line_content": "\"pattern\": \"model_metal_nut_64.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 422,
+      "pattern": "model_metal_nut_64.pt",
+      "line_content": "\"line_content\": \"os.path.join(ROOT_DIR, \\\"portable_models_package\\\", \\\"machine_visual_anomaly\\\", \\\"model_metal_nut_64.pt\\\"),\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 428,
+      "pattern": "ppe_factory_v0.pt",
+      "line_content": "\"pattern\": \"ppe_factory_v0.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 429,
+      "pattern": "ppe_factory_v0.pt",
+      "line_content": "\"line_content\": \"\\\"ppe_factory_v0.pt\\\",\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 435,
+      "pattern": "ppe_factory_v0_cash.pt",
+      "line_content": "\"pattern\": \"ppe_factory_v0_cash.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 436,
+      "pattern": "ppe_factory_v0_cash.pt",
+      "line_content": "\"line_content\": \"\\\"ppe_factory_v0_cash.pt\\\",\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 442,
+      "pattern": "backend/ppe.pt",
+      "line_content": "\"pattern\": \"backend/ppe.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 443,
+      "pattern": "backend/ppe.pt",
+      "line_content": "\"line_content\": \"\\\"backend/ppe.pt\\\",\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 449,
+      "pattern": "model_metal_nut_64.pt",
+      "line_content": "\"pattern\": \"model_metal_nut_64.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 450,
+      "pattern": "model_metal_nut_64.pt",
+      "line_content": "\"line_content\": \"\\\"model_metal_nut_64.pt\\\",\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 456,
+      "pattern": "yolov8l.pt",
+      "line_content": "\"pattern\": \"yolov8l.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 457,
+      "pattern": "yolov8l.pt",
+      "line_content": "\"line_content\": \"\\\"yolov8l.pt\\\",\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 463,
+      "pattern": "ppe_factory_v0.pt",
+      "line_content": "\"pattern\": \"ppe_factory_v0.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 464,
+      "pattern": "ppe_factory_v0.pt",
+      "line_content": "\"line_content\": \"<p style=\\\"color:#94a3b8; font-size:13px;\\\">Scanned for references to legacy weights (<code>ppe_factory_v0.pt</code>, <code>ppe_factory_v0_cash.pt</code>, <code>ppe.pt</code>, <code>model_metal_nut_64.pt</code>). Verified whether live monitor can accidentally invoke them.</p>\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 464,
+      "pattern": "ppe_factory_v0_cash.pt",
+      "line_content": "\"line_content\": \"<p style=\\\"color:#94a3b8; font-size:13px;\\\">Scanned for references to legacy weights (<code>ppe_factory_v0.pt</code>, <code>ppe_factory_v0_cash.pt</code>, <code>ppe.pt</code>, <code>model_metal_nut_64.pt</code>). Verified whether live monitor can accidentally invoke them.</p>\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 464,
+      "pattern": "model_metal_nut_64.pt",
+      "line_content": "\"line_content\": \"<p style=\\\"color:#94a3b8; font-size:13px;\\\">Scanned for references to legacy weights (<code>ppe_factory_v0.pt</code>, <code>ppe_factory_v0_cash.pt</code>, <code>ppe.pt</code>, <code>model_metal_nut_64.pt</code>). Verified whether live monitor can accidentally invoke them.</p>\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 470,
+      "pattern": "ppe_factory_v0_cash.pt",
+      "line_content": "\"pattern\": \"ppe_factory_v0_cash.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 471,
+      "pattern": "ppe_factory_v0.pt",
+      "line_content": "\"line_content\": \"<p style=\\\"color:#94a3b8; font-size:13px;\\\">Scanned for references to legacy weights (<code>ppe_factory_v0.pt</code>, <code>ppe_factory_v0_cash.pt</code>, <code>ppe.pt</code>, <code>model_metal_nut_64.pt</code>). Verified whether live monitor can accidentally invoke them.</p>\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 471,
+      "pattern": "ppe_factory_v0_cash.pt",
+      "line_content": "\"line_content\": \"<p style=\\\"color:#94a3b8; font-size:13px;\\\">Scanned for references to legacy weights (<code>ppe_factory_v0.pt</code>, <code>ppe_factory_v0_cash.pt</code>, <code>ppe.pt</code>, <code>model_metal_nut_64.pt</code>). Verified whether live monitor can accidentally invoke them.</p>\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 471,
+      "pattern": "model_metal_nut_64.pt",
+      "line_content": "\"line_content\": \"<p style=\\\"color:#94a3b8; font-size:13px;\\\">Scanned for references to legacy weights (<code>ppe_factory_v0.pt</code>, <code>ppe_factory_v0_cash.pt</code>, <code>ppe.pt</code>, <code>model_metal_nut_64.pt</code>). Verified whether live monitor can accidentally invoke them.</p>\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 477,
+      "pattern": "model_metal_nut_64.pt",
+      "line_content": "\"pattern\": \"model_metal_nut_64.pt\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 478,
+      "pattern": "ppe_factory_v0.pt",
+      "line_content": "\"line_content\": \"<p style=\\\"color:#94a3b8; font-size:13px;\\\">Scanned for references to legacy weights (<code>ppe_factory_v0.pt</code>, <code>ppe_factory_v0_cash.pt</code>, <code>ppe.pt</code>, <code>model_metal_nut_64.pt</code>). Verified whether live monitor can accidentally invoke them.</p>\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 478,
+      "pattern": "ppe_factory_v0_cash.pt",
+      "line_content": "\"line_content\": \"<p style=\\\"color:#94a3b8; font-size:13px;\\\">Scanned for references to legacy weights (<code>ppe_factory_v0.pt</code>, <code>ppe_factory_v0_cash.pt</code>, <code>ppe.pt</code>, <code>model_metal_nut_64.pt</code>). Verified whether live monitor can accidentally invoke them.</p>\",",
+      "is_active_code": true
+    },
+    {
+      "file": "backend\\tests\\validation_results\\summary.json",
+      "line_number": 478,
+      "pattern": "model_metal_nut_64.pt",
+      "line_content": "\"line_content\": \"<p style=\\\"color:#94a3b8; font-size:13px;\\\">Scanned for references to legacy weights (<code>ppe_factory_v0.pt</code>, <code>ppe_factory_v0_cash.pt</code>, <code>ppe.pt</code>, <code>model_metal_nut_64.pt</code>). Verified whether live monitor can accidentally invoke them.</p>\",",
+      "is_active_code": true
+    }
+  ],
+  "performance": {
+    "yolov8x_coco": {
+      "load_time_sec": 0.683,
+      "avg_inf_ms": 1506.2,
+      "min_inf_ms": 675.7,
+      "max_inf_ms": 8665.3,
+      "estimated_fps": 0.7
+    },
+    "hairnet_glove_detection": {
+      "load_time_sec": 1.132,
+      "avg_inf_ms": 877.1,
+      "min_inf_ms": 715.3,
+      "max_inf_ms": 1264.8,
+      "estimated_fps": 1.1
+    },
+    "pose_estimation": {
+      "load_time_sec": 0.138,
+      "avg_inf_ms": 142.6,
+      "min_inf_ms": 83.1,
+      "max_inf_ms": 262.3,
+      "estimated_fps": 7.0
+    }
+  },
+  "live_offline_comparison": {},
+  "summary": {
+    "total_models": 10,
+    "working": 6,
+    "warning": 4,
+    "failed": 0,
+    "insufficient_data": 0,
+    "total_images": 13,
+    "total_inference_tests": 39
+  }
+}

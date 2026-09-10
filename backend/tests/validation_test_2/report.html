@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>OccuSafe Pre-Live Model Validation Report</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b111e; color: #e2e8f0; margin: 0; padding: 24px; }
+  h1, h2, h3 { color: #ffffff; margin-top: 0; }
+  .card { background: #131d31; border: 1px solid #1e293b; border-radius: 10px; padding: 20px; margin-bottom: 24px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+  .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  .kpi { background: #17243c; border-radius: 8px; padding: 16px; text-align: center; border: 1px solid #233554; }
+  .kpi-num { font-size: 32px; font-weight: bold; margin-top: 4px; }
+  .pass { color: #10b981; }
+  .warn { color: #f59e0b; }
+  .fail { color: #ef4444; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 14px; }
+  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #233554; }
+  th { background: #0e1726; color: #94a3b8; font-weight: 600; text-transform: uppercase; font-size: 12px; letter-spacing: 0.5px; }
+  tr:hover { background: rgba(255,255,255,0.02); }
+  .badge { display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; text-transform: uppercase; }
+  .badge-pass { background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid #10b981; }
+  .badge-warn { background: rgba(245, 158, 11, 0.2); color: #f59e0b; border: 1px solid #f59e0b; }
+  .badge-fail { background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid #ef4444; }
+  code { background: #0a0f1d; padding: 2px 6px; border-radius: 4px; color: #38bdf8; font-family: monospace; font-size: 13px; }
+  .gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-top: 16px; }
+  .gallery-item { background: #0e1726; border-radius: 8px; overflow: hidden; border: 1px solid #233554; }
+  .gallery-item img { width: 100%; height: auto; display: block; }
+  .gallery-label { padding: 8px 12px; font-size: 12px; font-weight: bold; }
+</style>
+</head>
+<body>
+  <h1>OccuSafe CCTV AI Pre-Live Validation Report</h1>
+  <p style="color:#94a3b8;">Generated: 2026-09-10 14:36:09 IST | Scope: Complete Offline Architecture & Weights Validation</p>
+
+  <div class="kpi-grid">
+    <div class="kpi">
+      <div style="color:#94a3b8;">Configured Models</div>
+      <div class="kpi-num">10</div>
+    </div>
+    <div class="kpi">
+      <div style="color:#94a3b8;">Production Ready (PASS)</div>
+      <div class="kpi-num pass">6</div>
+    </div>
+    <div class="kpi">
+      <div style="color:#94a3b8;">Warnings / Standby</div>
+      <div class="kpi-num warn">4</div>
+    </div>
+    <div class="kpi">
+      <div style="color:#94a3b8;">Broken / Missing</div>
+      <div class="kpi-num fail">0</div>
+    </div>
+    <div class="kpi">
+      <div style="color:#94a3b8;">Test Inferences Run</div>
+      <div class="kpi-num" style="color:#38bdf8;">39</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>1. Model Health & Zone Mapping Verification</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Model Key</th>
+          <th>Verdict</th>
+          <th>Weight File</th>
+          <th>Type</th>
+          <th>Detected Classes</th>
+          <th>Inference Latency</th>
+          <th>Est. FPS</th>
+          <th>Mapping / Capability Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        
+        <tr>
+            <td><strong>yolov8x_coco</strong></td>
+            <td><span class="badge badge-pass">PASS</span></td>
+            <td><code>yolov8x.pt</code></td>
+            <td>yolo</td>
+            <td>0:person, 1:bicycle, 2:car, 3:motorcycle, 4:airplane, 5:bus... (+74 more)</td>
+            <td>1506.2 ms</td>
+            <td>0.7</td>
+            <td style="color:#f59e0b;">None</td>
+        </tr>
+        
+        <tr>
+            <td><strong>hairnet_glove_detection</strong></td>
+            <td><span class="badge badge-pass">PASS</span></td>
+            <td><code>best.pt</code></td>
+            <td>yolo</td>
+            <td>0:hairnet, 1:no_hairnet</td>
+            <td>877.1 ms</td>
+            <td>1.1</td>
+            <td style="color:#f59e0b;">None</td>
+        </tr>
+        
+        <tr>
+            <td><strong>fall_detection</strong></td>
+            <td><span class="badge badge-pass">PASS</span></td>
+            <td><code>best.pt</code></td>
+            <td>yolo</td>
+            <td>0:non-fall, 1:fall</td>
+            <td>- ms</td>
+            <td>-</td>
+            <td style="color:#f59e0b;">None</td>
+        </tr>
+        
+        <tr>
+            <td><strong>cash_detection</strong></td>
+            <td><span class="badge badge-warn">WARNING</span></td>
+            <td><code>yolo11m_finetuned.pt</code></td>
+            <td>yolo</td>
+            <td>0:5 BGN, 1:10 BGN, 2:20 BGN, 3:50 BGN, 4:100 BGN, 5:5 EUR... (+4 more)</td>
+            <td>- ms</td>
+            <td>-</td>
+            <td style="color:#f59e0b;">Weights contain BGN/EUR banknotes only (No native INR classes in weights)</td>
+        </tr>
+        
+        <tr>
+            <td><strong>helmet_model</strong></td>
+            <td><span class="badge badge-pass">PASS</span></td>
+            <td><code>helmet_model.pt</code></td>
+            <td>yolo</td>
+            <td>0:Hardhat, 1:NO-Hardhat</td>
+            <td>- ms</td>
+            <td>-</td>
+            <td style="color:#f59e0b;">None</td>
+        </tr>
+        
+        <tr>
+            <td><strong>pose_estimation</strong></td>
+            <td><span class="badge badge-pass">PASS</span></td>
+            <td><code>yolov8n-pose.pt</code></td>
+            <td>pose</td>
+            <td>0:person</td>
+            <td>142.6 ms</td>
+            <td>7.0</td>
+            <td style="color:#f59e0b;">None</td>
+        </tr>
+        
+        <tr>
+            <td><strong>hand_landmarks</strong></td>
+            <td><span class="badge badge-warn">WARNING (STANDBY)</span></td>
+            <td><code>hand_landmarker.task</code></td>
+            <td>mediapipe</td>
+            <td>0:hand_landmarks</td>
+            <td>- ms</td>
+            <td>-</td>
+            <td style="color:#f59e0b;">None</td>
+        </tr>
+        
+        <tr>
+            <td><strong>machine_sensor_anomaly</strong></td>
+            <td><span class="badge badge-pass">PASS</span></td>
+            <td><code>rf_forecast_model.joblib</code></td>
+            <td>sklearn</td>
+            <td>0:anomaly_score</td>
+            <td>- ms</td>
+            <td>-</td>
+            <td style="color:#f59e0b;">None</td>
+        </tr>
+        
+        <tr>
+            <td><strong>object_throwing</strong></td>
+            <td><span class="badge badge-warn">WARNING (STANDBY)</span></td>
+            <td><code>TRN_somethingv2_RGB_BNInception_TRNmultiscale_segment8_best.pth.tar</code></td>
+            <td>pytorch_trn</td>
+            <td></td>
+            <td>- ms</td>
+            <td>-</td>
+            <td style="color:#f59e0b;">None</td>
+        </tr>
+        
+        <tr>
+            <td><strong>person_action_recognition</strong></td>
+            <td><span class="badge badge-warn">WARNING (STANDBY)</span></td>
+            <td><code>person_action</code></td>
+            <td>openvino</td>
+            <td></td>
+            <td>- ms</td>
+            <td>-</td>
+            <td style="color:#f59e0b;">None</td>
+        </tr>
+        
+        <tr>
+            <td><strong>unregistered_best_uniform_detector.pt</strong></td>
+            <td><span class="badge badge-fail">UNREGISTERED PHYSICAL WEIGHT</span></td>
+            <td><code>best_uniform_detector.pt</code></td>
+            <td>yolo</td>
+            <td>0:uniform_1, 1:Uniform_2, 2:No_uniform</td>
+            <td>- ms</td>
+            <td>-</td>
+            <td style="color:#f59e0b;">None</td>
+        </tr>
+        
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>2. Obsolete Model Codebase Audit</h2>
+    <p style="color:#94a3b8; font-size:13px;">Scanned for references to legacy weights (<code>ppe_factory_v0.pt</code>, <code>ppe_factory_v0_cash.pt</code>, <code>ppe.pt</code>, <code>model_metal_nut_64.pt</code>). Verified whether live monitor can accidentally invoke them.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Location</th>
+          <th>Category</th>
+          <th>Pattern</th>
+          <th>Code Snippet</th>
+        </tr>
+      </thead>
+      <tbody>
+        
+        <tr>
+            <td><code>backend\download_ppe_model.py:26</code></td>
+            <td><span class="badge badge-fail">ACTIVE CODE</span></td>
+            <td><code>backend/ppe.pt</code></td>
+            <td><pre style="margin:0;font-size:12px;">backend/ppe.pt   ← the detection service loads it from here</pre></td>
+        </tr>
+        
+        <tr>
+            <td><code>backend\download_ppe_model.py:84</code></td>
+            <td><span class="badge badge-fail">ACTIVE CODE</span></td>
+            <td><code>backend/ppe.pt</code></td>
+            <td><pre style="margin:0;font-size:12px;">print("   DETECTION MODEL/backend/ppe.pt")</pre></td>
+        </tr>
+        
+        <tr>
+            <td><code>backend\services\rule_engine.py:1495</code></td>
+            <td><span class="badge badge-warn">COMMENT</span></td>
+            <td><code>ppe_factory_v0_cash.pt</code></td>
+            <td><pre style="margin:0;font-size:12px;">#   • Requires a trained Cash detector (ppe_factory_v0_cash.pt, class ID 14)</pre></td>
+        </tr>
+        
+        <tr>
+            <td><code>backend\services\yolo_service.py:6</code></td>
+            <td><span class="badge badge-fail">ACTIVE CODE</span></td>
+            <td><code>ppe_factory_v0.pt</code></td>
+            <td><pre style="margin:0;font-size:12px;">Legacy ppe_factory_v0.pt: DISABLED / REMOVED</pre></td>
+        </tr>
+        
+        <tr>
+            <td><code>backend\services\yolo_service.py:30</code></td>
+            <td><span class="badge badge-warn">COMMENT</span></td>
+            <td><code>ppe_factory_v0.pt</code></td>
+            <td><pre style="margin:0;font-size:12px;"># ppe_factory_v0.pt adds classes 10-16 on top of the base ppe.pt set</pre></td>
+        </tr>
+        
+        <tr>
+            <td><code>backend\services\yolo_service.py:43</code></td>
+            <td><span class="badge badge-warn">COMMENT</span></td>
+            <td><code>ppe_factory_v0_cash.pt</code></td>
+            <td><pre style="margin:0;font-size:12px;"># ── Phase 1 new classes (ppe_factory_v0_cash.pt) ───────────────────</pre></td>
+        </tr>
+        
+        <tr>
+            <td><code>backend\services\yolo_service.py:170</code></td>
+            <td><span class="badge badge-warn">COMMENT</span></td>
+            <td><code>ppe_factory_v0.pt</code></td>
+            <td><pre style="margin:0;font-size:12px;"># Violations that ppe_factory_v0.pt detects natively for this role.</pre></td>
+        </tr>
+        
+        <tr>
+            <td><code>backend\services\yolo_service.py:532</code></td>
+            <td><span class="badge badge-warn">COMMENT</span></td>
+            <td><code>yolov8l.pt</code></td>
+            <td><pre style="margin:0;font-size:12px;">#                 → yolov8l.pt (~87 MB, auto-downloads)</pre></td>
+        </tr>
+        
+        <tr>
+            <td><code>backend\services\yolo_service.py:536</code></td>
+            <td><span class="badge badge-fail">ACTIVE CODE</span></td>
+            <td><code>yolov8l.pt</code></td>
+            <td><pre style="margin:0;font-size:12px;">_phone_candidates = ["yolov8x.pt", "yolov8l.pt", "yolov8m.pt"]</pre></td>
+        </tr>
+        
+        <tr>
+            <td><code>backend\tests\validate_models.py:203</code></td>
+            <td><span class="badge badge-fail">ACTIVE CODE</span></td>
+            <td><code>model_metal_nut_64.pt</code></td>
+            <td><pre style="margin:0;font-size:12px;">os.path.join(ROOT_DIR, "portable_models_package", "machine_visual_anomaly", "model_metal_nut_64.pt"),</pre></td>
+        </tr>
+        
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>3. Live vs Offline Pipeline Consistency</h2>
+    <table>
+      <tr><th>Component</th><th>Offline Validation</th><th>Live CCTV Monitor</th><th>Status</th></tr>
+      <tr><td>Primary YOLO Model</td><td><code>yolov8x.pt</code></td><td><code>yolov8x.pt</code></td><td><span class="badge badge-pass">MATCH</span></td></tr>
+      <tr><td>Hairnet Model</td><td><code>best.pt</code> (YOLOv8m, imgsz=960)</td><td><code>best.pt</code> (YOLOv8m, imgsz=960)</td><td><span class="badge badge-pass">MATCH</span></td></tr>
+      <tr><td>Fall Detection</td><td><code>best.pt</code> + Kinematics FSM</td><td><code>best.pt</code> + Kinematics FSM</td><td><span class="badge badge-pass">MATCH</span></td></tr>
+      <tr><td>Bangle & Wrist Accessory</td><td>Pose keypoint + HSV/Edge band</td><td>Pose keypoint + HSV/Edge band</td><td><span class="badge badge-pass">MATCH</span></td></tr>
+      <tr><td>Cash Model & Policy</td><td><code>yolo11m_finetuned.pt</code> (Shop only)</td><td><code>yolo11m_finetuned.pt</code> (Shop only)</td><td><span class="badge badge-pass">MATCH</span></td></tr>
+      <tr><td>Altercation Detector</td><td>FightAggressionDetector (Grapple/Strike)</td><td>FightAggressionDetector (Grapple/Strike)</td><td><span class="badge badge-pass">MATCH</span></td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>4. Visual Detection Verification Output</h2>
+    <p style="color:#94a3b8; font-size:13px;">Annotated detection frames saved to <code>backend/tests/validation_results/</code>.</p>
+    <div class="gallery">
+      <div class="gallery-item">
+        <div class="gallery-label">Wrist Bangles Positive (Factory Table)</div>
+        <img src="pose_and_bangles/cctv_bangles_positive.jpg" alt="Positive Bangles">
+      </div>
+      <div class="gallery-item">
+        <div class="gallery-label">Clean Bare Hands / No Bangles (Altercation Frame)</div>
+        <img src="pose_and_bangles/cctv_factory_altercation.jpg" alt="No Bangles">
+      </div>
+      <div class="gallery-item">
+        <div class="gallery-label">Worker Fall Kinematics (CCTV Floor)</div>
+        <img src="fall_detection/cctv_factory_worker_floor.jpg" alt="Fall Kinematics">
+      </div>
+      <div class="gallery-item">
+        <div class="gallery-label">Physical Altercation Grapple (CCTV Packaging)</div>
+        <img src="fight_altercation/cctv_factory_altercation.jpg" alt="Altercation Grapple">
+      </div>
+      <div class="gallery-item">
+        <div class="gallery-label">Cash Counter Banknotes (CCTV Counter)</div>
+        <img src="cash_detection/cctv_cash_counter.jpg" alt="Cash Counter">
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>
